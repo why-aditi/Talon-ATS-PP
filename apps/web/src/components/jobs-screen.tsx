@@ -130,8 +130,13 @@ export function JobsScreen() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
-  const status = searchParams.get('status') ?? '';
-  const department = searchParams.get('department') ?? '';
+  // The URL is user input. `ListJobsQuery` is `.strict()` and `status` is an enum, so
+  // forwarding `?status=bogus` verbatim 400s the real endpoint while the mock merely
+  // filters to nothing — a divergence that would first show up in production. An
+  // unparseable status is dropped, which is what the control then honestly reads.
+  const rawStatus = searchParams.get('status') ?? '';
+  const status = JobStatusSchema.safeParse(rawStatus).success ? rawStatus : '';
+  const department = (searchParams.get('department') ?? '').trim();
   const state = searchParams.get('state') ?? '';
   const isFiltered = Boolean(status || department);
 
@@ -246,13 +251,15 @@ export function JobsScreen() {
       ) : null}
 
       {/*
-        No action here: "+ New job" is deferred with the wizard (§7.4). A primary
-        button that does nothing would teach the next person the route exists.
+        No action and no pointer to one. "+ New job" is deferred with the wizard
+        (§7.4); the sidebar link lands on the not-built page until it exists, so
+        naming it in the copy would send someone into a dead end instead of a
+        button that does nothing — not an improvement.
       */}
       {hasData && jobs.length === 0 && !isFiltered ? (
         <Placeholder
           title="No open roles yet."
-          body="Create your first job from the sidebar to start a pipeline. Candidates land in Applied as soon as it is live."
+          body="Jobs will appear here once they are created. Candidates land in Applied as soon as a job goes live."
         />
       ) : null}
 

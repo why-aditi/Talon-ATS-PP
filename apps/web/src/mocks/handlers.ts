@@ -5,10 +5,11 @@ import { JOBS } from './fixtures';
 /**
  * Stand-in for `GET /v1/jobs` (spec 001 §7.2) until the API stream lands step 4.
  *
- * `_scenario` reaches states that filters alone cannot produce. It is a mock-only
- * parameter: the real endpoint ignores unknown query params, so leaving it in a URL
- * degrades to the default response rather than breaking. The filtered-empty state
- * needs no scenario — `?status=draft` genuinely matches nothing.
+ * `_scenario` reaches states that filters alone cannot produce. It is mock-only and
+ * must never reach the wire: `ListJobsQuerySchema` is `.strict()`, so the real endpoint
+ * 400s on an unknown param rather than ignoring it. `jobs-query.ts` builds the query
+ * key by key and drops `_scenario` outside development for exactly that reason.
+ * The filtered-empty state needs no scenario — `?status=draft` genuinely matches nothing.
  */
 export const handlers = [
   http.get('*/v1/jobs', async ({ request }) => {

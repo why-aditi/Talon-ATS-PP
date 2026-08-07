@@ -283,6 +283,12 @@ ENG-209 would read 8 active / 8 in process where the screen reads 21 / 8 — whi
 the column redundant and contradicts the picture. Fixtures follow the screen and the
 seed. **The API must not implement the docstring as written. Owner: api.**
 
+Correcting the docstring is not enough — the *name* is what will be re-broken.
+`activeCount` reads as "currently active", and the value is "every application
+ever received, rejected ones included". Recommend renaming the field to
+`totalApplications` when the handler lands; the review of this branch reached the
+same conclusion independently. `apps/web` follows whatever the contract declares.
+
 #### Typography — acceptance 2, open
 
 The §2.1 pass was run by scanning the 2880px original for ink extents and deriving

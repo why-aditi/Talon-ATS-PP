@@ -7,7 +7,7 @@ import { HttpResponse, http } from 'msw';
 import { describe, expect, it } from 'vitest';
 import { AppShell } from '../components/app-shell';
 import { JobsScreen } from '../components/jobs-screen';
-import { fetchJobs } from '../lib/jobs-query';
+import { fetchJobs, jobsUrl } from '../lib/jobs-query';
 import { JOBS } from '../mocks/fixtures';
 import { server } from '../mocks/node';
 import { routerReplace, searchParams } from './setup';
@@ -112,10 +112,12 @@ describe('empty states', () => {
   it('invites a first job when the tenant has none, without an inert button', async () => {
     const { container } = renderJobs('state=empty');
     expect(await screen.findByText('No open roles yet.')).toBeInTheDocument();
-    // "+ New job" is deferred with the wizard. The only affordance is the sidebar
-    // link, which actually navigates — no page-level button that does nothing.
+    // "+ New job" is deferred with the wizard: no page-level button that does nothing,
+    // and no copy pointing at the sidebar link either, since that lands on the
+    // not-built page until the wizard exists.
     expect(screen.queryByRole('button', { name: '+ New job' })).not.toBeInTheDocument();
-    expect(screen.getByRole('link', { name: '+ New job' })).toHaveAttribute('href', '/jobs/new');
+    expect(screen.getByText(/Jobs will appear here/)).toBeInTheDocument();
+    expect(screen.queryByText(/from the sidebar/)).not.toBeInTheDocument();
     await expectNoAxeViolations(container);
   });
 
@@ -208,6 +210,17 @@ describe('filtering', () => {
     const select = screen.getByRole('combobox', { name: 'Filter jobs by status' });
     await user.selectOptions(select, 'on_hold');
     expect(routerReplace).toHaveBeenCalledWith('/jobs?status=on_hold', { scroll: false });
+  });
+
+  it('drops an unparseable status rather than putting it on the wire', async () => {
+    // ListJobsQuery is .strict() with a status enum, so forwarding `bogus` 400s the
+    // real endpoint while the mock only filters to nothing. Dropping it keeps dev and
+    // production on the same path, and the select honestly reads "All".
+    renderJobs('status=bogus');
+    await screen.findByText('Senior Product Engineer');
+    expect(screen.getByRole('combobox', { name: 'Filter jobs by status' })).toHaveValue('');
+    expect(screen.queryByText('No jobs match this filter.')).not.toBeInTheDocument();
+    expect(jobsUrl({ status: undefined })).not.toContain('status=');
   });
 
   it('narrows the list to the matching department', async () => {
