@@ -7,6 +7,23 @@ on:
 jobs:
   ci:
     runs-on: ubuntu-latest
+    # Mirrors the postgres service in docker-compose.yml. No init script is mounted
+    # (service containers cannot mount repo files anyway): the db suite bootstraps
+    # everything it needs — talon_test via setup.global.ts, the talon_app role via
+    # ensureAppRole(), citext/pg_trgm via 0001_init.up.sql.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: talon
+          POSTGRES_PASSWORD: talon
+          POSTGRES_DB: talon
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U talon -d talon"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
