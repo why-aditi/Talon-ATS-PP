@@ -1,12 +1,12 @@
 import { ERROR_TYPES } from '@talon/contracts';
-import { render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import axe from 'axe-core';
 import { describe, expect, it, vi } from 'vitest';
 import { SignInForm, SignInHero } from '../components/sign-in';
 import { SessionProvider } from '../lib/session';
 import { json, route } from './fetch-stub';
-import { routerPush } from './setup';
+import { routerPush, searchParams } from './setup';
 
 function renderSignIn() {
   return render(
@@ -176,6 +176,39 @@ describe('success', () => {
     expect(window.localStorage.length).toBe(0);
     expect(window.sessionStorage.length).toBe(0);
     expect(document.cookie).not.toContain('access-token-value');
+  });
+});
+
+describe('a Google round-trip that failed', () => {
+  /*
+    The callback cannot render anything — it is a redirect — so it hands back a
+    reason in the query string and the form is what speaks. Same alert region as
+    a failed password attempt, because to the person signing in it is one failure.
+  */
+  it('reports the reason in the form’s alert region', async () => {
+    searchParams.current = new URLSearchParams('sso=not_provisioned');
+    renderSignIn();
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('this workspace has no account for you yet');
+  });
+
+  it('says cancelled when the user backed out at Google', () => {
+    searchParams.current = new URLSearchParams('sso=cancelled');
+    renderSignIn();
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Google sign-in was cancelled.');
+  });
+
+  it('stays quiet on a plain visit, and on a reason it does not recognise', () => {
+    renderSignIn();
+    expect(screen.getByRole('alert')).toHaveTextContent('');
+
+    cleanup();
+    searchParams.current = new URLSearchParams('sso=something-invented');
+    renderSignIn();
+    // Better an empty alert than a message assembled from an attacker's query
+    // string — the copy is ours, keyed by reason, never echoed from the URL.
+    expect(screen.getByRole('alert')).toHaveTextContent('');
   });
 });
 
