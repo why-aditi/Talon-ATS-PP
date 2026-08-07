@@ -16,7 +16,7 @@ import { afterAll, beforeAll, beforeEach, expect, it } from 'vitest';
 import type { AwilixContainer } from 'awilix';
 import postgres from 'postgres';
 import { buildApp } from '../src/app.js';
-import { loadConfig, type ApiConfig } from '../src/config.js';
+import { LOCAL_JWT_SECRET, loadConfig, type ApiConfig } from '../src/config.js';
 import { buildContainer } from '../src/container.js';
 import type { Cradle } from '../src/context.js';
 import { IdentityFailure, type AuthResult } from '../src/modules/identity/provider.js';
@@ -190,6 +190,26 @@ it('refuses to run against a real pool with the published local signing key', ()
       COGNITO_CLIENT_ID: 'client',
     }),
   ).toThrow(/TALON_JWT_SECRET/);
+
+  // The case the title actually claims: supplying the published constant
+  // explicitly must be refused too. A presence-only guard passes the assertion
+  // above while leaving every token forgeable, so this is the one that matters.
+  const cognitoEnv = {
+    API_DATABASE_URL: APP_URL,
+    TALON_IDENTITY_PROVIDER: 'cognito',
+    COGNITO_REGION: 'us-east-1',
+    COGNITO_USER_POOL_ID: 'us-east-1_x',
+    COGNITO_CLIENT_ID: 'client',
+  };
+  for (const secret of [LOCAL_JWT_SECRET, ' ', '\t\n']) {
+    expect(
+      () => loadConfig({ ...cognitoEnv, TALON_JWT_SECRET: secret }),
+      JSON.stringify(secret),
+    ).toThrow(/TALON_JWT_SECRET/);
+  }
+  // A real key is accepted, so the guard is not simply refusing everything.
+  expect(loadConfig({ ...cognitoEnv, TALON_JWT_SECRET: 'a-real-key' }).auth.secret).toBe('a-real-key');
+
   // Local development is unaffected: no AWS, no secret needed.
   expect(loadConfig({ API_DATABASE_URL: APP_URL }).auth.secret).toBeTruthy();
 });

@@ -209,6 +209,22 @@ export class CognitoStub {
   // ── operations ────────────────────────────────────────────────────────────
 
   #dispatch(target: string, body: Record<string, unknown>): Record<string, unknown> {
+    // Real Cognito rejects a request addressed at the wrong pool or client, so
+    // the stub must too. Without this, deleting `ClientId` from a command still
+    // passes every test here and fails only against AWS — which would make this
+    // stub a way to keep a broken adapter green rather than a way to test one.
+    if (body['UserPoolId'] !== undefined && body['UserPoolId'] !== this.userPoolId) {
+      throw awsError('ResourceNotFoundException', `no pool ${String(body['UserPoolId'])}`);
+    }
+    if (body['ClientId'] !== undefined && body['ClientId'] !== this.clientId) {
+      throw awsError('ResourceNotFoundException', `no client ${String(body['ClientId'])}`);
+    }
+    if (target.startsWith('Admin') && body['UserPoolId'] === undefined) {
+      throw awsError('InvalidParameterException', `${target} requires UserPoolId`);
+    }
+    if (target === 'AdminInitiateAuth' && body['ClientId'] === undefined) {
+      throw awsError('InvalidParameterException', 'AdminInitiateAuth requires ClientId');
+    }
     switch (target) {
       case 'AdminInitiateAuth':
         return this.#adminInitiateAuth(body);

@@ -242,6 +242,20 @@ it('a key server outage is a server error, not "your token is invalid"', async (
   await expect(verifier().verify(sign(primary, goodClaims()))).rejects.not.toBeInstanceOf(JwtError);
 });
 
+it('an outage stays a server error on the calls that follow it', async () => {
+  // The refetch floor is keyed on the last SUCCESSFUL load. Keyed on the last
+  // attempt instead, one 503 leaves the cache empty and every call for the next
+  // minute answers "no key for kid" — a 401 telling users to re-login, which
+  // cannot help. Once this verifier runs per-request (after the Lambda swap),
+  // that turns a brief key-server blip into a fleet-wide re-login storm.
+  respond = () => new Response('nope', { status: 503 });
+  const v = verifier();
+  const token = sign(primary, goodClaims());
+
+  await expect(v.verify(token)).rejects.not.toBeInstanceOf(JwtError);
+  await expect(v.verify(token)).rejects.not.toBeInstanceOf(JwtError);
+});
+
 it('a key set with no keys array is a server error too', async () => {
   respond = () =>
     new Response(JSON.stringify({ message: 'hello' }), {

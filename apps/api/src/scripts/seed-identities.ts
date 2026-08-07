@@ -75,7 +75,13 @@ async function main(): Promise<void> {
       }
       console.log(`  ${user.email.padEnd(22)} ${user.role.padEnd(15)} sub=${sub}`);
     }
-    console.log(`${users.length} identities provisioned, password: ${password}`);
+    // Echoed only when it is the published default. An operator-supplied
+    // password would otherwise land in a CI log — which is exactly when this
+    // script gets run with one.
+    console.log(
+      `${users.length} identities provisioned, password: ` +
+        (password === DEFAULT_PASSWORD ? password : 'as supplied in TALON_SEED_PASSWORD'),
+    );
   } finally {
     await sql.end();
     await container.cradle.sql.end();

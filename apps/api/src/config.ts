@@ -114,11 +114,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   // published in this repository, and anyone could forge one for any tenant and
   // any role. Requiring a real key wherever a real pool is configured costs one
   // environment variable.
-  if (!secretFromEnv && (env['NODE_ENV'] === 'production' || identity.provider === 'cognito')) {
+  // Value, not presence. A guard that only checks "is something set" is
+  // satisfied by an operator pasting the constant they found in this file or in
+  // an old .env — which is the exact outcome it exists to prevent, and it would
+  // read as configured. Whitespace is treated as unset for the same reason.
+  const realSecret = secretFromEnv?.trim() ? secretFromEnv : undefined;
+  const needsRealSecret = env['NODE_ENV'] === 'production' || identity.provider === 'cognito';
+  if (needsRealSecret && (!realSecret || realSecret === LOCAL_JWT_SECRET)) {
     throw new Error(
-      'TALON_JWT_SECRET must be set in production and whenever ' +
+      'TALON_JWT_SECRET must be set to a real value in production and whenever ' +
         'TALON_IDENTITY_PROVIDER=cognito. The built-in key is a published ' +
-        'local-development constant and is refused outside development and test.',
+        'local-development constant and is refused there, including when it is ' +
+        'supplied explicitly.',
     );
   }
   const poolMax = Number(env['API_DB_POOL_MAX'] ?? 10);
@@ -131,7 +138,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     poolMax,
     auth: {
       ...identity,
-      secret: secretFromEnv ?? LOCAL_JWT_SECRET,
+      secret: realSecret ?? LOCAL_JWT_SECRET,
       issuer: env['TALON_JWT_ISSUER'] ?? 'talon-local',
       audience: 'talon-api',
       refreshAudience: 'talon-refresh',

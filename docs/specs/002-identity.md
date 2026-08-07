@@ -51,7 +51,7 @@ The `is null` is load-bearing: a user reachable by both subjects is a user whose
 
 `TALON_IDENTITY_PROVIDER` selects the implementation; **local remains the default** so nothing changes for anyone without AWS. Cognito mode additionally requires `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID`, a region, and `TALON_JWT_SECRET`.
 
-That last one is a security fix, not a convenience: the secret guard previously only fired on `NODE_ENV=production`, so a staging deployment against a real pool would have signed every token with the constant published in this repo — forgeable for any tenant and any role. Boot now refuses `cognito` without a real key.
+That last one is a security fix, not a convenience: the secret guard previously only fired on `NODE_ENV=production`, so a staging deployment against a real pool would have signed every token with the constant published in this repo — forgeable for any tenant and any role. Boot now refuses `cognito` unless a **real** key is supplied — the published constant is rejected even when named explicitly, and whitespace counts as unset. A presence-only check would be satisfied by an operator pasting the value they found in `config.ts`, which is the exact outcome the guard exists to prevent.
 
 ## 7. Testing
 
@@ -70,7 +70,7 @@ This matters more than a convenience: if `LocalIdentityProvider` is ever removed
 1. **Clock skew.** Cognito measured 2s ahead of the dev machine, and the verifier had inherited the local rule of zero leeway on a future `iat` — correct for tokens we sign ourselves, wrong for a remote issuer. Leeway is now explicit and required, bounded at 60s.
 2. **A user provisioned in Cognito, signing in locally** (or the reverse) fails closed at sign-in with `user_not_provisioned`, rather than issuing a token that dies on the next request.
 3. **Throttling.** A sustained `TooManyRequestsException` currently surfaces as 500 where it should be 429 with `Retry-After`; `IdentityFailureCode` has no `rate_limited`, and the local provider cannot throttle at all. Known gap, pinned by a test.
-4. **JWKS key rotation** heals within 60s — an unknown `kid` is answered from cache first, a deliberate anti-amplification trade.
+4. **JWKS key rotation** heals within 60s — an unknown `kid` is answered from cache first, a deliberate anti-amplification trade. The refetch floor is keyed on the last **successful** load, not the last attempt: keyed on attempts, a single key-server outage would leave the cache empty and answer `bad_signature` for a minute, turning a 500 into a fleet of 401s telling users to re-login. That matters most after the Lambda swap, when this verifier runs on every request.
 5. **`AWS_ENDPOINT_URL`** in `.env.example` is LocalStack's, and it is the SDK's *global* override — exported alongside Cognito it points sign-in at LocalStack and the failure reads as bad credentials. The real fix is service-scoped `AWS_ENDPOINT_URL_S3` / `_SQS`.
 
 ## 10. Open questions

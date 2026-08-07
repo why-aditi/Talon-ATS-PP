@@ -79,7 +79,7 @@ export class JwksVerifier {
   readonly #fetch: typeof globalThis.fetch;
   readonly #now: () => number;
   #keys = new Map<string, KeyObject>();
-  #lastFetchedAt = 0;
+  #lastLoadedAt = 0;
 
   constructor(options: JwksVerifierOptions) {
     this.#options = options;
@@ -146,8 +146,14 @@ export class JwksVerifier {
   async #keyFor(kid: string): Promise<KeyObject> {
     const cached = this.#keys.get(kid);
     if (cached) return cached;
-    const sinceLast = Date.now() - this.#lastFetchedAt;
-    if (this.#lastFetchedAt !== 0 && sinceLast < REFETCH_FLOOR_MS) {
+    // The floor is keyed on the last *successful* load. Throttling on attempts
+    // instead would turn one key-server outage into a minute of `bad_signature`
+    // — a 401 telling users to re-login, which cannot help — because a failed
+    // refresh leaves the cache empty and every following call takes this branch.
+    // "We have never loaded keys" and "this kid is not published" are different
+    // answers and must not collapse into the same one.
+    const sinceLast = Date.now() - this.#lastLoadedAt;
+    if (this.#lastLoadedAt !== 0 && sinceLast < REFETCH_FLOOR_MS) {
       throw new JwtError('bad_signature', `no key for kid ${kid}`);
     }
     await this.#refresh();
@@ -157,7 +163,7 @@ export class JwksVerifier {
   }
 
   async #refresh(): Promise<void> {
-    this.#lastFetchedAt = Date.now();
+
     const response = await this.#fetch(this.#options.jwksUri, {
       headers: { accept: 'application/json' },
     });
@@ -187,6 +193,10 @@ export class JwksVerifier {
       );
     }
     this.#keys = next;
+    // Last thing, and only on success: every early return above is a throw, so
+    // reaching here means we hold keys. A failed fetch leaves the previous value
+    // untouched and the next call is allowed to retry immediately.
+    this.#lastLoadedAt = Date.now();
   }
 }
 
