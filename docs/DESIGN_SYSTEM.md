@@ -18,11 +18,18 @@ The one place to spend boldness is the **stage-hue system**: each pipeline stage
 
 ```
 design-tokens.json
-  → style-dictionary build
-      → packages/tokens/dist/tokens.css   (CSS custom properties, :root + [data-theme])
-      → packages/tokens/dist/theme.ts     (Tailwind v4 @theme block)
-      → packages/tokens/dist/tokens.d.ts  (typed keys for JS consumers)
+  → packages/tokens/build.mjs
+      → packages/tokens/dist/tokens.css        (Tailwind v4 @theme block; emits :root
+                                                custom properties and the utilities)
+      → packages/tokens/src/tokens.generated.ts (typed keys for JS consumers, committed)
 ```
+
+**Amended 2026-08-07 (spec 001 step 5).** This originally specified style-dictionary emitting three files. It is a ~140-line script emitting two, because SD would have needed custom transforms for the composite `typography.scale` entries, the `{ref}` syntax and the `layout`/`motion` groups — more configuration than the script is code. Revisit if a second platform ever needs the same tokens; that is what SD actually buys. The CSS and the TS map are one file each because Tailwind's `@theme` already emits the custom properties, so a separate `tokens.css` would be the same content twice.
+
+Two consequences worth knowing:
+
+- The block is `@theme static`. Without `static`, Tailwind emits only the variables some utility references, and tokens reached through inline `var()` — the avatar fills, picked by a hash at runtime — vanish from the output.
+- It opens by clearing Tailwind's own scales (`--color-*: initial`, `--spacing-*: initial`, and so on). `bg-slate-500` and `text-sm` therefore do not compile at all, which is a stronger guarantee than a lint rule. The cost is that a utility naming a value we don't ship (`top-1.5`) silently produces no declaration rather than an error — `apps/web/src/test/token-usage.test.ts` is the guard for that.
 
 Rules:
 - Components consume **semantic** tokens only. A component referencing `--color-indigo-600` instead of `--color-action-primary-bg` fails lint (`stylelint-declaration-strict-value` with a token allow-list).

@@ -1,5 +1,12 @@
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": { "outDir": "dist", "rootDir": "src" },
+  "compilerOptions": {
+    // Consumed only by bundlers (apps/web via transpilePackages) and vitest, never
+    // by node directly — so the source imports stay extensionless.
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "declaration": false
+  },
   "include": ["src"]
 }

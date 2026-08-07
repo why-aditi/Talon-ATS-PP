@@ -256,6 +256,230 @@ Per DESIGN_SYSTEM §4. AppShell (sidebar with live counts, topbar), department g
 3. Keyboard navigable; `axe` clean.
 4. All five states reachable in Storybook or via fixtures.
 
+### 7.4 As built (2026-08-07)
+
+**Acceptance 3 and 4 met. Acceptance 1 is partial. Acceptance 2 is not met.**
+
+*Acceptance 1 is partial by definition, not by omission.* The screen renders from MSW
+fixtures derived from `packages/db/src/seed.ts`, and every column diffs to within ~1px
+of `02-jobs-list@2x.png`. But §1 says the jobs list is the M0a deliverable because it
+exercises **tokens → components → API → repository → RLS → seed**, and it currently
+exercises the first two and a hand-transcribed copy of the last. Acceptance 1 completes
+at step-4 integration, not here.
+
+**Follow-up that converts the prediction into a contract** (must survive this merge):
+when `GET /v1/jobs` has a handler, assert the live endpoint returns exactly the six-row
+table below for the seeded tenant — req code, status, recruiter, `inProcessCount`,
+`activeCount`, and full `stageDistribution`. Until that test exists, fixture-to-seed
+agreement is a transcription that nothing rechecks. **Owner: api + test.**
+
+| req | distribution (applied/screen/onsite/offer/hired/rejected) | inProcess | active |
+|---|---|---|---|
+| ENG-204 | 4/2/1/1/1/0 | 8 | 9 |
+| ENG-209 | 4/3/1/0/0/13 | 8 | 21 |
+| ENG-198 | 2/1/0/0/0/9 | 3 | 12 |
+| DES-114 | 8/8/4/0/0/34 | 20 | 54 |
+| PPL-031 | 8/8/3/0/0/48 | 19 | 67 |
+| SAL-076 | 3/2/1/0/0/3 | 6 | 9 |
+
+#### Open questions this answers
+
+- **6 — does the job row render a comp band?** No. DESIGN_SYSTEM §JobRow specifies the
+  grid exactly and it has no band cell, so the row renders none. The contract still
+  ships `comp`, and the UI consumes the tagged union only to prove the Forbidden state
+  at the wire. Consequence: **permission-denied has no visual manifestation on this
+  screen** — it is asserted in `fetchJobs`, not in the DOM, because asserting it in the
+  DOM would mean testing nothing.
+- **7 — where do the sidebar counts come from?** Unresolved, and confirmed to need a
+  separate endpoint: they are tenant-wide and cannot ride `{ data, nextCursor }`. Jobs
+  is derived from the page; Pipeline, Review inbox, Scheduling and Offers are constants
+  marked `ponytail:` in `mocks/fixtures.ts`. Pipeline is *not* derived — it counts one
+  board's cards, which means choosing a job arbitrarily.
+- **8 — row height 52 or 55?** 55, from `layout.rowHeight` and §7.3. DESIGN_SYSTEM
+  §JobRow's 52 is stale and should be corrected there.
+
+#### `activeCount` — the two streams disagree
+
+`packages/contracts` documents `activeCount` as "applications not rejected or
+withdrawn; includes hired". The seed and the reference screen both mean **total
+applications ever received**. The two coincide only for ENG-204 (nothing rejected);
+everywhere else the contract's reading collapses `activeCount` onto `inProcessCount` —
+ENG-209 would read 8 active / 8 in process where the screen reads 21 / 8 — which makes
+the column redundant and contradicts the picture. Fixtures follow the screen and the
+seed. **The API must not implement the docstring as written. Owner: api.**
+
+Correcting the docstring is not enough — the *name* is what will be re-broken.
+`activeCount` reads as "currently active", and the value is "every application
+ever received, rejected ones included". Recommend renaming the field to
+`totalApplications` when the handler lands; the review of this branch reached the
+same conclusion independently. `apps/web` follows whatever the contract declares.
+
+#### Typography — acceptance 2, open
+
+The §2.1 pass was run by scanning the 2880px original for ink extents and deriving
+sizes from cap/ascender heights. It contradicts §2.1's own premise:
+
+| token | current | measured | ratio |
+|---|---|---|---|
+| pageTitle | 26px | ~19px | 0.73 |
+| cardTitle | 15px | ~12px | 0.80 |
+| body | 14px | ~12.3px | 0.88 |
+| meta | 13px | ~11px | 0.85 |
+| caption | 12px | ~11px | 0.92 |
+| code | 12px | ~11px | 0.92 |
+| eyebrow | 11px | ~11px | 1.00 |
+
+The ratios climb monotonically as size falls: the ramp is stretched at the top and
+correct at the bottom. §2.1 says "if `pageTitle` is off, it's off everywhere by the
+same amount" — the reference says otherwise, so no single factor fixes it. Reshaping
+the ratios affects all nine screens. Width-derived sizes land ~8% below height-derived
+ones, which says the display face is narrower than Inter and must be settled first
+(§2.1's letterform comparison against `01-sign-in@2x.png`). Nothing was applied;
+`_meta.confidence.typography` stays `LOW`. **Owner: design.**
+
+#### Token findings
+
+Six measured pairs fall below AA, each pinned with its exact ratio in
+`packages/tokens/test/contrast.test.ts` so drift still fails: `text.tertiary` 3.52 on
+surface / 3.20 on canvas, `text.placeholder` 2.53, `text.secondary` on
+`action.ghostBgHover` 4.40, `avatar.2` 4.40 and `avatar.6` 4.18 under white initials.
+Values are measured and were left unchanged. **DESIGN_SYSTEM §5's claim that every
+semantic bg/text pair clears 4.5:1 is false as written and should be corrected.**
+Separately, the §3 pill padding of `2px 8px` has no vertical token — the space scale
+steps 1px → 4px.
+
+#### Deltas against the reference screen
+
+1. ENG-204 reads 8 in process / 9 active, not 18 / 38 — open question 5, already closed.
+2. Reference bars show an Offer segment on jobs the seed gives no offers to; bulk
+   applications only reach Applied/Screen/Onsite, so those bars have three segments.
+3. Avatar hues match only because fixture user ids are pinned to hash onto them. With
+   real uuidv7 ids they will differ — the hash is on id by design (§3). The contract's
+   `recruiter.avatarColor` is deliberately ignored: `packages/db` stores raw hex outside
+   the `avatar.1–8` ramp. **Owner: schema.**
+4. **The header "+ New job" button is absent**, where the screen shows it. It is
+   deferred with the wizard rather than rendered inert, so the empty state has no
+   action either — §7.3's "primary action" returns when `/jobs/new` exists. The sidebar
+   link is the single navigating path.
+5. The reference badges the Review-inbox count in `bg.selected`/`text.link` while its
+   row is inactive; §3 reserves that for the active row. Built to the doc.
+6. Req code and location render as one monospace line per the screen; §4 describes it
+   as `code`/`meta`. Built to the screen.
+7. Row hover raises the background only; §4 also calls for `border.strong`, but rows sit
+   inside one bordered card per department and have no border of their own.
+8. The screen contradicts itself on Maya's avatar — amber in the rows, green in the
+   sidebar user block, same person. Both render amber, per the hash-on-id rule.
+
+#### Two silent-failure classes found while building
+
+- **Tailwind drops `@theme` variables no utility references.** That erased every avatar
+  fill (they are reached through inline `var()`) until the block became `@theme static`.
+  Because the generated theme also clears Tailwind's own scales, a utility naming a
+  value we do not ship — `top-1.5`, `px-1.5` — produces *no declaration* rather than an
+  error: an invisible active-nav marker and an unpadded ⌘K chip.
+  `apps/web/src/test/token-usage.test.ts` now fails on both classes, including
+  arbitrary values (`w-[130px]`) that the first version of the guard could not see.
+  Measured constants live in `layout.jobRow` and are referenced as `var(--layout-*)`.
+- **`axe.run` never returns on a ~220-node tree under jsdom** unless
+  `resultTypes: ['violations']` is set. Every rule still runs against every node; axe
+  simply stops assembling full detail for passing checks, each node of which costs a
+  `getComputedStyle`. Coverage is unchanged; the gate went from hanging to 0.4s.
+
+#### Deferred, each marked `ponytail:` in the source
+
+Job rows are not links (no detail screen). Topbar search, the notification bell and
+sign-out are presentational — a control that takes focus and does nothing is a keyboard
+dead end. Sidebar counts are constants. The MSW worker starts unconditionally because
+there is no API yet. `nextCursor` is ignored and there is no load-more, so "N open" is
+counted client-side over one page and is wrong past `limit=50`. There is no department
+filter control — filtering works via URL only, so §10's E2E "filter by department" step
+cannot be walked yet. The no-raw-hex ESLint rule is scoped to `apps/web`; widening it
+fails today on `users.avatarColor`.
+
+## 7b. Sign-in screen (added 2026-08-07)
+
+**Scope addition.** §2 lists "AppShell; jobs list screen" and not the sign-in screen;
+§6 built the auth chain with no UI in front of it. Built against PRD §5.1 and
+`docs/reference/01-sign-in@2x.png`, using the step-4 contracts directly — no
+provisional mirror.
+
+### 7b.1 Session handling
+
+Access token in memory (React state), refresh token in an **httpOnly cookie**.
+
+The API returns both tokens in the JSON body and sets no cookie, and a cookie set
+from the browser cannot be httpOnly — it would be readable by any injected script,
+which is the same exposure as the localStorage it replaced. So `apps/web` owns three
+Route Handlers that proxy the auth endpoints server-side: `POST /api/auth/sign-in`,
+`/api/auth/refresh` and `/api/auth/sign-out`. They read the upstream body, keep the
+refresh token, and return only the access token and the user to the browser. The
+cookie is `httpOnly`, `SameSite=Lax`, `Secure` outside development, scoped to
+`/api/auth`, with a 30-day sliding window rewritten on every exchange.
+
+**This is a BFF layer, which ARCHITECTURE does not currently describe.** It exists
+because the alternatives were: tokens in JS-readable storage (rejected), or an API
+change to set the cookie itself (owner: api — the cleaner long-term answer, and the
+one to take if a second client ever appears). Recorded for ARCHITECTURE §3.
+
+### 7b.2 States
+
+Six, not five. `identity/service.ts` emits `MFA_REQUIRED` and `MFA_NOT_ENROLLED`
+from the sign-in path, and TOTP is out of scope — rendering either as "invalid
+credentials" would send the user round a loop that cannot end, so both get their own
+message naming what has to happen instead. Every branch keys off the RFC 9457 `type`,
+never the status: `INVALID_CREDENTIALS`, `USER_NOT_PROVISIONED`, `MFA_REQUIRED`,
+`MFA_NOT_ENROLLED`, `VALIDATION_FAILED`, and a client-side network failure that is
+deliberately distinct from all of them.
+
+### 7b.3 Disabled, not absent and not inert
+
+Google, SAML SSO and "Forgot?" render `disabled`. Disabled keeps them out of the tab
+order, so the keyboard path has no dead stop, while the screen keeps the shape the
+reference shows — and it satisfies the "one path per action" rule by not offering a
+second, broken one. A line beneath reads "Single sign-on isn't available yet. Use
+your email and password." — deliberately not "available once configured", which
+implies a setting an admin could turn on when there is no OAuth client, no SAML and
+no config surface to turn on. §6 asks copy to name the real blocker and the next
+move; the first version named neither. "Forgot?"
+is a `<button disabled>` rather than a link, because a link cannot be disabled and
+would stay tabbable.
+
+### 7b.4 Measured corrections
+
+`controlHeight.lg` was **40px, marked estimated**. Scanning `01-sign-in@2x.png`
+gives inputs at 35px and the Sign in CTA at 37px, so the token is now **36px** and
+`Button` gained a `size` prop — the sign-in CTA was rendering at `md` (34) while its
+own inputs were at 40, i.e. inverted against the reference. Field-to-field spacing
+was 80px against the reference's 70 and is now 72.
+
+New `layout.signIn` tokens: `heroWidth` 747, `heroCardWidth` 324, `formWidth` 369.
+
+### 7b.5 Deltas against the reference
+
+1. The two SSO buttons render in `action.disabledBg`/`disabledText` where the screen
+   shows them white with a border. That is the cost of disabling them, and it is the
+   right trade against a focusable control that does nothing.
+2. The hero omits the reference's soft colour blooms; it ships the gradient and the
+   dot field. Decoration, not signal.
+3. The Google mark is monochrome. A full-colour glyph needs brand hex values that
+   cannot be semantic tokens, and colour on a disabled control reads as enabled.
+4. Ana Petrova's avatar id is pinned so the hash lands on the reference's violet —
+   same accepted delta as the recruiter avatars (§7.4 delta 3).
+
+### 7b.6 Not built
+
+No route guard. `/(app)` renders without a session, and `/` still redirects to
+`/jobs`, because the jobs list has no live endpoint to be authorised against
+(`GET /v1/jobs` does not exist at any layer — only `/v1/jobs/:id`). The guard lands
+with the list endpoint.
+
+**No seeded credentials.** `local_identities` carries a `password_hash` column and
+`packages/db/src/seed.ts` never inserts a row, so no account can actually sign in
+against a running API. End-to-end sign-in cannot be demonstrated until the seed
+provisions one. **Owner: schema.**
+
+TOTP enrollment, SSO domain discovery, password reset and sign-up are M1.
+
 ## 8. Events
 
 `JobCreated`, `JobStatusChanged`, `ApplicationCreated`, `ApplicationAdvanced`. Written to an `outbox` table in the same transaction as the state change. **No consumers in M0a** — the relay and EventBridge publishing are spec 002. The point is that the write path is correct from the first commit, so later consumers get a complete history rather than one starting mid-project.
