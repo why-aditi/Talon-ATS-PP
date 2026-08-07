@@ -157,6 +157,12 @@ interface IdentityProvider {
 
 Two implementations: `LocalIdentityProvider` (dev/test — signs JWTs with a local key, stores password hashes in a `local_identities` table) and `CognitoIdentityProvider` (spec 002). **Nothing outside `modules/identity/` imports either concrete class.**
 
+Step-4 notes on the interface as built:
+- A **sixth method, `refreshSession(refreshToken)`**, was added. Open question 2 answered "30d refresh, sliding", and a refresh token nothing can redeem is worse than none; the exchange has to sit behind the same seam as the issue. Cognito implements it natively (`REFRESH_TOKEN_AUTH`).
+- `initiatePasswordAuth` returns a discriminated `AuthResult`, `authenticated` or `mfa_required`, mirroring Cognito's challenge flow. M0a has no screen for the challenge, so a user with `mfa_enabled` gets a 401 `urn:talon:error:mfa-required` — fail closed rather than inventing an unspecced exchange.
+- `CreateUserInput` carries an optional `sub` for the local provider only. `users` has **no `external_id` column**, so locally the token subject IS `users.id` and an already-provisioned person hands their id in. Cognito allocates the sub itself, so **spec 002 needs a `users.external_id` migration** before the swap is real. Flagged, not fixed here — step 4 was scoped to one migration.
+- The concrete class is named in exactly one file (`modules/identity/container.ts`), and `no-restricted-imports` now bans every module-internal path outside its own folder, so the lint graph backs the rule rather than the convention.
+
 ### 6.2 Claim shape — identical in both implementations
 
 ```json
@@ -174,6 +180,12 @@ Two implementations: `LocalIdentityProvider` (dev/test — signs JWTs with a loc
 
 `SET LOCAL`, never `SET` — see §5.4 acceptance 3.
 
+Step-4 notes on the chain as built:
+- A **fourth hook** was needed: `finishTenantTransaction` on `onSend`, which commits below 400 and rolls back at or above it. `onSend` runs after the error handler has turned a thrown handler into a response, so one hook covers both the ordinary and the exploded path. `openTenantTransaction` also registers a `close` listener on the raw reply as a safety net for a client that disappears mid-handler — Fastify may never run `onSend` for a dead socket, and an unreleased reserved connection is a pool leak.
+- `tokens_valid_after` is enforced in `resolveTenant`, not `authenticate`: it needs the `users` row, which is `resolveTenant`'s job to load. Both reject with 401 before any handler runs, so nothing observable changes. `iat` has second resolution and the comparison is strict, so a cut-off with a sub-second component also invalidates a token issued during that same second — fail closed, and self-healing at the next sign-in.
+- The chain treats the **database as authoritative** for role: a role changed since the token was issued takes effect now. A `tenant_id` claim that disagrees with the `users` row is refused outright (401 `invalid-token`) rather than reconciled.
+- The transaction opener refuses to run on a connection whose role has `rolsuper` or `rolbypassrls`, checked once per pool. Running the api as the owner is the §11b failure mode that leaves every policy in place and inert.
+
 ### 6.4 Permissions
 
 Roles: `admin`, `recruiter`, `hiring_manager`, `member`. Scopes are checked in `service.ts`, never in components. `comp:read` is a distinct scope held by admin, recruiter, hiring manager, and approvers — not by members. Enforced at the API layer: comp fields are stripped from serialization when the scope is absent, so a hand-crafted request can't retrieve them.
@@ -183,6 +195,8 @@ Roles: `admin`, `recruiter`, `hiring_manager`, `member`. Scopes are checked in `
 2. Authenticated as tenant B against tenant A's job id → **404, not 403** (a 403 confirms the resource exists, which is itself a leak).
 3. RLS blocks the same request even with the application check stubbed out — belt and braces, tested independently.
 4. A `member` requesting a job with band data receives the job with **no `band` key at all** — no error, no empty state. A holder of `comp:read` receives `band: { minCents, maxCents, currency }`, and jobs with no band set also omit the key. The strip happens because the route declares `response: { 200: ListJobsResponseSchema }`; a route that omits the response schema is not comp-gated, whatever the service returns.
+
+Step-4 note: acceptances 2 and 4 need a route that returns tenant-scoped data, and none existed. `GET /v1/jobs/:id` landed here, returning the existing `JobSchema` (single-job aggregate; no new response shape invented). The list endpoint with its filters and cursor is still step 5. The strip happens in `service.ts` — the route additionally parses the response through `JobSchema`, which is equivalent to declaring `response: { 200: … }` and needs no type-provider dependency.
 
 `band` is a **single nested optional**, not three loose fields — presence is atomic, so a band can never arrive missing its currency. It deliberately does not distinguish "you may not see this" from "there is nothing to see": §7.3 renders both identically (row without band data), so a discriminator would be a distinction no consumer acts on. If a screen ever needs to tell them apart, that is a contract change with a reason behind it.
 
@@ -258,7 +272,7 @@ Per DESIGN_SYSTEM §4. AppShell (sidebar with live counts, topbar), department g
 | Unit | Permission scope resolution, cursor encode/decode, distribution aggregation, seed date arithmetic |
 | Integration (Testcontainers) | RLS policies, pooled-connection isolation, migration up/down, repository queries, outbox writes in-transaction |
 | Boundary | The three lint failures + the route-manifest test from §4.5 |
-| Isolation | Step 3: every tenant-scoped table as a hostile tenant → empty (`pnpm test:isolation`). Step 5 extends the same script to every route → 404 |
+| Isolation | Step 3: every tenant-scoped table as a hostile tenant → empty (packages/db, runs under `pnpm test`). **Step 4 (not step 5) moved `pnpm test:isolation` to the endpoint suite** in `apps/api`, per CLAUDE.md §6 ("runs every endpoint as a hostile tenant — must be 404 across the board"): a protected route with no hostile-tenant case fails the gate rather than being skipped |
 | Contract | OpenAPI generated matches committed snapshot |
 | E2E (Playwright) | Sign in with the local provider → jobs list renders seeded jobs → filter by status → filter by department → empty-filter state → sign out |
 | a11y | `axe` on the jobs list, zero violations |
@@ -269,7 +283,7 @@ CI gates, all blocking, each wired in the step that first has something for it t
 |---|---|
 | `lint`, `typecheck`, `test` | Step 1 |
 | `test:routes` | Step 2 |
-| `test:isolation` | Step 3 (tables); extended to routes in step 5 |
+| `test:isolation` | Step 3 (tables, under `pnpm test`); the gate itself points at the endpoint suite from step 4 |
 | `e2e`, contrast check | Step 5 — nothing to drive until the jobs list exists |
 
 A gate is not "declared blocking" before its step: the script exists and the workflow runs it, or the row above says which step it arrives in. A named-but-missing gate cannot be a required status check, and its absence is silent.
@@ -290,6 +304,16 @@ A gate is not "declared blocking" before its step: the script exists and the wor
 ## 11b. Carried to step 4
 
 1. **`tenants` slug→tenant resolution at sign-in runs before any tenant context exists.** The app role can only see its own tenant row under RLS, so the lookup must be a narrow owner-connection query or a `security definer` function scoped to that one resolution. Running the request chain on the owner connection would nullify RLS for the whole request — this is a decision to make deliberately in step 4, not an accident to discover. (Reviewer finding 9 on the step-3 PR.)
+
+**Answered 2026-08-07 (step 4): two `security definer` functions, not a bootstrap connection.** Migration `0003_local_identities` adds `auth_user_by_email(citext)` and `auth_user_by_sub(uuid)`, each `stable`, `security definer`, `set search_path = pg_catalog, public`, `execute` revoked from `public` and granted only to `talon_app`.
+
+Why a function: a connection is granted a *table*, so it can read every column of every row for as long as it is held and nothing in the codebase constrains what runs over it. A function is granted a *result* — one row, by exact key, with a fixed column list containing no password material. It also cannot be left open, which a second connection has to be policed for. `apps/api/test/bootstrap.test.ts` is the narrowness evidence: as the app role, ordinary reads of `users`/`tenants`/`jobs` return nothing, the function returns exactly the eight columns sign-in needs, a wildcard argument matches nothing, and those two are the only `prosecdef` functions in the schema with a pinned `search_path`.
+
+Two consequences recorded rather than hidden:
+- The **slug lookup is not needed in M0a**. Open question 1 made email globally unique, so sign-in resolves the tenant from the `users` row; a tenant-by-slug entry point would be a second bootstrap surface with no caller.
+- The function owner must be able to bypass RLS. Locally and in CI that is the superuser that runs migrations. Under `force row level security` a non-bypassing owner makes these return zero rows — every sign-in fails closed with "invalid credentials" — so **the Aurora migration role in spec 002 must carry `BYPASSRLS`**, and that is a spec 002 prerequisite, not an implementation detail.
+
+Belt and braces on the other side: `beginTenantTransaction` refuses to open a transaction on a connection whose role is `rolsuper` or `rolbypassrls`, so the api cannot be pointed at the owner connection by configuration accident.
 
 ## 12. Definition of done
 
