@@ -7,6 +7,7 @@ Companion to `PRD.md`. Covers stack, data model, the three hard subsystems, AWS 
 ## 1. Constraints that shape everything
 
 1. **Multi-tenant SaaS with hard isolation.** A leak is existential, so tenancy is enforced at two real layers: the application (repositories scope every query) and Postgres RLS as the backstop that catches the query someone forgot to scope. Drizzle enforces nothing on its own — it is a typed query builder, not a guard, and treating it as a third layer would be a false sense of depth.
+1. **Multi-tenant SaaS with hard isolation.** A leak is existential, so tenancy is enforced at two real layers: the application (repositories scope every query) and Postgres RLS as the backstop that catches the query someone forgot to scope. Drizzle enforces nothing on its own — it is a typed query builder, not a guard, and treating it as a third layer would be a false sense of depth.
 2. **Read-heavy, burst-write.** Board views and reports dominate. Writes cluster around business hours and bulk imports.
 3. **Small team, real scale requirements.** A microservice-per-domain split would cost more in operational surface than it buys. **Modular monolith + async workers** is the right shape until a single module demonstrably needs independent scaling.
 4. **Third-party latency is unavoidable.** Google/Microsoft calendar and email APIs are slow and rate-limited. Anything touching them is async, cached, and retried.

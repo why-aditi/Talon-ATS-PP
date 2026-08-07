@@ -4,9 +4,19 @@ A multi-tenant applicant tracking system, built from nine reference screens. Ful
 
 ## The docs
 
+**Repo layout**
+
+```
+CLAUDE.md          ← repo root, read first
+docs/
+  README.md        ← you are here
+  PRD.md  ARCHITECTURE.md  DESIGN_SYSTEM.md  design-tokens.json
+  reference/       ← the nine screens at 2x
+```
+
 | File | What it answers | Read it when |
 |---|---|---|
-| **[CLAUDE.md](./CLAUDE.md)** | How we work, non-negotiables, repo layout, sub-agents, commands | First. Goes at the repo root, not in `docs/` |
+| **[CLAUDE.md](../CLAUDE.md)** | How we work, non-negotiables, repo layout, sub-agents, commands | First. Lives at the repo root (one level up) so Claude Code picks it up automatically |
 | **[PRD.md](./PRD.md)** | What we're building and why — scope per screen, acceptance criteria, permissions, milestones, risks | Before planning any feature |
 | **[ARCHITECTURE.md](./ARCHITECTURE.md)** | Stack and rationale, module boundaries, full data model, the three hard subsystems, AWS topology, testing | Before writing code or infra |
 | **[design-tokens.json](./design-tokens.json)** | Every color, type ramp, spacing, radius, shadow, motion value | Building any UI |
@@ -41,13 +51,13 @@ Reference screens live in `docs/reference/` as `NN-name@2x.png`, extracted lossl
 | Decision | Choice | Why |
 |---|---|---|
 | Auth provider | **Cognito** | The only option that lives inside the Terraform stack, so `terraform apply` yields a system you can log into. Behind an `IdentityProvider` interface — write against the interface, not the SDK |
-| IaC tool | **Terraform** | Root module per environment, S3 + DynamoDB state, separate AWS accounts. Layout in ARCHITECTURE §9.5, known rough edges in §9.6 |
+| IaC tool | **Terraform** | **One** AWS account, environments separated by name prefix and tag. Root module per env, S3 + DynamoDB state. Layout in ARCHITECTURE §9.5, cost profiles in §9.6, rough edges in §9.7 |
 
 Rejected alternatives and the reasoning are in ARCHITECTURE §2 so nobody reopens them by accident.
 
 **The one hazard that follows from Cognito + Terraform:** pool schema attributes are immutable, and a schema diff force-replaces the pool, destroying every user. Tenancy and roles therefore live in the `users` table keyed by `sub`, with claims injected by a pre-token-generation Lambda — never as Cognito custom attributes. See ARCHITECTURE §9.4.
 
-## The four expensive areas
+## The five expensive areas
 
 Bugs here cost more than bugs elsewhere. Any change touching them gets extra scrutiny and its own tests:
 
@@ -55,6 +65,7 @@ Bugs here cost more than bugs elsewhere. Any change touching them gets extra scr
 2. **Comp visibility** — scope-gated at the API layer; hiding a field in the UI is not access control
 3. **Scorecard blindness** — enforced in the query, not the component
 4. **Calendar writes** — failure mode is "no slot offered," never "double-booked"
+5. **Candidate file handling** — resumes are attacker-controlled files opened by your recruiters. Scan on ingest, serve as attachment from a separate origin, never render inline (ARCHITECTURE §9.10)
 
 ## Working loop
 

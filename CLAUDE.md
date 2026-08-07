@@ -39,6 +39,7 @@ Before planning, list what will go wrong. Actively hunt for:
 - Edge cases (empty, one, many, concurrent, offline, timezone, permission-denied)
 - Places the existing code already conflicts with the new requirement
 - Anything that touches tenancy, comp visibility, scorecard blindness, calendar writes, or candidate file handling — these are the five areas where a bug is expensive
+- Anything that touches tenancy, comp visibility, scorecard blindness, calendar writes, or candidate file handling — these are the five areas where a bug is expensive
 - Work that's larger than it looks, and work that's smaller than it looks
 
 State these plainly. "I found no problems" is almost always wrong on a first pass.
@@ -132,7 +133,10 @@ These are the rules that, if broken, mean the change gets reverted rather than p
 17. **Candidate files are never rendered inline.** Resumes are attacker-controlled. Presigned GET with `ResponseContentDisposition=attachment`, served from a separate subdomain, scanned before they leave quarantine. An inline-rendered HTML or SVG resume runs script in a recruiter's session with access to every candidate in the tenant. ARCHITECTURE §9.10.
 18. **A rank-only update never bumps `version`.** Reordering within a column and moving between stages are separate repository writes. Bumping `version` on a reorder produces 409s on unrelated stage moves — flaky board behavior that looks like a race and isn't. ARCHITECTURE §6.1.
 19. **Every outbox consumer is idempotent.** Delivery is at-least-once, keyed on `outbox.id`. A consumer that can't handle a duplicate is a bug, not a tuning problem.
-20. **Terraform plans are reviewed, not skimmed.** A plan touching `aws_cognito_user_pool`, `aws_rds_cluster`, KMS keys, or state buckets stops and gets a human. Replacement of a stateful resource is never routine.
+20. **Candidate files are never rendered inline.** Resumes are attacker-controlled. Presigned GET with `ResponseContentDisposition=attachment`, served from a separate subdomain, scanned before they leave quarantine. An inline-rendered HTML or SVG resume runs script in a recruiter's session with access to every candidate in the tenant. ARCHITECTURE §9.10.
+15. **A rank-only update never bumps `version`.** Reordering within a column and moving between stages are separate repository writes. Bumping `version` on a reorder produces 409s on unrelated stage moves — flaky board behavior that looks like a race and isn't. ARCHITECTURE §6.1.
+16. **Every outbox consumer is idempotent.** Delivery is at-least-once, keyed on `outbox.id`. A consumer that can't handle a duplicate is a bug, not a tuning problem.
+17. **Terraform plans are reviewed, not skimmed.** A plan touching `aws_cognito_user_pool`, `aws_rds_cluster`, KMS keys, or state buckets stops and gets a human. Replacement of a stateful resource is never routine.
 
 ## 5. Sub-agents
 
