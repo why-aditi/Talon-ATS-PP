@@ -228,6 +228,14 @@ Contract notes (landed ahead of the handler so the api and ui streams build agai
 
 One query, not N+1: distribution comes from a single grouped aggregate joined to the job list, not a per-job count.
 
+Step-5 notes on the endpoint as built:
+- **`activeCount` is every application on the job, terminal ones included** — the reference screen's "N active" cell. It was briefly documented in the contract as "not rejected or withdrawn"; that is wrong, and ENG-209 is the proof (8 in process, 21 active, and 21 is only reachable by counting the 13 rejections). `GET /v1/jobs/:id` shipped in step 4 with the narrower `status in ('active','hired')` reading, which happened to be right for ENG-204 and wrong for every other job; both routes now go through one repository query, so the two cannot disagree again.
+- **Ordering is `(dept_key, id)`, where `dept_key = first_value(id) over (partition by department order by id)`** — departments in the order their first job was opened, jobs within a department in creation order. That is exactly the order 02-jobs-list draws (Engineering, Design, People, Sales; ENG-204, ENG-209, ENG-198), it is neither alphabetical nor by group size, and ids are UUIDv7 (§5.2) so ascending id *is* creation order. The pair is a **total** order because ids are unique, which is what makes the keyset cursor safe: a sort key that tied across rows would skip or duplicate jobs across pages. `first_value`, not `min`: PostgreSQL 16 has no `min(uuid)` aggregate. Known wrinkle: deleting a department's *first* job shifts that department's `dept_key`, so a cursor issued before the delete can re-emit rows of that one department. Every other deletion, including the anchor row itself, resumes correctly (§9 edge case 6) because the cursor carries the two key **values**, not a row reference.
+- The cursor is base64url of `dept_key:id` and nothing else — no tenant, no filter state. Re-encoding the filters would let a client change them by editing a cursor. One that does not decode to two UUIDs is a 400 `urn:talon:error:validation-failed`.
+- Optional filters are written `$n is null or col = $n` rather than composed SQL fragments. The window function has to see every matching row regardless, so there is no index plan to lose, and the query stays one readable literal instead of a string built at runtime.
+- A job with no applications survives on a `left join` to the aggregate plus a zeroed base record; an inner join would drop the row entirely rather than render it at zero (§9 edge case 4).
+- The isolation suite gained a shape for **collection** endpoints: a list names no resource to be wrong about, so the hostile-tenant answer is 200 over the attacker's own rows, asserted as "contains ACM-001 and only ACM-001". A route declares that expectation explicitly; the default stays 404.
+
 ### 7.3 UI
 
 Per DESIGN_SYSTEM §4. AppShell (sidebar with live counts, topbar), department group headers, JobRow, status pills, distribution bar.

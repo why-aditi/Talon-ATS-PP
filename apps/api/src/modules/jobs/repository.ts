@@ -28,6 +28,32 @@ export interface JobRecord {
   activeCount: number;
 }
 
+/**
+ * The sort key, whole. Pagination is keyset on `(dept_key, id)` and the cursor
+ * carries both VALUES rather than a row reference — which is what makes §9 edge
+ * case 6 fall out for free: a cursor whose row has since been deleted still
+ * compares, so the next page resumes at the following row instead of 500ing on
+ * a missing anchor.
+ */
+export interface JobCursor {
+  readonly deptKey: string;
+  readonly id: string;
+}
+
+export interface JobPage {
+  readonly records: JobRecord[];
+  /** The last returned row's key, or null when this is the final page. */
+  readonly next: JobCursor | null;
+}
+
+export interface FindJobsArgs {
+  readonly status?: JobStatus | undefined;
+  readonly department?: string | undefined;
+  readonly recruiterId?: string | undefined;
+  readonly after?: JobCursor | undefined;
+  readonly limit: number;
+}
+
 interface JobRow {
   id: string;
   req_code: string;
@@ -38,15 +64,13 @@ interface JobRow {
   band_min_cents: string | null;
   band_max_cents: string | null;
   currency: string;
+  dept_key: string;
   recruiter_id: string | null;
   recruiter_name: string | null;
-}
-
-interface DistributionRow {
-  canonical: string;
-  total: number;
-  in_process: number;
-  active: number;
+  /** Sparse: only the stages this job actually has applications in. */
+  distribution: Record<string, number>;
+  in_process_count: number;
+  active_count: number;
 }
 
 const emptyDistribution = (): Record<CanonicalStage, number> =>
@@ -55,60 +79,140 @@ const emptyDistribution = (): Record<CanonicalStage, number> =>
     number
   >;
 
+function toRecord(row: JobRow): JobRecord {
+  // Starts at every stage zeroed, so a job with no applications answers with a
+  // full distribution rather than an empty object (§9 edge case 4).
+  const stageDistribution = emptyDistribution();
+  for (const [canonical, count] of Object.entries(row.distribution)) {
+    const stage = CanonicalStageSchema.safeParse(canonical);
+    // job_stages.canonical is check-constrained to the same set; if it ever
+    // isn't, a bar that silently omits a column is worse than a 500.
+    if (!stage.success) throw new Error(`job_stages.canonical holds ${canonical}`);
+    stageDistribution[stage.data] = count;
+  }
+  return {
+    id: row.id,
+    reqCode: row.req_code,
+    title: row.title,
+    department: row.department,
+    location: row.location,
+    status: row.status,
+    bandMinCents: row.band_min_cents,
+    bandMaxCents: row.band_max_cents,
+    currency: row.currency,
+    recruiter:
+      row.recruiter_id && row.recruiter_name
+        ? { id: row.recruiter_id, name: row.recruiter_name }
+        : null,
+    stageDistribution,
+    inProcessCount: row.in_process_count,
+    activeCount: row.active_count,
+  };
+}
+
 export class JobsRepository {
   async findById(tx: TenantTransaction, id: string): Promise<JobRecord | null> {
-    const [job] = await tx.sql<JobRow[]>`
-      select j.id, j.req_code, j.title, j.department, j.location, j.status,
-             j.band_min_cents, j.band_max_cents, j.currency,
-             u.id as recruiter_id, u.name as recruiter_name
-      from jobs j
-      left join users u on u.id = j.recruiter_id
-      where j.id = ${id}::uuid and j.tenant_id = ${tx.tenantId}::uuid`;
-    if (!job) return null;
+    const [row] = await this.#select(tx, { id, limit: 1 });
+    return row ? toRecord(row) : null;
+  }
 
-    // One grouped aggregate, not a count per stage. `is_terminal` is per-job data
-    // (spec 001 §7.2) — a hardcoded terminal-stage list would be wrong the moment
-    // a job's template differs.
-    const distribution = await tx.sql<DistributionRow[]>`
-      select s.canonical,
-             count(*)::int as total,
-             count(*) filter (where not s.is_terminal)::int as in_process,
-             count(*) filter (where a.status in ('active', 'hired'))::int as active
-      from applications a
-      join job_stages s on s.id = a.current_stage_id
-      where a.job_id = ${id}::uuid
-      group by s.canonical`;
-
-    const stageDistribution = emptyDistribution();
-    let inProcessCount = 0;
-    let activeCount = 0;
-    for (const row of distribution) {
-      const stage = CanonicalStageSchema.safeParse(row.canonical);
-      // job_stages.canonical is check-constrained to the same set; if it ever
-      // isn't, a bar that silently omits a column is worse than a 500.
-      if (!stage.success) throw new Error(`job_stages.canonical holds ${row.canonical}`);
-      stageDistribution[stage.data] += row.total;
-      inProcessCount += row.in_process;
-      activeCount += row.active;
-    }
-
+  async findPage(tx: TenantTransaction, args: FindJobsArgs): Promise<JobPage> {
+    // limit + 1: the extra row answers "is there another page" without a second
+    // query, and a count(*) over the whole filtered set would be exactly that.
+    const rows = await this.#select(tx, { ...args, limit: args.limit + 1 });
+    const page = rows.slice(0, args.limit);
+    const last = page.at(-1);
     return {
-      id: job.id,
-      reqCode: job.req_code,
-      title: job.title,
-      department: job.department,
-      location: job.location,
-      status: job.status,
-      bandMinCents: job.band_min_cents,
-      bandMaxCents: job.band_max_cents,
-      currency: job.currency,
-      recruiter:
-        job.recruiter_id && job.recruiter_name
-          ? { id: job.recruiter_id, name: job.recruiter_name }
-          : null,
-      stageDistribution,
-      inProcessCount,
-      activeCount,
+      records: page.map(toRecord),
+      next: rows.length > args.limit && last ? { deptKey: last.dept_key, id: last.id } : null,
     };
+  }
+
+  /**
+   * One statement, one round trip — for the single-job read and the list alike,
+   * so the two can never disagree about what `activeCount` means (CLAUDE.md §4,
+   * one path per action).
+   *
+   * `stageDistribution` and both counts come from ONE grouped aggregate joined
+   * to the page (spec 001 §7.2), never a count per job. `test/jobs-list.test.ts`
+   * counts the statements a request sends and fails if that becomes N+1.
+   *
+   * Terminality is read from `job_stages.is_terminal` — per-job data copied from
+   * the template at creation (§9 edge case 5), so a hardcoded stage list would be
+   * wrong for the first job whose template differs.
+   *
+   * The optional filters are written as `$n is null or col = $n` rather than
+   * composed fragments: the window function below has to see every matching row
+   * anyway, so there is no index plan to lose, and the query stays one readable
+   * literal instead of a string built at runtime.
+   */
+  #select(
+    tx: TenantTransaction,
+    f: {
+      id?: string;
+      status?: string | undefined;
+      department?: string | undefined;
+      recruiterId?: string | undefined;
+      after?: JobCursor | undefined;
+      limit: number;
+    },
+  ): Promise<JobRow[]> {
+    return tx.sql<JobRow[]>`
+      with matching as (
+        -- dept_key groups the page by department and orders the groups the way
+        -- 02-jobs-list does: departments in the order their first job was opened,
+        -- jobs within a department in creation order. Ids are UUIDv7 (§5.2), so
+        -- ascending id IS creation order. first_value, not min: PostgreSQL has no
+        -- min(uuid) aggregate.
+        select j.*, first_value(j.id) over (partition by j.department order by j.id) as dept_key
+        from jobs j
+        where j.tenant_id = ${tx.tenantId}::uuid
+          and (${f.id ?? null}::uuid is null or j.id = ${f.id ?? null}::uuid)
+          and (${f.status ?? null}::text is null or j.status = ${f.status ?? null}::text)
+          and (${f.department ?? null}::text is null or j.department = ${f.department ?? null}::text)
+          and (${f.recruiterId ?? null}::uuid is null or j.recruiter_id = ${f.recruiterId ?? null}::uuid)
+      ),
+      page as (
+        -- Keyset, never OFFSET (CLAUDE.md §9). (dept_key, id) is a TOTAL order:
+        -- ids are unique, so no two rows tie and no row can be skipped or
+        -- repeated across pages.
+        select * from matching m
+        where ${f.after?.deptKey ?? null}::uuid is null
+           or (m.dept_key, m.id) > (${f.after?.deptKey ?? null}::uuid, ${f.after?.id ?? null}::uuid)
+        order by m.dept_key, m.id
+        limit ${f.limit}
+      ),
+      per_stage as (
+        select a.job_id, s.canonical,
+               count(*)::int as n,
+               count(*) filter (where not s.is_terminal)::int as in_process
+        from applications a
+        join job_stages s on s.id = a.current_stage_id
+        where a.job_id in (select id from page)
+        group by a.job_id, s.canonical
+      ),
+      rollup as (
+        select job_id,
+               jsonb_object_agg(canonical, n) as distribution,
+               -- active_count is EVERY application on the job, terminal ones
+               -- included: the "N active" cell on 02-jobs-list. in_process_count
+               -- is the non-terminal subset.
+               sum(n)::int as active_count,
+               sum(in_process)::int as in_process_count
+        from per_stage
+        group by job_id
+      )
+      select p.id, p.req_code, p.title, p.department, p.location, p.status,
+             p.band_min_cents, p.band_max_cents, p.currency, p.dept_key,
+             u.id as recruiter_id, u.name as recruiter_name,
+             -- left join + coalesce, never an inner join: a job with no
+             -- applications must still appear, at zero (§9 edge case 4).
+             coalesce(r.distribution, '{}'::jsonb) as distribution,
+             coalesce(r.active_count, 0) as active_count,
+             coalesce(r.in_process_count, 0) as in_process_count
+      from page p
+      left join users u on u.id = p.recruiter_id
+      left join rollup r on r.job_id = p.id
+      order by p.dept_key, p.id`;
   }
 }

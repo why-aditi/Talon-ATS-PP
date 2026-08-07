@@ -23,6 +23,11 @@ export function notFound(detail?: string): HttpProblem {
   return new HttpProblem(404, ERROR_TYPES.NOT_FOUND, 'Not found', detail);
 }
 
+/** A request a schema cannot express — an opaque cursor that does not decode. */
+export function badRequest(detail?: string): HttpProblem {
+  return new HttpProblem(400, ERROR_TYPES.VALIDATION_FAILED, 'Validation failed', detail);
+}
+
 interface ParseFailure {
   readonly issues: readonly { readonly path: readonly (string | number)[]; readonly message: string }[];
 }
