@@ -36,10 +36,16 @@ resource "aws_iam_openid_connect_provider" "github" {
 # completely ordinary.
 #
 # `aud` is StringEquals: there is exactly one correct audience.
-# `sub` is StringLike only because the deploy set contains `environment:*`;
-#   entries without a wildcard still match exactly under StringLike.
+# `sub` is StringEquals too. It used to be StringLike, for the sake of a
+#   `repo:OWNER/REPO:environment:*` entry that has since been removed (see the
+#   comment in locals.tf). With that gone, no reachable claim contains a
+#   wildcard: both variables' validations reject `*` anywhere in the string.
+#   StringEquals therefore changes no behaviour today and removes the operator
+#   that would have silently honoured a wildcard if one were ever introduced.
 #
-# Never replace the sub values with "*", "repo:*", or "repo:OWNER/*".
+# Never replace the sub values with "*", "repo:*", or "repo:OWNER/*". Switching
+# this operator back to StringLike and adding a wildcard is a two-file change on
+# purpose — variables.tf has to be widened as well.
 # ---------------------------------------------------------------------------
 
 data "aws_iam_policy_document" "github_deploy_trust" {
@@ -60,7 +66,7 @@ data "aws_iam_policy_document" "github_deploy_trust" {
     }
 
     condition {
-      test     = "StringLike"
+      test     = "StringEquals"
       variable = "${local.oidc_host}:sub"
       values   = local.deploy_subject_claims
     }
@@ -85,7 +91,7 @@ data "aws_iam_policy_document" "github_plan_trust" {
     }
 
     condition {
-      test     = "StringLike"
+      test     = "StringEquals"
       variable = "${local.oidc_host}:sub"
       values   = local.plan_subject_claims
     }

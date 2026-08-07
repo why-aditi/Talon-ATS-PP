@@ -75,19 +75,42 @@ variable "github_oidc_thumbprints" {
   default     = []
 }
 
+# The shape every accepted `sub` claim must have. Two things it enforces that a
+# `startswith("repo:<repo>:")` prefix check did not:
+#
+#   1. A TRAILING SEGMENT IS MANDATORY. `repo:OWNER/REPO:*` starts with the right
+#      prefix, so the old check accepted the exact wildcard the split-role design
+#      exists to reject, and rendered it straight into the trust policy.
+#   2. NO WILDCARD ANYWHERE. `[^*]+` in the ref and environment branches means a
+#      claim can name one branch, one tag, or one environment, never a set. This
+#      is what lets oidc.tf use StringEquals instead of StringLike.
+#
+# The repository name is escaped before interpolation because `.` is legal in a
+# GitHub repository name and is a metacharacter here — unescaped, a repo called
+# `a.b` would also match `aXb`. locals cannot be referenced from a validation
+# block, so the escape is inline in both copies.
+
 variable "github_deploy_subject_claims" {
-  description = "Override for the `sub` claims allowed to assume the APPLY role. Empty means the computed default in locals.tf (default branch + any GitHub Environment)."
+  description = "Override for the `sub` claims allowed to assume the APPLY role. Empty means the computed default in locals.tf (the default branch, and nothing else). A literal GitHub environment may be added here, but only after that environment has a deployment-branch policy configured in GitHub — without one, GitHub auto-creates it unprotected on first use and the claim bypasses the branch pin."
   type        = list(string)
   default     = []
 
   validation {
-    # Every entry must name this repository literally. Without this, a typo or a
-    # copy-paste from another project can widen the trust policy to a repo we do
-    # not control, and nothing about the plan output would look wrong.
     condition = alltrue([
-      for s in var.github_deploy_subject_claims : startswith(s, "repo:${var.github_repo}:")
+      for s in var.github_deploy_subject_claims :
+      can(regex("^repo:${replace(var.github_repo, ".", "\\.")}:(pull_request|ref:refs/(heads|tags)/[^*]+|environment:[^*]+)$", s))
     ])
-    error_message = "Every deploy subject claim must start with \"repo:<github_repo>:\". A claim naming a different repository, or a bare wildcard, lets other repositories assume this role."
+    error_message = "Every deploy subject claim must be exactly \"repo:<github_repo>:\" followed by one of: pull_request, ref:refs/heads/<branch>, ref:refs/tags/<tag>, environment:<name> — with no \"*\" anywhere. A bare wildcard, or a claim naming a different repository, lets other repositories assume this role."
+  }
+
+  validation {
+    # The whole reason there are two roles: PR-triggered jobs present
+    # `repo:OWNER/REPO:pull_request`, and a pull request is code nobody has
+    # merged. It belongs on the read-only plan role and never on this one.
+    condition = alltrue([
+      for s in var.github_deploy_subject_claims : !endswith(s, ":pull_request")
+    ])
+    error_message = "The deploy role must not trust the pull_request subject claim — that would let an unmerged pull request run terraform apply. Use github_plan_subject_claims for pull_request."
   }
 }
 
@@ -98,9 +121,10 @@ variable "github_plan_subject_claims" {
 
   validation {
     condition = alltrue([
-      for s in var.github_plan_subject_claims : startswith(s, "repo:${var.github_repo}:")
+      for s in var.github_plan_subject_claims :
+      can(regex("^repo:${replace(var.github_repo, ".", "\\.")}:(pull_request|ref:refs/(heads|tags)/[^*]+|environment:[^*]+)$", s))
     ])
-    error_message = "Every plan subject claim must start with \"repo:<github_repo>:\". A claim naming a different repository, or a bare wildcard, lets other repositories assume this role."
+    error_message = "Every plan subject claim must be exactly \"repo:<github_repo>:\" followed by one of: pull_request, ref:refs/heads/<branch>, ref:refs/tags/<tag>, environment:<name> — with no \"*\" anywhere. A bare wildcard, or a claim naming a different repository, lets other repositories assume this role."
   }
 }
 
@@ -132,15 +156,15 @@ variable "state_lock_table_name" {
 }
 
 variable "restrict_deploy_regions" {
-  description = "Deny the apply role in every region except aws_region and us-east-1 (global services live there). Cost control per §9.6: a resource created in a region nobody watches is a bill nobody sees. Set false if an apply fails with AccessDenied on a global service that is not in the exclusion list in iam_deploy.tf, and add that service in the same PR."
+  description = "Deny the apply role in every region except aws_region and us-east-1 (global services live there). Cost control per §9.6: a resource created in a region nobody watches is a bill nobody sees. Set false if an apply fails with AccessDenied on a global service that is not in the exclusion list in role_github_deploy.tf, and add that service in the same PR."
   type        = bool
   default     = true
 }
 
 variable "data_bucket_suffixes" {
-  description = "Suffixes of the application's S3 data buckets (§9.3: <name_prefix>-<env>-uploads | exports | inbound-mail). Used twice: the ECS task role is allowed object access to exactly these, and the read-only plan role is explicitly denied it, because they hold candidate resumes (§9.10) and terraform plan never needs an object body."
+  description = "Suffixes of the application's S3 data buckets. §9.3 names uploads | exports | inbound-mail; §9.10 adds the quarantine bucket that resumes land in before the scanner clears them. This list is the ECS task role's object-access allow-list — the plan role's deny is now an inversion (see role_github_plan.tf), so a bucket missing from this list is no longer a bucket CI can read. §9.10's \"served bucket\" is `uploads`: §9.3 enumerates exactly three application buckets and the separation §9.10 asks for on serve is a separate CloudFront distribution and subdomain, not a fourth bucket. Add a suffix here if that stops being true."
   type        = list(string)
-  default     = ["uploads", "exports", "inbound-mail"]
+  default     = ["uploads", "exports", "inbound-mail", "quarantine"]
 }
 
 # ---------------------------------------------------------------------------
@@ -159,7 +183,7 @@ variable "app_kms_key_arns" {
 }
 
 variable "cognito_user_pool_arns" {
-  description = "Cognito user pool ARNs the API manages at runtime (per-tenant SAML IdPs are created through the API, not Terraform — §9.4). Empty falls back to userpool/* in this account, because pool ids are generated at create time and cannot be predicted here."
+  description = "Cognito user pool ARNs the API manages at runtime (per-tenant SAML IdPs are created through the API, not Terraform — §9.4). Empty means NO Cognito statement is created at all, exactly like app_kms_key_arns. There is deliberately no userpool/* fallback: pool ids are unpredictable here, but this is a shared company account and userpool/* would let the application create identity providers and disable users in another team's pool. Populate after stacks/persistent creates the pool and re-apply this stack."
   type        = list(string)
   default     = []
 }
