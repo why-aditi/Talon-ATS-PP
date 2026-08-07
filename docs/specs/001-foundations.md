@@ -182,7 +182,7 @@ Roles: `admin`, `recruiter`, `hiring_manager`, `member`. Scopes are checked in `
 1. Unauthenticated request to a protected route → 401.
 2. Authenticated as tenant B against tenant A's job id → **404, not 403** (a 403 confirms the resource exists, which is itself a leak).
 3. RLS blocks the same request even with the application check stubbed out — belt and braces, tested independently.
-4. A `member` requesting a job with band data receives the job without `band_min_cents`/`band_max_cents`.
+4. A `member` requesting a job with band data receives `comp: { visible: false }` — no band, no error. A holder of `comp:read` receives `comp: { visible: true, band: … }`, or `band: null` where the job has none. The strip happens because the route declares `response: { 200: ListJobsResponseSchema }`; a route that omits the response schema is not comp-gated, whatever the service returns.
 
 ## 7. Step 5 — Jobs list
 

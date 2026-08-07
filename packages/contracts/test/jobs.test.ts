@@ -53,6 +53,17 @@ describe('query params', () => {
     }
   });
 
+  test('a raw number is accepted — the generated client will not send strings', () => {
+    expect(ListJobsQuerySchema.parse({ limit: 50 }).limit).toBe(50);
+    expect(ListJobsQuerySchema.safeParse({ limit: 101 }).success).toBe(false);
+    expect(ListJobsQuerySchema.safeParse({ limit: 1.5 }).success).toBe(false);
+  });
+
+  test('cursor is bounded', () => {
+    expect(ListJobsQuerySchema.safeParse({ cursor: 'x'.repeat(512) }).success).toBe(true);
+    expect(ListJobsQuerySchema.safeParse({ cursor: 'x'.repeat(513) }).success).toBe(false);
+  });
+
   test('an unknown param is rejected rather than silently ignored', () => {
     // A typo'd filter must not return unfiltered data that looks correct.
     expect(ListJobsQuerySchema.safeParse({ departmnet: 'Engineering' }).success).toBe(false);
@@ -108,6 +119,18 @@ describe('comp visibility', () => {
     expect('band' in parsed.comp).toBe(false);
   });
 
+  test('a malformed comp is rejected outright, not coerced', () => {
+    // The discriminator is what stops a handler emitting a comp the UI can't branch on.
+    for (const comp of [{}, { visible: 'true' }, { visible: true }, { band: null }, null]) {
+      expect(JobSchema.safeParse(job({ comp })).success, JSON.stringify(comp)).toBe(false);
+    }
+  });
+
+  test('a band with min above max is rejected', () => {
+    const band = { minCents: '9000000', maxCents: '1', currency: 'USD' };
+    expect(JobSchema.safeParse(job({ comp: { visible: true, band } })).success).toBe(false);
+  });
+
   test('cents survive JSON round-trip without precision loss', () => {
     const parsed = JobSchema.parse(
       job({
@@ -115,13 +138,24 @@ describe('comp visibility', () => {
       }),
     );
     const round = JobSchema.parse(JSON.parse(JSON.stringify(parsed)));
-    expect(round.comp.visible && round.comp.band?.minCents).toBe('19000000');
+    if (!round.comp.visible || round.comp.band === null) throw new Error('band lost in transit');
+    expect(round.comp.band.minCents).toBe('19000000');
     // The value a JS number would have mangled, had money been typed as one.
-    expect(BigInt(round.comp.visible ? round.comp.band!.maxCents : '0')).toBe(22_500_000n);
+    expect(BigInt(round.comp.band.maxCents)).toBe(22_500_000n);
   });
 
   test('money is canonical digits or it is not money', () => {
-    const bad = ['190.00', '-19000000', 19000000, '007', '', '1e6', '١٢٣', '9'.repeat(20)];
+    const bad = [
+      '190.00',
+      '-19000000',
+      19000000,
+      '007',
+      '',
+      '1e6',
+      '١٢٣',
+      '9'.repeat(20),
+      '9223372036854775808', // one past int8; the column cannot hold it
+    ];
     for (const value of bad) {
       const asMin = { visible: true, band: { minCents: value, maxCents: '1', currency: 'USD' } };
       const asMax = { visible: true, band: { minCents: '1', maxCents: value, currency: 'USD' } };

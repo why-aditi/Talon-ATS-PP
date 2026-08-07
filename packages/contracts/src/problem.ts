@@ -12,14 +12,19 @@
  */
 import { z } from 'zod';
 
-export const ProblemSchema = z.object({
-  /** Stable URI reference the client switches on. */
-  type: z.string(),
-  title: z.string(),
-  status: z.number().int().min(400).max(599),
-  detail: z.string().optional(),
-  instance: z.string().optional(),
-  /** Correlates a report with server logs. */
-  requestId: z.string().optional(),
-});
+export const ProblemSchema = z
+  .object({
+    /** Stable URI reference the client switches on. */
+    type: z.string(),
+    title: z.string(),
+    status: z.number().int().min(400).max(599),
+    detail: z.string().optional(),
+    instance: z.string().optional(),
+    /** Correlates a report with server logs. */
+    requestId: z.string().optional(),
+  })
+  // RFC 9457 §3.2 permits extension members, and the first one needed is
+  // field-level detail on the 400 from a rejected query param. Stripping them
+  // would silently drop the part of the error a user can act on.
+  .passthrough();
 export type Problem = z.infer<typeof ProblemSchema>;

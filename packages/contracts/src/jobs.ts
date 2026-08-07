@@ -63,16 +63,29 @@ export type ListJobsQuery = z.infer<typeof ListJobsQuerySchema>;
  * only — no sign, no decimal point, no thousands separator.
  */
 // Canonical form only: no leading zeros, so one amount has exactly one wire
-// representation and string equality matches value equality. Capped at 19
-// digits because anything longer overflows the bigint column on the write path.
-const centsSchema = z.string().regex(/^(0|[1-9]\d{0,18})$/, 'integer cents as a digit string');
+// representation and string equality matches value equality. Range-checked
+// against the int8 ceiling rather than a digit count — 19 digits reaches
+// 9999999999999999999, which the bigint column cannot store.
+const INT8_MAX = 9223372036854775807n;
+// One predicate, not a regex plus a refine: zod still runs a refinement after a
+// failed regex, so a separate BigInt() step would throw on "190.00" instead of
+// reporting it. The && short-circuits before BigInt ever sees a non-digit.
+const isCents = (v: string) => /^(0|[1-9]\d{0,18})$/.test(v) && BigInt(v) <= INT8_MAX;
+const centsSchema = z.string().refine(isCents, 'canonical integer cents within bigint range');
 
-export const CompBandSchema = z.object({
-  minCents: centsSchema,
-  maxCents: centsSchema,
-  /** Shape-checked only — alpha-3, not validated against the ISO 4217 register. */
-  currency: z.string().regex(/^[A-Z]{3}$/, 'alpha-3 currency code'),
-});
+export const CompBandSchema = z
+  .object({
+    minCents: centsSchema,
+    maxCents: centsSchema,
+    /** Shape-checked only — alpha-3, not validated against the ISO 4217 register. */
+    currency: z.string().regex(/^[A-Z]{3}$/, 'alpha-3 currency code'),
+  })
+  // Catches a repository mapping that swapped the two columns. Skipped when a
+  // field is already invalid — that error is the one worth reporting.
+  .refine((b) => !isCents(b.minCents) || !isCents(b.maxCents) || BigInt(b.minCents) <= BigInt(b.maxCents), {
+    message: 'minCents must not exceed maxCents',
+    path: ['minCents'],
+  });
 export type CompBand = z.infer<typeof CompBandSchema>;
 
 /**
@@ -83,7 +96,8 @@ export type CompBand = z.infer<typeof CompBandSchema>;
  * `compBand: undefined` — a third state — with no compile-time complaint.
  *
  * `visible: false` — the caller lacks `comp:read`, stripped at serialization
- * (§4.2); the row renders without band data, no error (§7.3 Forbidden).
+ * (spec §6.4); the row renders without band data, no error (§7.3 Forbidden).
+ * The strip only happens if the route declares this as its response schema.
  * `visible: true, band: null` — the caller may see comp; this job has no band.
  */
 export const CompSchema = z.discriminatedUnion('visible', [
