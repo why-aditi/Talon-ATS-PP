@@ -17,11 +17,14 @@ test('every route is tenant-scoped or explicitly public', async () => {
   await app.close();
 });
 
-test('protected routes fail closed without credentials', async () => {
+test('every non-public route rejects unauthenticated requests with 401', async () => {
   // Structural check above proves where a route was registered; this proves the
-  // authenticate hook actually rejects.
+  // authenticate hook actually rejects. Iterates every route on the app (not
+  // just the ones known to be in the scope) so a rogue route also fails here —
+  // it would answer 200 instead of 401.
   const app = await buildApp();
-  for (const r of app.protectedRoutes) {
+  for (const r of app.allRoutes) {
+    if (PUBLIC_ROUTES.has(key(r))) continue;
     const res = await app.inject({
       method: r.method as 'GET',
       url: r.url.replace(/:[^/]+/g, '00000000-0000-0000-0000-000000000000'),

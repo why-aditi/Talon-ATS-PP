@@ -7,6 +7,8 @@
     "build": "turbo run build",
     "test": "turbo run test",
     "test:routes": "pnpm --filter api test:routes",
+    "db:migrate": "pnpm --filter @talon/db migrate",
+    "db:seed": "pnpm --filter @talon/db seed",
     "typecheck": "turbo run typecheck",
     "lint": "eslint . --max-warnings 0",
     "gen:module": "node scripts/gen-module.mjs",

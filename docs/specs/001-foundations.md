@@ -84,6 +84,8 @@ Per ARCHITECTURE §5, this subset only: `tenants`, `users`, `stage_templates`, `
 
 Later-milestone tables are **not** created now. An empty table is an invitation for an agent to write against a contract nobody has specced.
 
+Step-3 notes: `stage_templates` had no DDL in any doc — built minimally as an ordered `stages jsonb` array copied into `job_stages` at job creation (ARCHITECTURE §5 needs updating). `users` adds `tokens_valid_after timestamptz` (nullable) so token-embedded claims can be invalidated before expiry; the auth chain (step 4) rejects tokens whose `iat` predates it. `users.email` is globally unique (open question 1), deviating from ARCHITECTURE's `unique(tenant_id, email)`.
+
 ### 5.2 Conventions
 
 - UUIDv7 for ids (time-ordered — better index locality than v4).
@@ -98,11 +100,11 @@ Later-milestone tables are **not** created now. An empty table is an invitation 
 alter table <t> enable row level security;
 alter table <t> force row level security;      -- applies to the table owner too
 create policy tenant_isolation on <t>
-  using (tenant_id = current_setting('app.tenant_id', true)::uuid)
-  with check (tenant_id = current_setting('app.tenant_id', true)::uuid);
+  using (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+  with check (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
 ```
 
-`force row level security` matters — without it the owning role bypasses the policy and your backstop silently does nothing. The `true` second argument to `current_setting` returns null rather than erroring when unset, which fails closed.
+`force row level security` matters — without it the owning role bypasses the policy and your backstop silently does nothing. The `true` second argument to `current_setting` returns null rather than erroring when unset, which fails closed. The `nullif(..., '')` wrapper is load-bearing (amended during step 3): after a `SET LOCAL` transaction commits, the GUC exists as **empty string**, and `''::uuid` makes every subsequent query on the connection *error* instead of returning nothing — the original snippet failed its own acceptance 3.
 
 Migrations run as a migration role that bypasses RLS; the app connects as a role that cannot.
 
@@ -237,6 +239,7 @@ CI gates, all blocking: `lint`, `typecheck`, `test`, `test:isolation`, `test:rou
 2. **Session length and refresh?** **Answered 2026-08-07: confirmed** — 1h access token, 30d refresh, sliding.
 3. **Does the jobs list need realtime counts?** Assumed no for M0a — refetch on focus. SSE arrives with the pipeline board.
 4. **Seed tenant name?** Screens don't show one. Using "Talon Inc." from the offer letter unless told otherwise.
+5. **ENG-204: jobs list says "18 in process", kanban pictures 8 non-terminal candidates.** The screens contradict each other. Seed follows the board and funnel math (38 total applications, 100/42/21/8 funnel → 8 in process); the jobs-list count will read 8, not 18. Owner: Aditi — confirm or re-seed.
 
 ## 12. Definition of done
 
