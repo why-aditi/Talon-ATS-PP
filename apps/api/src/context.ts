@@ -32,6 +32,13 @@ export interface Cradle {
    */
   identityRepository: unknown;
   jobsRepository: unknown;
+  /**
+   * Registered only when `auth.provider === 'cognito'`, and typed `unknown` for
+   * the same reason as the repositories: it is `modules/identity`'s business.
+   * Its concrete type is `CognitoConfig` in config.ts — a plain interface, so
+   * no AWS type reaches the composition root either.
+   */
+  cognitoConfig: unknown;
 }
 
 declare module 'fastify' {
