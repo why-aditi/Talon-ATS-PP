@@ -88,7 +88,7 @@ Next.js 15 App Router · React 19 · TypeScript strict · Tailwind v4 driven by 
 | Decision | Choice | Note |
 |---|---|---|
 | Auth provider | **Cognito** | Only option inside the Terraform stack, so `terraform apply` yields a loginable system. Still behind an `IdentityProvider` interface — write against the interface, not the Cognito SDK, outside the adapter |
-| IaC tool | **Terraform** | Root module per env, S3 + DynamoDB state, separate AWS accounts. Layout in ARCHITECTURE §9.5; known rough edges in §9.6 |
+| IaC tool | **Terraform** | Root module per env, S3 + DynamoDB state, **one AWS account** with environments separated by name prefix and tag. Layout in ARCHITECTURE §9.5; known rough edges in §9.6 |
 
 Rejected options and why are recorded in ARCHITECTURE §2. If you think one should be reopened, raise it — don't quietly switch.
 
