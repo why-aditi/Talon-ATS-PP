@@ -86,6 +86,13 @@ Later-milestone tables are **not** created now. An empty table is an invitation 
 
 Step-3 notes: `stage_templates` had no DDL in any doc — built minimally as an ordered `stages jsonb` array copied into `job_stages` at job creation (ARCHITECTURE §5 needs updating). `users` adds `tokens_valid_after timestamptz` (nullable) so token-embedded claims can be invalidated before expiry; the auth chain (step 4) rejects tokens whose `iat` predates it. `users.email` is globally unique (open question 1), deviating from ARCHITECTURE's `unique(tenant_id, email)`.
 
+Further divergences from ARCHITECTURE §5, all introduced by the step-3 review and needing to be reflected there:
+- `applications.comp_expectation_currency char(3)`, with a check requiring it whenever either cents column is set. ARCHITECTURE §5 omits it — the same §4.9 bug in the canonical DDL.
+- `jobs.currency` carries **no** default. ARCHITECTURE §5 defaults it to `'USD'`; a default is an assumption wearing a constraint (§4.9).
+- **Composite foreign keys throughout** (§4.10): `(tenant_id, id)` on every tenant-scoped parent, plus `applications (job_id, current_stage_id) → job_stages (job_id, id)`, backed by `unique (job_stages.job_id, id)`. FK validation bypasses RLS, so single-column FKs let a write point across a tenant or a job boundary and Postgres accepts it. `applications (tenant_id, current_stage_id)` is deliberately omitted as transitively implied; `audit_log` is deliberately unconstrained (nullable `tenant_id` makes a MATCH SIMPLE composite vacuous, and an audit row must outlive its entity).
+- `candidates unique (tenant_id, email)` — per-tenant, nulls distinct, so anonymized candidates are unaffected and two tenants may hold the same person.
+- Money columns are Drizzle `mode: 'bigint'` (§4.9). **Step 4 must decide serialization before a repository first returns one** — `JSON.stringify` throws on a BigInt; string-encoded cents in the contract is the expected answer.
+
 ### 5.2 Conventions
 
 - UUIDv7 for ids (time-ordered — better index locality than v4).
@@ -112,11 +119,21 @@ Migrations run as a migration role that bypasses RLS; the app connects as a role
 
 Reproduces the reference screens exactly: tenant, five users (Maya Reyes recruiting lead, Sam Altmann HM, Lin Chen, David Osei, Tom Iwu), six jobs matching the jobs list (ENG-204, ENG-209, ENG-198, DES-114, PPL-031, SAL-076) with their statuses and counts, and the nine ENG-204 candidates at their pictured stages.
 
-**The seed writes history, not state.** For every application it inserts backdated `stage_transitions` such that the derived values match the screenshots — Ana Petrova reads "3d in Onsite", Elena Ruiz reads "Stalled 8d in stage", Screen shows "median 4d" and "42% pass". Seeding a current stage only will produce a board that does not resemble the reference, and every later metric test will be built on sand.
+**The seed writes history, not state.** For every application it inserts backdated `stage_transitions` such that the derived values match the screenshots — Ana Petrova reads "3d in Onsite", Elena Ruiz reads "Stalled 8d in stage", the four column medians read 2d/4d/6d/3d. Seeding a current stage only will produce a board that does not resemble the reference, and every later metric test will be built on sand.
 
 A second tenant with its own jobs and candidates is seeded for isolation testing.
 
 **No filler candidates** (resolves open question 5, 2026-08-07). The board is the truth: ENG-204 gets exactly the nine pictured candidates and nothing else, and the other five jobs get exactly the candidate counts shown on the jobs list. Padding a job to make a funnel percentage come out right produces candidates no screen shows, which then appear in every later list, count, and export. Where a screen-derived percentage cannot be reproduced from the pictured population, the seed reports the real derived value and the discrepancy is recorded here — never closed by inventing rows.
+
+**Recorded deltas for ENG-204** (the screens contradict each other; see open question 5):
+
+| Reads | Screen shows | Nine pictured candidates yield |
+|---|---|---|
+| Funnel Applied → Screen → Onsite → Offer | 100 / 42 / 21 / 8 % | 100 / 56 / 33 / 22 % (9 / 5 / 3 / 2 ever-reached) |
+| Jobs list "active" | 38 | 9 |
+| Jobs list "in process" | 18 | 8 |
+
+The screen's percentages are exactly the ratios of a 38-application population (16/38 = 42%, 8/38 = 21%, 3/38 = 8%), matching the jobs list's "38 active" — so the kanban's funnel bar agrees with the jobs list and disagrees with the nine cards drawn beside it on the same screen. The four column medians reproduce exactly from the nine, which confirms the panel is ENG-204-scoped rather than tenant-wide. Step 5's reference-screen comparison will differ in these three cells and only these; that is expected, not a regression.
 
 **Acceptance:**
 1. `pnpm db:migrate && pnpm db:seed` from empty produces a database whose derived metrics match the reference screens.
@@ -165,7 +182,7 @@ Roles: `admin`, `recruiter`, `hiring_manager`, `member`. Scopes are checked in `
 1. Unauthenticated request to a protected route → 401.
 2. Authenticated as tenant B against tenant A's job id → **404, not 403** (a 403 confirms the resource exists, which is itself a leak).
 3. RLS blocks the same request even with the application check stubbed out — belt and braces, tested independently.
-4. A `member` requesting a job with band data receives the job without `band_min_cents`/`band_max_cents`.
+4. A `member` requesting a job with band data receives `comp: { visible: false }` — no band, no error. A holder of `comp:read` receives `comp: { visible: true, band: … }`, or `band: null` where the job has none. The strip happens because the route declares `response: { 200: ListJobsResponseSchema }`; a route that omits the response schema is not comp-gated, whatever the service returns.
 
 ## 7. Step 5 — Jobs list
 
@@ -181,6 +198,16 @@ GET /v1/jobs?status=&department=&recruiter_id=&cursor=&limit=50
 ```
 
 `Job` includes `stageDistribution` (counts per canonical stage), `inProcessCount` (non-terminal), `activeCount`, and comp band **only** for holders of `comp:read`. Zod schema in `packages/contracts`; OpenAPI generated from it.
+
+Contract notes (landed ahead of the handler so the api and ui streams build against fixed shapes):
+- Response bodies are camelCase; query params stay snake_case as written above.
+- Money crosses the wire as a **canonical digit string of integer cents** plus an alpha-3 currency — the columns are `bigint` and `JSON.stringify` throws on a BigInt.
+- Comp is a **tagged union**, not an optional field: `{ visible: false }` when the caller lacks `comp:read`, `{ visible: true, band: … | null }` otherwise. An optional field cannot express this in TypeScript — `'compBand' in job` does not narrow away `undefined`, and a handler could emit `compBand: undefined` as a silent third state. §7.3's Forbidden row depends on the distinction.
+- `stageDistribution` requires every canonical key, zero included (§9 edge case 4), and is derived from the stage enum so a new stage cannot skip it.
+- `limit` is digits-only with a max of 100. Deliberately not `z.coerce`, which is `Number()` and accepts `0x10`, `1e2`, and `" 100 "`.
+- Unknown query params **400** rather than being ignored, so a typo'd filter can't return unfiltered data that looks correct. The web client must allow-list before forwarding `searchParams` — a shared URL carrying `utm_source` would otherwise fail.
+- `packages/contracts` also owns the RFC 9457 `Problem` envelope (ARCHITECTURE §7), since the ui switches on `type` for the §7.3 Error state and §9 edge case 1. Stable `type` values are declared by the endpoints that emit them.
+- `inProcessCount` counts non-terminal stages, and terminality is per-job data (`job_stages.is_terminal`), not a constant — the api stream must read it, not hardcode a stage list.
 
 One query, not N+1: distribution comes from a single grouped aggregate joined to the job list, not a per-job count.
 
@@ -203,78 +230,6 @@ Per DESIGN_SYSTEM §4. AppShell (sidebar with live counts, topbar), department g
 2. Type-scale pass from DESIGN_SYSTEM §2.1 complete; `_meta.confidence.typography` updated with what pinned it.
 3. Keyboard navigable; `axe` clean.
 4. All five states reachable in Storybook or via fixtures.
-
-### 7.4 As built (2026-08-07)
-
-Acceptance 1, 3 and 4 met. **Acceptance 2 is not met** — see below.
-
-Built against MSW fixtures derived from `packages/db/src/seed.ts`, not from a live API:
-`packages/contracts` was still a placeholder while the API stream held step 4, so the
-UI carries a provisional Zod mirror at `apps/web/src/lib/jobs-contract.ts`. Deleting it
-in favour of `@talon/contracts` is the swap; `apps/web/src/test/jobs-screen.test.tsx`
-is what proves the swap is clean. States are reached with `?state=` rather than
-Storybook — filtered-empty needs no scenario, since `?status=draft` genuinely matches
-nothing.
-
-**Geometry** was measured by scanning the 2880px original for ink extents and halving,
-rather than by eye. At 1440 CSS the reference puts the row title at x=269.5, recruiter
-avatar 825, distribution bar 1064 (130 wide), active count 1206.5, status pill ~1312,
-card inner edge 1400. Every column in the build lands within ~1px of those.
-
-**Typography — acceptance 2, open.** The §2.1 pass was run and it contradicts §2.1's own
-premise. Implied sizes from cap/ascender heights in the reference, against the tokens:
-
-| token | current | measured | ratio |
-|---|---|---|---|
-| pageTitle | 26px | ~19px | 0.73 |
-| cardTitle | 15px | ~12px | 0.80 |
-| body | 14px | ~12.3px | 0.88 |
-| meta | 13px | ~11px | 0.85 |
-| caption | 12px | ~11px | 0.92 |
-| code | 12px | ~11px | 0.92 |
-| eyebrow | 11px | ~11px | 1.00 |
-
-The ratios climb monotonically as size falls: the ramp is stretched at the top and
-correct at the bottom. §2.1 says "adjust the scale, not individual components — if
-`pageTitle` is off, it's off everywhere by the same amount", and the reference says it
-is not. Reshaping the ramp's ratios is a design-system decision affecting all nine
-screens, so **nothing was applied** and `_meta.confidence.typography` stays `LOW`;
-"measured from raster with the display face still unidentified" is not a pin. Width-
-derived sizes come out consistently ~8% below height-derived ones, which says the
-reference face is narrower than Inter — so the face has to be settled (§2.1's letterform
-comparison against `01-sign-in@2x.png`) before any size is pinned. **Owner: design.**
-
-**Deltas against the reference screen**, all recorded rather than manufactured:
-
-1. ENG-204 reads 8 in process / 9 active, not 18 / 38 — open question 5, already closed.
-2. The reference distribution bars show an Offer segment on jobs the seed gives no
-   offers to. Bulk-seeded applications only reach Applied/Screen/Onsite, so those bars
-   render three segments, not four.
-3. Avatar hues match the screen only because fixture user ids are pinned to hash onto
-   them. With real uuidv7 ids the hues will differ; the hash is on id by design.
-4. The reference badges the Review-inbox count in `bg.selected`/`text.link` while its
-   row is inactive; DESIGN_SYSTEM §3 says that treatment is for the *active* row. Built
-   to the doc. **Owner: design.**
-5. The reference renders req code and location as one monospace line; §4 describes it as
-   `code`/`meta`. Built to the screen.
-6. Row hover raises the background only. §4 also calls for `border.strong`, but rows sit
-   inside one bordered card per department and have no border of their own.
-
-**Token findings** (`packages/tokens/test/contrast.test.ts` pins each with its ratio):
-`text.tertiary` 3.52:1 on surface and 3.20:1 on canvas, `text.placeholder` 2.53:1,
-`text.secondary` on `action.ghostBgHover` 4.40:1, `avatar.2` 4.40:1 and `avatar.6`
-4.18:1 under white initials — all below AA, all measured values left unchanged.
-DESIGN_SYSTEM §5's claim that every semantic pair clears 4.5:1 is therefore false as
-written. **Owner: design.** Separately, pill padding of `2px 8px` (§3) has no vertical
-token — the space scale steps 1px → 4px.
-
-**Deferred, each marked `ponytail:` in the source:** job rows are not links (no detail
-screen yet); topbar search and the notification bell are presentational until the ⌘K
-palette exists; Review-inbox / Scheduling / Offers counts are constants until their
-endpoints exist; the MSW worker starts unconditionally because there is no API to talk
-to. The no-raw-hex ESLint rule is scoped to `apps/web` — widening it fails today on
-`users.avatarColor` in `packages/db`, which stores hex per user and conflicts with
-DESIGN_SYSTEM §3. **Owner: schema.**
 
 ## 8. Events
 
@@ -314,6 +269,11 @@ CI gates, all blocking: `lint`, `typecheck`, `test`, `test:isolation`, `test:rou
 3. **Does the jobs list need realtime counts?** Assumed no for M0a — refetch on focus. SSE arrives with the pipeline board.
 4. **Seed tenant name?** Screens don't show one. Using "Talon Inc." from the offer letter unless told otherwise.
 5. **ENG-204: jobs list says "18 in process", kanban pictures 8 non-terminal candidates.** **Answered 2026-08-07: the board is the truth.** Seed the nine pictured ENG-204 candidates and no filler; seed the other five jobs to their jobs-list counts. The jobs-list "in process" cell will read the board's count, not 18. Screen-derived percentages that the pictured population cannot produce are recorded as deltas in §11b, not manufactured.
+
+6. **Does the job row show a comp band at all?** DESIGN_SYSTEM §JobRow specifies the grid exactly — title + `code · location` → recruiter → distribution bar → active count → status pill — and it contains no band, while §7.2 requires the band in the payload and §7.3 specs a Forbidden row state for it. The contract ships the band (the API needs it either way; §7.2 is explicit), but whether the row *renders* it is undecided and blocks the step-5 UI. Owner: Aditi.
+7. **Where do the AppShell sidebar's live counts come from?** §7.3 requires them; they are tenant-wide, not page-scoped, so they cannot ride the `{ data, nextCursor }` envelope. Either a separate endpoint or an envelope change — and an envelope change breaks both streams at once. Needs answering before the ui stream builds the shell. Owner: Aditi.
+8. **Row height: 52px or 55px?** DESIGN_SYSTEM §JobRow says `rowHeight` 52px; §7.3 specs skeleton rows at "the real row height (55px)". One is wrong, and the whole point of the skeleton is that it doesn't shift on load. Owner: Aditi.
+9. **Nothing catches DB-vs-contract enum drift.** The job status and canonical stage enums exist in the SQL check constraints, the Drizzle columns, and `packages/contracts` — three copies, no test. `packages/contracts` cannot import `packages/db` under the boundary graph, so the test belongs in `apps/api` and should land with the jobs repository.
 
 ## 11b. Carried to step 4
 
