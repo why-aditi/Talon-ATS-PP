@@ -6,7 +6,7 @@ Companion to `PRD.md`. Covers stack, data model, the three hard subsystems, AWS 
 
 ## 1. Constraints that shape everything
 
-1. **Multi-tenant SaaS with hard isolation.** A leak is existential, so tenancy is enforced at three layers: application, ORM, and Postgres RLS.
+1. **Multi-tenant SaaS with hard isolation.** A leak is existential, so tenancy is enforced at two real layers: the application (repositories scope every query) and Postgres RLS as the backstop that catches the query someone forgot to scope. Drizzle enforces nothing on its own — it is a typed query builder, not a guard, and treating it as a third layer would be a false sense of depth.
 2. **Read-heavy, burst-write.** Board views and reports dominate. Writes cluster around business hours and bulk imports.
 3. **Small team, real scale requirements.** A microservice-per-domain split would cost more in operational surface than it buys. **Modular monolith + async workers** is the right shape until a single module demonstrably needs independent scaling.
 4. **Third-party latency is unavoidable.** Google/Microsoft calendar and email APIs are slow and rate-limited. Anything touching them is async, cached, and retried.
@@ -36,7 +36,7 @@ Companion to `PRD.md`. Covers stack, data model, the three hard subsystems, AWS 
 | Compute | **ECS Fargate** behind an ALB, plus Lambda for cron and inbound-mail hooks | Fargate for long-lived HTTP and workers; Lambda where the workload is spiky and short. Rejected EKS: no team to run it. |
 | Edge | **CloudFront + WAF** | Static assets, caching, rate limiting, bot control. |
 | Observability | **OpenTelemetry** → CloudWatch + X-Ray, structured JSON logs, RUM on the frontend | |
-| IaC | **Terraform** (root module per env, S3 + DynamoDB state) | **Decided.** Named first in the brief and provider-agnostic. Trade-off accepted: no type sharing with the TypeScript app, and `cdk-nag`'s equivalent is `tflint` + `checkov`. See §9.5 for layout and §9.6 for the Cognito-specific hazards Terraform introduces. |
+| IaC | **Terraform** (root module per env, S3 + DynamoDB state) | **Decided.** Named first in the brief and provider-agnostic. Trade-off accepted: no type sharing with the TypeScript app, and `cdk-nag`'s equivalent is `tflint` + `checkov`. See §9.5 for layout, §9.6 for cost profiles, and §9.7 for the Cognito-specific hazards Terraform introduces. |
 | CI/CD | GitHub Actions → ECR → `terraform apply` via OIDC, ephemeral PR environments via workspaces | |
 | E2E | **Playwright** against ephemeral envs | |
 
@@ -312,6 +312,28 @@ create table activities (                      -- the candidate timeline
 );
 create index on activities (tenant_id, application_id, occurred_at desc);
 
+create table interview_loops (                 -- groups rounds into one onsite; owns hold state
+  id uuid primary key, tenant_id uuid not null,
+  application_id uuid not null references applications,
+  status text not null check (status in ('draft','proposed','held','confirmed','completed','cancelled')),
+  target_date date, timezone text not null,
+  held_by uuid references users, hold_expires_at timestamptz,   -- the 24h soft reservation
+  created_at timestamptz not null default now(),
+  unique (application_id, id)
+);
+-- interviews.loop_id references interview_loops(id)
+
+create table outbox (                          -- domain events, written in the state-change txn
+  id bigserial primary key, tenant_id uuid not null,
+  event_type text not null,                    -- ApplicationAdvanced, OfferApproved, ...
+  aggregate_type text not null, aggregate_id uuid not null,
+  payload jsonb not null,
+  occurred_at timestamptz not null default now(),
+  published_at timestamptz,                    -- null = not yet relayed
+  attempts int not null default 0, last_error text
+);
+create index on outbox (published_at, id) where published_at is null;
+
 create table audit_log (                       -- immutable, no update/delete grant
   id bigserial primary key, tenant_id uuid, actor_id uuid, action text not null,
   entity_type text not null, entity_id uuid,
@@ -349,9 +371,17 @@ PATCH /v1/applications/:id/stage
 - `from_stage_id` mismatch (someone else already moved it) → `409` regardless of version, because silently re-applying a stage change corrupts the transition log.
 - Pure reorder within a column is last-write-wins — position isn't worth a conflict dialog.
 
-Every successful move writes the transition, updates `stage_entered_at`, appends an activity, and publishes `ApplicationAdvanced` to EventBridge in one transaction (outbox pattern: the event row is written to `outbox` in the same commit, a relay publishes it).
+**`version` counts stage changes only.** A rank-only update does **not** bump `version`. If it did, user A dragging a card within a column would invalidate user B's in-flight stage move on a different card and produce a 409 that has nothing to do with any real conflict — flaky board behavior that looks like a race and isn't. Repositories therefore expose two distinct writes: `updateRank` (touches `board_rank` and `updated_at`) and `moveStage` (touches stage, `stage_entered_at`, and `version`). An integration test asserts a reorder leaves `version` unchanged.
 
-**Realtime:** clients hold an SSE stream per board; the relay fans out to Redis pub/sub, API instances forward to their subscribers. Payloads are ids + versions only — the client refetches what it needs, so a stale broadcast can never write bad data into a cache.
+Every successful move writes the transition, updates `stage_entered_at`, appends an activity, and inserts an `outbox` row — all in one transaction. Nothing is published inline; a failed publish must never roll back a state change, and a committed state change must never lose its event.
+
+**The relay** is a dedicated worker (`workers-outbox`, §9.2). It polls unpublished rows every 2s using `select ... for update skip locked` in batches of 100, publishes to EventBridge, and stamps `published_at`. Failures increment `attempts` with exponential backoff; rows past 10 attempts alarm rather than retry forever. Delivery is **at-least-once**, so every consumer must be idempotent — keyed on `outbox.id`, which is monotonic and unique. A consumer that isn't idempotent is a bug, not a tuning problem.
+
+**Realtime:** clients hold an SSE stream per board; the relay fans out to Redis pub/sub, API instances forward to their subscribers. Payloads are ids + versions only — the client refetches what it needs, so a stale broadcast can never write bad data into a cache. On reconnect the client refetches the board wholesale rather than replaying missed events; with id-only payloads there is nothing to replay.
+
+Two operational details that bite if unhandled:
+- **ALB idle timeout** defaults to 60s and will silently kill idle streams. Set it to 300s on the listener and emit an SSE comment heartbeat every 25s.
+- **Autoscaling metric.** Long-lived connections make request-count-per-target meaningless as a load signal. The API service scales on CPU and memory, not request count; request-count scaling stays on the `web` service only.
 
 ### 6.2 Scheduling
 
@@ -433,7 +463,7 @@ Idempotency: each row gets a deterministic hash of `(import_id, row_index, natur
 
 ### 9.2 Compute
 
-- ECS Fargate services: `web`, `api`, `workers-default`, `workers-calendar` (isolated so third-party rate limits can't starve email or imports).
+- ECS Fargate services: `web`, `api`, `workers-default`, `workers-calendar` (isolated so third-party rate limits can't starve email or imports), `workers-outbox` (the event relay, §6.1 — separated because it must keep draining even when other workers are backed up).
 - Autoscaling on ALB request count per target for `api`/`web`, on SQS `ApproximateAgeOfOldestMessage` for workers.
 - Rolling deploys with circuit breaker + auto-rollback; ALB health checks hit `/healthz` (liveness) and `/readyz` (DB + Redis reachable).
 - Lambda for: cron (offer expiry, SLA/stall sweep, report rollup, rank rebalance, retention purge), inbound SES mail processing, and calendar webhook receivers.
@@ -494,7 +524,13 @@ infra/terraform/
 
 **State:** S3 backend with versioning and a DynamoDB lock table, one key per environment. The state bucket is bootstrapped separately in `global/state` and never destroyed — chicken-and-egg, so it gets created once by hand and then left alone.
 
-**Environments:** `dev`, `staging`, `prod` as separate AWS accounts under an Organization. GitHub Actions assumes a per-account OIDC role; no long-lived AWS keys anywhere. Each env is a root module composing the shared modules with different variable values — **not** Terraform workspaces for environments, which share a state file and make blast radius harder to reason about.
+**Environments: one AWS account, environments separated by name prefix and tag.** Not three accounts under an Organization — that was the earlier plan and it is wrong for this project. The deploy identity is a company `PowerUserAccess` role in a single account; there is no Organization to join, and joining one is out of scope.
+
+Every resource is named `talon-${var.env}-*` and tagged `Project=talon, Env=${var.env}, ManagedBy=terraform`. Each env is still its own root module with its own state key — **not** Terraform workspaces, which share a state file and blur blast radius. Workspaces are reserved for ephemeral PR environments.
+
+Practically, only `dev` exists until there is something worth staging. Build the module structure so a second account is a variable change rather than a rewrite, and don't pay for environments nobody is using.
+
+**IAM is not in these modules.** The deploy identity denies `iam:*` including `iam:PassRole`. Every role lives in `stacks/iam/`, applied once by a privileged identity; every other module takes role ARNs as input variables. Adding an `aws_iam_role` to any other module will fail at apply and block the whole stack.
 
 **CI:** `terraform fmt -check`, `tflint`, and `checkov` on every PR. `terraform plan` is posted as a PR comment and `apply` runs on merge to main, gated on the plan being unchanged. A plan showing replacement of any protected resource (`aws_cognito_user_pool`, `aws_rds_cluster`, state buckets) fails the check and needs a manual override with a written reason.
 
@@ -502,7 +538,41 @@ infra/terraform/
 
 **Ephemeral PR environments** use workspaces over the `compute` + `edge` modules only, pointing at the shared dev database with a per-PR tenant. Standing up full data infrastructure per PR is too slow and too expensive to be worth it. Workspaces are the right tool here and the wrong tool for environments — the difference is lifetime and blast radius.
 
-### 9.6 Where Terraform costs more than CDK here
+### 9.6 Cost profiles and teardown
+
+This runs on a company account. The full architecture left running costs real money, so cost shape is an architectural constraint, not an afterthought.
+
+Rough monthly figures if left running 24/7 — **estimates, verify with the AWS pricing calculator before committing to anything**:
+
+| Resource | Spec profile | Dev profile |
+|---|---|---|
+| Postgres | Aurora Serverless v2, 0.5 ACU floor — ~$45 | RDS `db.t4g.micro` single-AZ — ~$13 |
+| Redis | ElastiCache Serverless, ~1GB floor — ~$60 | `cache.t4g.micro` node — ~$11 |
+| Egress | NAT Gateway — ~$32 + data | NAT instance `t4g.nano` — ~$3 |
+| Load balancer | ALB — ~$16 | ALB — ~$16 |
+| Compute | Fargate, 2 services — ~$20 | Fargate, 0.25 vCPU — ~$9 |
+| **Total** | **~$175/mo** | **~$52/mo** |
+
+Two levers, both structural:
+
+**1. A `profile` variable.** `var.profile` (`dev` \| `spec`) selects instance classes and engine choices. Same modules, same resource graph, different sizes — so the spec-faithful topology is always one apply away for a demo, and the everyday cost is a third of it.
+
+**2. Split stacks by lifetime.**
+
+```
+stacks/persistent/   Cognito, S3, ECR, KMS, state  → apply once, prevent_destroy
+stacks/ephemeral/    VPC, NAT, RDS, Redis, ECS, ALB → destroy between sessions
+```
+
+`terraform destroy` on `ephemeral` between work sessions takes the bill to near zero without losing users, images, or uploaded files. This split is why `prevent_destroy` is on the persistent stack only — putting it on a database you intend to tear down nightly means fighting your own guard rail every time.
+
+RDS keeps `skip_final_snapshot = false` in the ephemeral stack, so a teardown snapshots rather than discards; `pnpm db:seed` reproduces the reference data anyway, which is what makes routine teardown safe.
+
+**Deferred deliberately:** the reporting read replica. It doubles Aurora cost for query volume that doesn't exist yet. Reports run against the writer until p95 on report queries exceeds 1s or they measurably slow writes — then add the replica, which is a one-line module change.
+
+**Set a budget alarm before the first apply.** AWS Budgets at a threshold you and the account owner agree on, with an SNS email. This is the cheapest possible insurance and takes two minutes.
+
+### 9.7 Where Terraform costs more than CDK here
 
 Recorded so nobody rediscovers these mid-build and thinks something is broken:
 
@@ -514,21 +584,41 @@ Recorded so nobody rediscovers these mid-build and thinks something is broken:
 
 None of these is a reason to switch. They're the reason the infra work is a real milestone rather than an afternoon.
 
-### 9.7 Observability and SLOs
+### 9.8 Observability and SLOs
 
 - OTel auto-instrumentation for HTTP, Postgres, Redis, and outbound HTTP; trace ID propagated into every log line and returned as `X-Request-Id`.
 - Dashboards: API latency by route, queue depth and oldest-message age, DB connections and slow queries, third-party API error rate per provider.
 - Alarms: p95 latency > 800ms for 5 min, DLQ depth > 0, oldest SQS message > 15 min, 5xx rate > 1%, calendar sync failure rate > 5%, Aurora CPU > 80%.
 - SLOs: API availability 99.9%, p95 read latency 300ms, p95 write 600ms, invite delivery within 60s of send.
 
-### 9.8 Security
+### 9.9 Security
 
 - Encryption in transit everywhere; at rest with customer-managed KMS keys per environment.
 - Secrets in Secrets Manager with rotation; nothing in environment variables except ARNs.
 - Least-privilege task roles — the calendar worker cannot read the uploads bucket.
 - PII: candidate email and phone are column-encrypted with envelope encryption so a database dump alone isn't a breach; access is logged.
 - Retention job purges per tenant policy; erasure anonymizes `candidates` in place and scrubs `activities` bodies while leaving `stage_transitions` intact so historical funnels survive.
-- GuardDuty, Security Hub, CloudTrail to a locked logging account.
+- GuardDuty, Security Hub, CloudTrail. With a single account, CloudTrail logs go to a dedicated bucket with object lock rather than a separate logging account.
+
+### 9.10 Candidate file handling
+
+Resumes are attacker-controlled files uploaded by strangers and opened by your recruiters. This is the highest-risk surface in an ATS and it gets explicit handling, not general S3 hygiene.
+
+**On ingest**
+- Presigned PUT with a content-length cap (10MB) and an allow-list of extensions and sniffed MIME types: PDF, DOC, DOCX, TXT, RTF. The sniffed type must match the claimed one — trusting the client's `Content-Type` is trusting the uploader.
+- Land in a quarantine bucket. A scanner Lambda (ClamAV layer, or GuardDuty Malware Protection for S3) runs before the object moves to the served bucket. Until it clears, the file is not downloadable and the UI shows "Scanning" rather than a broken link.
+- Strip nothing, transform nothing. Resume parsing reads from quarantine and writes extracted text; the original is preserved byte-for-byte because it may matter in a hiring dispute.
+
+**On serve**
+- Presigned GET, 5-minute expiry, `ResponseContentDisposition=attachment` always. Never inline — an inline-rendered HTML or SVG file executes in your origin.
+- Served from a separate CloudFront distribution on its own subdomain, so a bypassed content-type check still can't reach app cookies or localStorage.
+- `X-Content-Type-Options: nosniff` and a restrictive CSP on that distribution.
+- Never reflect the original filename into a header without sanitizing it — filenames are user input and carry header-injection and path-traversal payloads.
+
+**Preview**
+- In-browser preview renders extracted text or a server-generated image, never the original file in an iframe or object tag.
+
+This is one of the four expensive areas in practice: a malicious resume that runs script in a recruiter's session has access to every candidate in the tenant.
 
 ## 10. Testing
 
