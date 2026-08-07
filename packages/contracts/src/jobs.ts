@@ -134,7 +134,11 @@ export const JobSchema = z.object({
   stageDistribution: StageDistributionSchema,
   /** Applications in a non-terminal stage — the "18 in process" line under the bar. */
   inProcessCount: z.number().int().min(0),
-  /** Applications not rejected or withdrawn; includes hired. */
+  /**
+   * Every application on the job, terminal ones included — the reference
+   * screen's "N active" cell. Not "non-rejected": ENG-209 reads 8/21, and 21 is
+   * only reachable by counting rejections too.
+   */
   activeCount: z.number().int().min(0),
 
   /**
