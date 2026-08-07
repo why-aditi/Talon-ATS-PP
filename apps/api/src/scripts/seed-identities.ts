@@ -35,6 +35,33 @@ import { buildContainer } from '../container.js';
 /** Same published local constant as packages/db — worthless as a secret, obviously so. */
 const DEFAULT_OWNER_URL = 'postgres://talon:talon@localhost:5432/talon';
 const DEFAULT_PASSWORD = 'talon-dev-password';
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '']);
+
+const isLoopback = (url: string): boolean => {
+  try {
+    return LOCAL_HOSTS.has(new URL(url).hostname);
+  } catch {
+    return false; // Unparseable is not local.
+  }
+};
+
+/**
+ * The default password is published in this repo. Same posture as
+ * `resolveAppRolePassword` in packages/db: a clean local clone needs no setup,
+ * a remote target fails on the missing configuration rather than on a default
+ * that replays into every environment it is ever pointed at.
+ */
+function resolvePassword(ownerUrl: string): string {
+  const fromEnv = process.env['SEED_PASSWORD']?.trim();
+  if (fromEnv) return fromEnv;
+  if (!isLoopback(ownerUrl)) {
+    throw new Error(
+      'SEED_PASSWORD must be set when seeding a non-local database. The built-in ' +
+        'password is published in this repository and is refused off loopback.',
+    );
+  }
+  return DEFAULT_PASSWORD;
+}
 
 interface SeededUser {
   id: string;
@@ -45,10 +72,11 @@ interface SeededUser {
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  const password = process.env['TALON_SEED_PASSWORD'] ?? DEFAULT_PASSWORD;
+  const ownerUrl = process.env['DATABASE_URL'] ?? DEFAULT_OWNER_URL;
+  const password = resolvePassword(ownerUrl);
   // The owner connection, not the api's. This script exists precisely because
   // the write below is one the request-path role must not be able to make.
-  const sql = postgres(process.env['DATABASE_URL'] ?? DEFAULT_OWNER_URL, {
+  const sql = postgres(ownerUrl, {
     max: 1,
     onnotice: () => {},
   });
@@ -57,6 +85,9 @@ async function main(): Promise<void> {
   try {
     const users = await sql<SeededUser[]>`
       select id, email, name, role from users order by email`;
+    // Zero is never "nothing to do": it means unmigrated, unseeded, the wrong
+    // database, or — the one that will bite on Aurora — an owner role without
+    // BYPASSRLS, which sees nothing through `force row level security`.
     if (users.length === 0) throw new Error('no users — run `pnpm db:seed` first');
 
     console.log(`provider: ${config.auth.provider}`);
@@ -80,7 +111,7 @@ async function main(): Promise<void> {
     // script gets run with one.
     console.log(
       `${users.length} identities provisioned, password: ` +
-        (password === DEFAULT_PASSWORD ? password : 'as supplied in TALON_SEED_PASSWORD'),
+        (password === DEFAULT_PASSWORD ? password : 'as supplied in SEED_PASSWORD'),
     );
   } finally {
     await sql.end();
