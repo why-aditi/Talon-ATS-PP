@@ -146,10 +146,10 @@ describe('copy', () => {
 
   it('treats an absent clipboard API as a failure, not as success', async () => {
     // Insecure origin: navigator.clipboard is undefined. The button must not look
-    // like it worked. fireEvent rather than userEvent here — userEvent's own pointer
-    // machinery reaches for navigator.clipboard, so it cannot be the thing that
-    // clicks while we are asserting on clipboard being absent.
-    setupUser(undefined);
+    // like it worked. userEvent is not set up at all here — its setup installs a
+    // clipboard stub, and calling it only to remove the stub again is a race with
+    // whatever it re-installs lazily. fireEvent needs none of that machinery.
+    Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });
     renderOpen();
 
     fireEvent.click(screen.getByRole('button', { name: 'Copy all' }));
@@ -212,7 +212,9 @@ describe('discarding edits', () => {
     dialog.dispatchEvent(new Event('cancel', { cancelable: true }));
 
     expect(onClose).not.toHaveBeenCalled();
-    expect(screen.getByText(/Discard your edits/)).toBeInTheDocument();
+    // findBy, not getBy: the dispatch above is outside act(), so React 19 flushes
+    // setConfirmDiscard in a microtask and a synchronous query runs one tick early.
+    expect(await screen.findByText(/Discard your edits/)).toBeInTheDocument();
   });
 });
 
