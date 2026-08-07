@@ -85,7 +85,7 @@ describe('placement', () => {
   it('places a card dropped on another card ahead of it', () => {
     const from = locate(board.columns, applied.cards[3]!.id)!; // Priya, last
     const over = locate(board.columns, applied.cards[0]!.id)!; // onto Tess, first
-    expect(neighboursFor(from, applied, over)).toEqual({ beforeId: applied.cards[0]!.id, afterId: null });
+    expect(neighboursFor(from, applied, over)).toEqual({ beforeId: applied.cards[0]!.id, afterId: null, index: 0 });
   });
 
   /**
@@ -103,11 +103,28 @@ describe('placement', () => {
     expect(moved[0]!.cards.map((c) => c.name)).toEqual(['Omar Haddad', 'Jordan Cole', 'Tess Bianchi', 'Priya Nair']);
   });
 
+  /**
+   * dnd-kit reports the dragged card as its own `over` on every pickup, and again on a
+   * drop that never left the spot. Unhandled, the id is filtered out of the candidate
+   * list, indexOf returns -1, and the card silently appends — announcing a move that
+   * had not happened and relocating the card on Space-Space. It looked correct only on
+   * a card alone in its column, which is exactly what the first manual check used.
+   */
+  it('treats "over is the dragged card itself" as staying put, not as appending', () => {
+    for (const [index, card] of applied.cards.entries()) {
+      const self = locate(board.columns, card.id)!;
+      expect(neighboursFor(self, applied, self).index).toBe(index);
+    }
+    const first = locate(board.columns, applied.cards[0]!.id)!;
+    expect(neighboursFor(first, applied, first).index).not.toBe(applied.cards.length - 1);
+  });
+
   it('appends when dropped on the column rather than on a card', () => {
     const from = locate(board.columns, applied.cards[0]!.id)!;
     expect(neighboursFor(from, screenCol, null)).toEqual({
       beforeId: null,
       afterId: screenCol.cards.at(-1)!.id,
+      index: screenCol.cards.length,
     });
   });
 
@@ -149,7 +166,13 @@ describe('announcements', () => {
 
     // dnd-kit mounts its own. Adding a second would announce every move twice — a bug
     // that is invisible unless you actually listen to it.
-    const live = baseElement.querySelectorAll('[aria-live="assertive"], [aria-live="polite"][role="status"]');
-    expect(live.length).toBeLessThanOrEqual(1);
+    // toBe(1), not toBeLessThanOrEqual(1) — the loose form also passes at zero, so it
+    // would survive dnd-kit's region vanishing and no move ever being spoken. The
+    // selector counts bare role="status" too: that is an implicit live region, and is
+    // what the failure banner and the loading skeleton are.
+    const live = baseElement.querySelectorAll(
+      '[aria-live="assertive"], [aria-live="polite"], [role="status"]:not([aria-live="off"])',
+    );
+    expect(live.length).toBe(1);
   });
 });

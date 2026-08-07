@@ -19,26 +19,13 @@ import {
   type ApplicationCard,
   type Board,
   BoardSchema,
+  ApplicationCardSchema,
+  ConflictProblemSchema,
   MoveStageBodySchema,
   PIPELINE_ERROR_TYPES,
   ReorderBodySchema,
 } from './pipeline-contract';
 import { emptyBoard, eng204Board } from './pipeline-fixtures';
-
-/**
- * ARCHITECTURE §6.1 DISAGREES WITH ITSELF, resolved toward the prose.
- *
- * The prose says "the move request carries the application's `version` and its
- * `from_stage_id`"; the code block beneath it shows `{ toStageId, beforeId, afterId,
- * version, reason? }` with no `fromStageId`. Without it the second 409 is
- * undetectable — the server cannot tell which stage the client believed the card was
- * in, so "someone else already moved it" collapses into the version check, which is
- * precisely the collapse §6.1 spends a paragraph forbidding. The field is required
- * here. Recorded in spec 003 §4.3 — owner: api, to settle when the endpoint lands.
- */
-const MoveStageBody = MoveStageBodySchema.extend({
-  fromStageId: MoveStageBodySchema.shape.toStageId,
-});
 
 type Scenario = 'empty' | 'error' | 'slow' | 'forbidden' | 'conflict-version' | 'conflict-stage';
 
@@ -90,8 +77,11 @@ function syncCounts(): void {
 }
 
 function conflict(type: string, title: string, detail: string, current: ApplicationCard, currentStageName: string) {
+  // Validated like every other response: §4.1's whole claim is that a fixture cannot
+  // drift from the shape the screen is built against, and an unvalidated error body is
+  // exactly where that drift hides.
   return HttpResponse.json(
-    { type, title, status: 409, detail, current, currentStageName },
+    ConflictProblemSchema.parse({ type, title, status: 409, detail, current, currentStageName }),
     { status: 409, headers: { 'content-type': 'application/problem+json' } },
   );
 }
@@ -105,7 +95,10 @@ function notFound(detail: string) {
 
 export const pipelineHandlers = [
   http.get('*/v1/jobs/:jobId/board', async ({ request }) => {
-    const scenario = new URL(request.url).searchParams.get('_scenario') as Scenario | null;
+    // An empty `?_scenario=` is the same as no scenario at all. Treating '' as its own
+    // key made a bare probe URL look like a scenario change and silently rebuild the
+    // board mid-session.
+    const scenario = (new URL(request.url).searchParams.get('_scenario') || null) as Scenario | null;
 
     if (scenario === 'error') {
       return HttpResponse.json(
@@ -122,11 +115,18 @@ export const pipelineHandlers = [
     // Holds the loading state open so it can be screenshotted and axe-checked.
     if (scenario === 'slow') await delay('infinite');
 
-    if (scenario !== servedScenario) {
+    const scenarioChanged = scenario !== servedScenario;
+    if (scenarioChanged) {
       board = scenario === 'empty' ? emptyBoard() : eng204Board();
       servedScenario = scenario;
     }
-    armedConflict = scenario === 'conflict-version' || scenario === 'conflict-stage' ? scenario : null;
+    // Armed only when the scenario CHANGES. Re-arming on every GET latched the
+    // failure on: `onSettled` refetches after each 409, which would re-arm the next
+    // one and make every subsequent move fail — the opposite of what a walkthrough
+    // scenario is for.
+    if (scenarioChanged) {
+      armedConflict = scenario === 'conflict-version' || scenario === 'conflict-stage' ? scenario : null;
+    }
 
     // Out of scorecard scope: the field is OMITTED, not nulled, so a caller who cannot
     // read scorecards sees a card indistinguishable from an unscored one and the board
@@ -153,7 +153,7 @@ export const pipelineHandlers = [
    * Stage move. Bumps `version`, resets `daysInStage`, and is the ONLY write that does.
    */
   http.patch('*/v1/applications/:id/stage', async ({ request, params }) => {
-    const body = MoveStageBody.parse(await request.json());
+    const body = MoveStageBodySchema.parse(await request.json());
     const found = findCard(params['id'] as string);
     if (!found) return notFound('That application is no longer on this board.');
     const { column: from, index, card } = found;
@@ -219,7 +219,7 @@ export const pipelineHandlers = [
     syncCounts();
 
     // Writes return the full updated resource including its new version (CLAUDE.md §9).
-    return HttpResponse.json(moved);
+    return HttpResponse.json(ApplicationCardSchema.parse(moved));
   }),
 
   /**
@@ -238,6 +238,6 @@ export const pipelineHandlers = [
     column.cards.splice(index, 1);
     column.cards.splice(insertionIndex(column.cards, body.beforeId, body.afterId), 0, card);
 
-    return HttpResponse.json(card);
+    return HttpResponse.json(ApplicationCardSchema.parse(card));
   }),
 ];

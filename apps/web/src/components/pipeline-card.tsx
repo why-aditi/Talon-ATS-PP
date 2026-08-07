@@ -2,6 +2,7 @@
 
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { prefersReducedMotion } from '../lib/board-state';
 import {
   SOURCE_LABELS,
   STATUS_LABELS,
@@ -62,7 +63,7 @@ export function CardBody({
       <div className="flex items-start gap-2">
         <Avatar id={card.candidateId} name={card.name} />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-card-title text-text-primary">{card.name}</p>
+          <p data-testid="card-name" className="truncate text-card-title text-text-primary">{card.name}</p>
           <p className="truncate text-meta text-text-secondary">
             {card.currentTitle} at {card.currentCompany}
           </p>
@@ -118,7 +119,7 @@ export function PipelineCard({
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: card.id,
     disabled: !draggable,
-    data: { type: 'card', stageId: card.id },
+    data: { type: 'card' },
   });
 
   return (
@@ -127,7 +128,9 @@ export function PipelineCard({
       // The handle the board refocuses after a drop — dnd-kit's own restore targets a
       // node React has already replaced by then.
       data-card-id={card.id}
-      style={{ transform: CSS.Translate.toString(transform), transition }}
+      // The transition is an INLINE style, which beats the reduced-motion rule in
+      // globals.css — so it has to be dropped here rather than overridden there.
+      style={{ transform: CSS.Translate.toString(transform), transition: prefersReducedMotion() ? undefined : transition }}
       {...(draggable ? attributes : {})}
       {...(draggable ? listeners : {})}
       // The whole card is the handle and the keyboard target, so the hit area is the

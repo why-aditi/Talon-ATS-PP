@@ -83,19 +83,31 @@ export function neighboursFor(
   from: Located,
   target: BoardColumn,
   over: Located | null,
-): { beforeId: string | null; afterId: string | null } {
+): { beforeId: string | null; afterId: string | null; index: number } {
   const ids = target.cards.map((c) => c.id).filter((id) => id !== from.card.id);
+  const sameColumn = from.column.stageId === target.stageId;
 
   let at = ids.length;
   if (over) {
-    const overIndex = ids.indexOf(over.card.id);
-    if (overIndex !== -1) {
-      const movingDown = from.column.stageId === target.stageId && from.cardIndex < over.cardIndex;
-      at = movingDown ? overIndex + 1 : overIndex;
+    if (over.card.id === from.card.id) {
+      // dnd-kit reports the dragged card as its own `over` on every pickup, and
+      // again on a drop that never left the spot. That means "stay put", not "go
+      // last" — and because the card is filtered out of `ids`, an indexOf lookup
+      // misses and silently appends. Left unhandled it announces a move that did
+      // not happen and relocates the card on drop.
+      at = sameColumn ? from.cardIndex : ids.length;
+    } else {
+      const overIndex = ids.indexOf(over.card.id);
+      if (overIndex !== -1) {
+        const movingDown = sameColumn && from.cardIndex < over.cardIndex;
+        at = movingDown ? overIndex + 1 : overIndex;
+      }
     }
   }
 
-  return { beforeId: ids[at] ?? null, afterId: at > 0 ? (ids[at - 1] ?? null) : null };
+  // `index` is returned so callers can tell a real move from a drop in place
+  // without recomputing the rule and drifting from it.
+  return { beforeId: ids[at] ?? null, afterId: at > 0 ? (ids[at - 1] ?? null) : null, index: at };
 }
 
 /**
@@ -139,3 +151,15 @@ export const boardCoordinateGetter: KeyboardCoordinateGetter = (event, args) => 
   // card somewhere the user did not ask for.
   return undefined;
 };
+
+/**
+ * `prefers-reduced-motion`, readable from JS.
+ *
+ * `globals.css` collapses CSS transitions and animations, but the drop animation runs
+ * through the Web Animations API and the sortable's transition is an INLINE style —
+ * inline beats the stylesheet, so neither is reached by the media query alone. Both
+ * have to ask.
+ */
+export function prefersReducedMotion(): boolean {
+  return typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+}

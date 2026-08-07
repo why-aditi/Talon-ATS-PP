@@ -102,6 +102,13 @@ export type Board = z.infer<typeof BoardSchema>;
  * the write that bumps `version`.
  */
 export const MoveStageBodySchema = z.object({
+  /**
+   * The stage the CLIENT believed the card was in. Load-bearing: without it the
+   * from-stage 409 is undetectable and collapses into the version check, which
+   * ARCHITECTURE §6.1 spends a paragraph forbidding. Required, not optional — a
+   * `.strict()` server would otherwise reject the field the design depends on.
+   */
+  fromStageId: z.string(),
   toStageId: z.string(),
   beforeId: z.string().nullable().optional(),
   afterId: z.string().nullable().optional(),
@@ -109,7 +116,13 @@ export const MoveStageBodySchema = z.object({
   reason: z.string().optional(),
 });
 
-/** No `version` in, no `version` out. Position is last-write-wins. */
+/**
+ * No `version` in, no `version` out. Position is last-write-wins.
+ *
+ * `beforeId` WINS when both are supplied and both resolve — the client sends both so
+ * that a neighbour which has moved or been deleted still leaves the other usable.
+ * Stated because both implementations must agree and neither reads the other.
+ */
 export const ReorderBodySchema = z.object({
   beforeId: z.string().nullable().optional(),
   afterId: z.string().nullable().optional(),

@@ -15,13 +15,14 @@ import {
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
+import { TOKENS } from '@talon/tokens';
 import { MoveFailure, useBoard, useMoveStage, useReorder, type MoveInput } from '../lib/board-query';
-import { boardCoordinateGetter, locate, neighboursFor } from '../lib/board-state';
+import { boardCoordinateGetter, locate, neighboursFor, prefersReducedMotion } from '../lib/board-state';
 import { CardBody } from './pipeline-card';
 import { SOURCE_LABELS, SourceSchema, type ApplicationCard, type Board, type BoardColumn } from '../mocks/pipeline-contract';
 import { ChevronDownIcon, SearchIcon } from './icons';
 import { PipelineColumn } from './pipeline-column';
-import { Button, StatusPill, buttonClass } from './ui';
+import { Button, StatusPill, buttonClass, cx } from './ui';
 
 /** URL `?state=` → the mock scenario that produces it. Filtered-empty needs no entry:
  *  a filter that matches nothing is reachable for real. */
@@ -34,7 +35,21 @@ const STATE_SCENARIOS: Record<string, string> = {
   moved: 'conflict-stage',
 };
 
+/**
+ * A sort and a hand-arranged column are mutually exclusive, and pretending otherwise
+ * is what made the first version of this screen lie: the sort ran on every render, so
+ * a drag-reorder was spliced in optimistically, confirmed by the server, and then
+ * immediately sorted back out. The PATCH fired and the board snapped back.
+ *
+ * `manual` is therefore the board's own order — `board_rank` as the server returns it
+ * — and is the only sort under which reordering within a column means anything. Any
+ * other sort refuses a within-column drop and says why, rather than accepting it and
+ * discarding it. Cross-stage moves are unaffected: they are a stage change, not a
+ * position.
+ */
 const SORTS = {
+  // Default per the reference, which reads "sort: time in stage" and shows every
+  // column in descending dwell.
   time: { label: 'time in stage', compare: (a: ApplicationCard, b: ApplicationCard) => b.daysInStage - a.daysInStage },
   recent: { label: 'recency', compare: (a: ApplicationCard, b: ApplicationCard) => a.daysInStage - b.daysInStage },
   // Unscored cards sort last rather than as zero — a candidate nobody has scored is
@@ -43,6 +58,7 @@ const SORTS = {
     label: 'score',
     compare: (a: ApplicationCard, b: ApplicationCard) => (b.scoreAvg ?? -1) - (a.scoreAvg ?? -1),
   },
+  manual: { label: 'manual', compare: null },
 } as const;
 
 type SortKey = keyof typeof SORTS;
@@ -61,12 +77,17 @@ function applyFilters(columns: BoardColumn[], filters: Filters): BoardColumn[] {
     }
     if (filters.stage) cards = cards.filter(() => column.canonical === filters.stage);
     if (filters.source) cards = cards.filter((card) => card.source === filters.source);
+    // No recruiter filter: the recruiter belongs to the JOB, and this board is scoped
+    // to one job, so the control could only ever match everything or nothing. It is
+    // rendered disabled rather than applied (see `FilterSelect` below).
     // Sorting is per column: the board has no single ordered list, and sorting across
     // columns would be sorting something the user cannot see.
     const compare = SORTS[filters.sort].compare;
     // Copied before sorting — `cards` is still the query cache's array when no filter
-    // narrowed it, and sorting in place would mutate cached data.
-    return { ...column, cards: [...cards].sort(compare), count: cards.length };
+    // narrowed it, and sorting in place would mutate cached data. `manual` keeps the
+    // server's order untouched.
+    const ordered = compare ? [...cards].sort(compare) : cards;
+    return { ...column, cards: ordered, count: ordered.length };
   });
 }
 
@@ -132,11 +153,13 @@ function FilterSelect({
   value,
   onChange,
   options,
+  disabled,
 }: {
   label: string;
   value: string;
   onChange: (next: string) => void;
   options: { value: string; label: string }[];
+  disabled?: boolean;
 }) {
   return (
     <div className="flex h-[var(--control-height-md)] items-center gap-1 rounded-md border border-border-default bg-bg-surface pl-3 pr-2 text-body">
@@ -145,8 +168,9 @@ function FilterSelect({
         <select
           aria-label={`Filter candidates by ${label.toLowerCase()}`}
           value={value}
+          disabled={disabled}
           onChange={(event) => onChange(event.target.value)}
-          className="h-full appearance-none bg-transparent pr-5 text-text-primary"
+          className={cx('h-full appearance-none bg-transparent', disabled ? 'text-action-disabled-text' : 'text-text-primary', 'pr-5')}
         >
           {options.map((option) => (
             <option key={option.value} value={option.value}>
@@ -233,6 +257,22 @@ export function PipelineBoard({ jobId }: { jobId: string }) {
   const query = useBoard(jobId, STATE_SCENARIOS[state]);
   const board = query.data;
 
+  // The rendered view. Declared here because the drag handlers and the announcements
+  // both read it: the drop happened on what the user could see, not on the raw cache.
+  const columns = board ? applyFilters(board.columns, filters) : [];
+  /** Only `manual` leaves the server's order alone, so only `manual` can be rearranged. */
+  const manualOrder = filters.sort === 'manual';
+
+  /**
+   * Read from the token map, never copied as literals. These are `motion.duration.base`
+   * and `motion.easing.spring` (DESIGN_SYSTEM §4) — and because a dropAnimation is a JS
+   * prop rather than a className, `token-usage.test.ts` structurally cannot catch a
+   * hard-coded value here. Reading TOKENS is what keeps it honest.
+   */
+  const dropAnimation = prefersReducedMotion()
+    ? null
+    : { duration: Number.parseInt(TOKENS['--duration-base'], 10), easing: TOKENS['--ease-spring'] };
+
   const scenario = STATE_SCENARIOS[state];
   const moveStage = useMoveStage(jobId, scenario);
   const reorder = useReorder(jobId, scenario);
@@ -266,12 +306,18 @@ export function PipelineBoard({ jobId }: { jobId: string }) {
   }, [refocus, board, query.isFetching, moveStage.isPending, reorder.isPending]);
 
 
-  /** Resolves whatever dnd-kit reports being over — a column or a card — to a column. */
+  /**
+   * Resolves whatever dnd-kit reports being over — a column or a card — to a column.
+   *
+   * Reads the RENDERED columns, not `board.columns`. The drop happened on what the
+   * user could see, which is the filtered and sorted array; resolving against the raw
+   * cache would compute `over.cardIndex` and the movingDown branch against indices
+   * that need not match what was on screen.
+   */
   function resolveTarget(overId: string) {
-    if (!board) return null;
-    const column = board.columns.find((c) => c.stageId === overId);
+    const column = columns.find((c) => c.stageId === overId);
     if (column) return { column, over: null };
-    const over = locate(board.columns, overId);
+    const over = locate(columns, overId);
     return over ? { column: over.column, over } : null;
   }
 
@@ -285,15 +331,21 @@ export function PipelineBoard({ jobId }: { jobId: string }) {
     // is — refocused by id below, once the new node exists.
     setRefocus(String(active.id));
 
-    const from = locate(board.columns, String(active.id));
+    const from = locate(columns, String(active.id));
     const target = resolveTarget(String(over.id));
     if (!from || !target) return;
-    // Belt and braces: the droppable is already disabled, so this only fires if a
-    // future change re-enables it without revisiting the reason prompt.
+    // Terminal columns are reachable droppables that refuse — this is the refusal.
     if (target.column.isTerminal || from.column.isTerminal) return;
 
-    const { beforeId, afterId } = neighboursFor(from, target.column, target.over);
+    const { beforeId, afterId, index } = neighboursFor(from, target.column, target.over);
     const sameColumn = from.column.stageId === target.column.stageId;
+
+    // Dropped where it started. No write, no request — Space-Space is the natural
+    // "never mind" for a keyboard user and must not relocate anything.
+    if (sameColumn && index === from.cardIndex) return;
+    // A hand-arranged position is meaningless while a sort is deciding the order, so
+    // the drop is refused rather than accepted and silently sorted away.
+    if (sameColumn && !manualOrder) return;
 
     const input: MoveInput = {
       card: from.card,
@@ -315,42 +367,52 @@ export function PipelineBoard({ jobId }: { jobId: string }) {
    */
   const announcements: Announcements = {
     onDragStart({ active }) {
-      const from = board && locate(board.columns, String(active.id));
+      const from = locate(columns, String(active.id));
       if (!from) return;
       return `Picked up ${from.card.name} from ${from.column.name}, position ${from.cardIndex + 1} of ${from.column.cards.length}.`;
     },
     onDragOver({ active, over }) {
-      if (!over || !board) return;
-      const from = locate(board.columns, String(active.id));
+      if (!over) return;
+      const from = locate(columns, String(active.id));
       const target = resolveTarget(String(over.id));
       if (!from || !target) return;
       if (target.column.isTerminal) {
         return `${target.column.name} is not available — moving there needs a reason.`;
       }
-      const { beforeId, afterId } = neighboursFor(from, target.column, target.over);
-      const ids = target.column.cards.map((c) => c.id).filter((id) => id !== from.card.id);
-      const position = beforeId ? ids.indexOf(beforeId) + 1 : afterId ? ids.indexOf(afterId) + 2 : ids.length + 1;
+      const { index } = neighboursFor(from, target.column, target.over);
+      const sameColumn = target.column.stageId === from.column.stageId;
 
       // Nothing is mutated during a drag, so `from` still reports where the card
       // started. dnd-kit fires onDragOver immediately after onDragStart, and without
-      // this the "Picked up…" message is overwritten within the same tick by a
-      // "moved to Onsite, position 1 of 1" that describes no movement at all — the
-      // user never hears that they picked anything up.
-      const unmoved = target.column.stageId === from.column.stageId && position === from.cardIndex + 1;
-      if (unmoved) return;
+      // this the "Picked up…" message is overwritten within the same tick by a move
+      // that never happened — the user never hears that they picked anything up.
+      if (sameColumn && index === from.cardIndex) return;
+      if (sameColumn && !manualOrder) {
+        return `Reordering ${from.column.name} needs sort: manual. The board is sorted by ${SORTS[filters.sort].label}.`;
+      }
 
-      return `${from.card.name} moved to ${target.column.name}, position ${position} of ${ids.length + 1}.`;
+      const total = target.column.cards.filter((c) => c.id !== from.card.id).length + 1;
+      return `${from.card.name} moved to ${target.column.name}, position ${index + 1} of ${total}.`;
     },
     onDragEnd({ active, over }) {
-      if (!over || !board) return 'Move cancelled.';
-      const from = locate(board.columns, String(active.id));
+      if (!over) return 'Move cancelled.';
+      const from = locate(columns, String(active.id));
       const target = resolveTarget(String(over.id));
       if (!from || !target) return 'Move cancelled.';
       if (target.column.isTerminal) return `${from.card.name} was not moved. ${target.column.name} needs a reason.`;
-      return `${from.card.name} dropped into ${target.column.name}.`;
+
+      const { index } = neighboursFor(from, target.column, target.over);
+      const sameColumn = target.column.stageId === from.column.stageId;
+      if (sameColumn && index === from.cardIndex) return `${from.card.name} stayed in ${from.column.name}.`;
+      if (sameColumn && !manualOrder) return `${from.card.name} was not moved. Reordering needs sort: manual.`;
+
+      const total = target.column.cards.filter((c) => c.id !== from.card.id).length + 1;
+      // Position included: "dropped into Offer" alone leaves a keyboard user with no
+      // idea where the card landed (spec 003 §6.7).
+      return `${from.card.name} dropped into ${target.column.name}, position ${index + 1} of ${total}.`;
     },
     onDragCancel({ active }) {
-      const from = board && locate(board.columns, String(active.id));
+      const from = locate(columns, String(active.id));
       return from ? `Move cancelled. ${from.card.name} returned to ${from.column.name}.` : 'Move cancelled.';
     },
   };
@@ -365,12 +427,20 @@ export function PipelineBoard({ jobId }: { jobId: string }) {
   const hasData = board !== undefined;
   const loadFailed = query.isError && !hasData;
 
-  const columns = board ? applyFilters(board.columns, filters) : [];
   const shown = columns.reduce((sum, column) => sum + column.cards.length, 0);
   const total = board ? board.columns.reduce((sum, column) => sum + column.cards.length, 0) : 0;
-  const isFiltered = Boolean(filters.q || filters.stage || filters.source || filters.recruiter);
+  const isFiltered = Boolean(filters.q || filters.stage || filters.source);
 
   const activeDrag = activeId && board ? locate(board.columns, activeId) : null;
+
+  // Both mutations roll back; both must say so. Reading only `moveStage.isError` left
+  // a failed reorder silent, which is half the writes on this screen.
+  const failure =
+    moveStage.error instanceof MoveFailure
+      ? { error: moveStage.error, dismiss: () => moveStage.reset() }
+      : reorder.error instanceof MoveFailure
+        ? { error: reorder.error, dismiss: () => reorder.reset() }
+        : null;
 
   const stageOptions = [
     { value: '', label: 'All' },
@@ -414,12 +484,10 @@ export function PipelineBoard({ jobId }: { jobId: string }) {
         */}
         <FilterSelect
           label="Recruiter"
-          value={filters.recruiter}
-          onChange={(next) => setParam('recruiter', next)}
-          options={[
-            { value: '', label: 'All' },
-            ...(board?.job.recruiter ? [{ value: board.job.recruiter.id, label: board.job.recruiter.name }] : []),
-          ]}
+          value=""
+          disabled
+          onChange={() => undefined}
+          options={[{ value: '', label: 'All' }]}
         />
 
         {/* The filters group left, the count and sort flush right, per the reference. */}
@@ -475,10 +543,13 @@ export function PipelineBoard({ jobId }: { jobId: string }) {
       {/* A failed move says what happened and what the board did about it. The card is
           already back where it was — this explains why, rather than asking the user to
           notice. */}
-      {moveStage.isError && moveStage.error instanceof MoveFailure ? (
-        <div role="status" className="mb-3 flex items-center gap-3 rounded-lg bg-feedback-warning-bg px-4 py-3">
-          <p className="flex-1 text-body text-feedback-warning-fg">{moveStage.error.message}</p>
-          <Button onClick={() => moveStage.reset()}>Dismiss</Button>
+      {failure ? (
+        // `aria-live` is off deliberately: dnd-kit already owns the one live region on
+        // this screen (spec 003 §6.7), and a second one would double-announce every
+        // move. The banner is reached by the refocused card instead.
+        <div role="status" aria-live="off" className="mb-3 flex items-center gap-3 rounded-lg bg-feedback-warning-bg px-4 py-3">
+          <p className="flex-1 text-body text-feedback-warning-fg">{failure.error.message}</p>
+          <Button onClick={failure.dismiss}>Dismiss</Button>
         </div>
       ) : null}
 
@@ -505,7 +576,7 @@ export function PipelineBoard({ jobId }: { jobId: string }) {
           {/* The lifted card. `shadow.dragging` plus a 2° tilt per DESIGN_SYSTEM §4;
               both are transforms, so `prefers-reduced-motion` collapses them while the
               source card's opacity fade stays. */}
-          <DragOverlay dropAnimation={{ duration: 200, easing: 'cubic-bezier(0.34, 1.4, 0.64, 1)' }}>
+          <DragOverlay dropAnimation={dropAnimation}>
             {activeDrag ? (
               <div className="rotate-2 motion-reduce:rotate-0">
                 <CardBody card={activeDrag.card} slaDays={activeDrag.column.slaDays} className="shadow-dragging" />

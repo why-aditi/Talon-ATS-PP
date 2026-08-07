@@ -34,18 +34,19 @@ describe('the board', () => {
     renderBoard();
     expect(await screen.findByText('Tess Bianchi')).toBeInTheDocument();
 
+    // Every card, by column, with the order asserted. The previous version named one
+    // card per column and then asserted that a helper FUNCTION was truthy — Applied
+    // could have rendered forty cards and it would still have passed.
     const names = (stage: string) =>
       within(column(stage))
-        .queryAllByRole('heading', { level: 3 })
-        .map((h) => h.textContent);
+        .queryAllByTestId('card-name')
+        .map((el) => el.textContent);
 
-    expect(within(column('Applied')).getByText('Tess Bianchi')).toBeInTheDocument();
-    expect(within(column('Screen')).getByText('Elena Ruiz')).toBeInTheDocument();
-    expect(within(column('Screen')).getByText('Marcus Webb')).toBeInTheDocument();
-    expect(within(column('Onsite')).getByText('Ana Petrova')).toBeInTheDocument();
-    expect(within(column('Offer')).getByText('Sofia Lindqvist')).toBeInTheDocument();
-    expect(within(column('Hired')).getByText('David Kim')).toBeInTheDocument();
-    expect(names).toBeTruthy();
+    expect(names('Applied')).toEqual(['Tess Bianchi', 'Omar Haddad', 'Jordan Cole', 'Priya Nair']);
+    expect(names('Screen')).toEqual(['Elena Ruiz', 'Marcus Webb']);
+    expect(names('Onsite')).toEqual(['Ana Petrova']);
+    expect(names('Offer')).toEqual(['Sofia Lindqvist']);
+    expect(names('Hired')).toEqual(['David Kim']);
   });
 
   it('carries count, pass rate and median in every column header', async () => {
@@ -146,9 +147,11 @@ describe('card content', () => {
 });
 
 describe('states', () => {
-  it('renders a skeleton while loading and never shifts to it later', async () => {
+  it('renders a skeleton while loading, and not the board beside it', async () => {
     renderBoard('loading');
     expect(await screen.findByRole('status', { name: 'Loading pipeline' })).toBeInTheDocument();
+    // The second clause the old name promised and never checked.
+    expect(screen.queryByText('Tess Bianchi')).not.toBeInTheDocument();
   });
 
   it('keeps every column present on an empty board', async () => {
