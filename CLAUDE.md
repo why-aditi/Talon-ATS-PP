@@ -193,7 +193,7 @@ pnpm dev                 # web + api + workers
 pnpm db:migrate          # apply migrations
 pnpm db:seed             # seed tenant with the reference data (Maya, ENG-204, the 9 candidates)
 pnpm test                # unit + integration
-pnpm test:isolation      # tenant isolation suite
+pnpm test:isolation      # tenant isolation suite — hostile tenant sees nothing
 pnpm test:routes         # route manifest — every route protected or allow-listed
 pnpm e2e                 # Playwright
 pnpm tokens:build        # design-tokens.json → CSS vars + Tailwind theme
@@ -228,6 +228,8 @@ The loop, in order:
 **7. Update the spec** if reality diverged from it, in the same PR. A spec that lies is worse than no spec.
 
 CI gates — `lint`, `typecheck`, `test`, `test:isolation`, `test:routes`, `e2e`, contrast check — are required checks on `main`, all blocking. A red gate is never merged around; if a gate is wrong, fix the gate in its own PR.
+
+A gate becomes required in the step that first gives it something to guard, and the spec says which step that is (spec 001 §10). Until then it is listed there, not here as if it were running. Never leave a doc asserting a gate whose script doesn't exist — a missing gate fails silently and cannot be configured as a required check. Wire it or write down when it lands, in the same PR.
 
 Where branch protection is available, turn it on: no direct pushes to `main`, required status checks, required linear history.
 
