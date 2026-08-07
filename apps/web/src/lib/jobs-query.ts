@@ -5,8 +5,6 @@ import { useSession } from './session';
 export type JobFilters = {
   status?: string | undefined;
   department?: string | undefined;
-  /** Mock-only; see mocks/handlers.ts. Never sent outside development. */
-  scenario?: string | undefined;
 };
 
 const API_BASE = process.env['NEXT_PUBLIC_API_URL'] ?? '';
@@ -18,9 +16,6 @@ export function jobsUrl(filters: JobFilters): string {
   const params = new URLSearchParams();
   if (filters.status) params.set('status', filters.status);
   if (filters.department) params.set('department', filters.department);
-  // `_scenario` is not in the query schema and would itself 400. It exists to reach
-  // states the fixtures cannot otherwise produce, so it stays out of production.
-  if (filters.scenario && process.env.NODE_ENV !== 'production') params.set('_scenario', filters.scenario);
   const query = params.toString();
   return `${API_BASE}/v1/jobs${query ? `?${query}` : ''}`;
 }
@@ -52,7 +47,7 @@ export function useJobs(filters: JobFilters) {
   return useQuery({
     // The token is in the key so a sign-in refetches rather than serving the
     // previous identity's page from cache.
-    queryKey: ['jobs', filters.status ?? null, filters.department ?? null, filters.scenario ?? null, session?.user.id ?? null],
+    queryKey: ['jobs', filters.status ?? null, filters.department ?? null, session?.user.id ?? null],
     queryFn: ({ signal }) => fetchJobs(filters, signal, session?.accessToken),
   });
 }

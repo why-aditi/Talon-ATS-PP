@@ -3,14 +3,13 @@ import { QueryClient, QueryClientProvider, focusManager } from '@tanstack/react-
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import axe from 'axe-core';
-import { HttpResponse, http } from 'msw';
 import { describe, expect, it } from 'vitest';
 import { AppShell } from '../components/app-shell';
 import { JobsScreen } from '../components/jobs-screen';
 import { fetchJobs, jobsUrl } from '../lib/jobs-query';
 import { SessionProvider } from '../lib/session';
-import { JOBS } from '../mocks/fixtures';
-import { server } from '../mocks/node';
+import { SEEDED_JOBS } from './seeded-jobs';
+import { json, route } from './fetch-stub';
 import { routerReplace, searchParams } from './setup';
 
 function renderJobs(query = '', queryOptions: Record<string, unknown> = {}) {
@@ -47,22 +46,22 @@ async function expectNoAxeViolations(container: HTMLElement) {
 
 describe('fixtures match the contract', () => {
   it('every fixture parses as a Job', () => {
-    for (const job of JOBS) expect(() => JobSchema.parse(job)).not.toThrow();
+    for (const job of SEEDED_JOBS) expect(() => JobSchema.parse(job)).not.toThrow();
   });
 
   it('the list response parses', () => {
-    expect(() => ListJobsResponseSchema.parse({ data: JOBS, nextCursor: null })).not.toThrow();
+    expect(() => ListJobsResponseSchema.parse({ data: SEEDED_JOBS, nextCursor: null })).not.toThrow();
   });
 
   it('keeps ENG-204 at the seeded counts, not the reference screen counts', () => {
     // Spec 001 §11 open question 5 — the board is the truth. If this ever reads 18/38
     // someone has "fixed" the fixture to match a screenshot.
-    const eng204 = JOBS.find((job) => job.reqCode === 'ENG-204');
+    const eng204 = SEEDED_JOBS.find((job) => job.reqCode === 'ENG-204');
     expect(eng204).toMatchObject({ inProcessCount: 8, activeCount: 9 });
   });
 
   it('derives in-process counts from the distribution', () => {
-    for (const job of JOBS) {
+    for (const job of SEEDED_JOBS) {
       const { applied, screen: screened, onsite, offer } = job.stageDistribution;
       expect(applied + screened + onsite + offer, job.reqCode).toBe(job.inProcessCount);
     }
@@ -105,7 +104,8 @@ describe('default state', () => {
 
 describe('loading state', () => {
   it('shows skeleton rows at the real row height and never resolves', async () => {
-    const { container } = renderJobs('state=loading');
+    route(() => new Promise<Response>(() => {}));
+    const { container } = renderJobs();
     const skeleton = await screen.findByLabelText('Loading jobs');
     expect(skeleton).toHaveAttribute('aria-busy', 'true');
     expect(container.querySelectorAll('.h-\\[var\\(--layout-row-height\\)\\]')).toHaveLength(6);
@@ -115,14 +115,19 @@ describe('loading state', () => {
 
 describe('empty states', () => {
   it('invites a first job when the tenant has none, without an inert button', async () => {
-    const { container } = renderJobs('state=empty');
-    expect(await screen.findByText('No open roles yet.')).toBeInTheDocument();
-    // "+ New job" is deferred with the wizard: no page-level button that does nothing,
-    // and no copy pointing at the sidebar link either, since that lands on the
-    // not-built page until the wizard exists.
-    expect(screen.queryByRole('button', { name: '+ New job' })).not.toBeInTheDocument();
+    route((url) => (url.pathname === '/v1/jobs' ? json({ data: [], nextCursor: null }) : undefined));
+    const { container } = renderJobs();
+    const placeholder = (await screen.findByText('No open roles yet.')).closest('div') as HTMLElement;
+
+    // The empty state carries no action of its own. "+ New job" lives in the shell
+    // and the jobs header, and both open one modal (spec 003, one path per action) —
+    // a third trigger here would be a second path to the same intent.
+    expect(within(placeholder).queryByRole('button', { name: '+ New job' })).not.toBeInTheDocument();
     expect(screen.getByText(/Jobs will appear here/)).toBeInTheDocument();
-    expect(screen.queryByText(/from the sidebar/)).not.toBeInTheDocument();
+    // And it does not send the reader somewhere: every "+ New job" on screen works.
+    for (const trigger of screen.getAllByRole('button', { name: '+ New job' })) {
+      expect(trigger).toBeEnabled();
+    }
     await expectNoAxeViolations(container);
   });
 
@@ -138,7 +143,8 @@ describe('empty states', () => {
 
 describe('error state', () => {
   it('names the next move and keeps the filter', async () => {
-    const { container } = renderJobs('status=active&state=error');
+    route(() => json({ type: 'x', title: 'boom', status: 500 }, 500));
+    const { container } = renderJobs('status=active');
     expect(await screen.findByText("Jobs didn't load.")).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
     // The filter survives the failure — the trigger still reads Active.
@@ -147,16 +153,25 @@ describe('error state', () => {
   });
 });
 
+/** What the API sends a caller without `comp:read`: `band` omitted entirely. */
+const withoutBand = () =>
+  route((url) =>
+    url.pathname === '/v1/jobs'
+      ? json({ data: SEEDED_JOBS.map(({ band: _band, ...job }) => job), nextCursor: null })
+      : undefined,
+  );
+
 describe('permission-denied', () => {
-  it('strips comp to visible:false at the wire, and still renders every row', async () => {
+  it('omits band at the wire, and still renders every row', async () => {
     // The screen renders no comp field, so this state is visually identical to the
     // default — the assertion that matters is at the fetch layer, not in the DOM.
     // A test named for a check it does not perform is worse than no test.
-    const response = await fetchJobs({ scenario: 'forbidden' });
+    withoutBand();
+    const response = await fetchJobs({});
     expect(response.data).not.toHaveLength(0);
     for (const job of response.data) expect(job).not.toHaveProperty('band');
 
-    renderJobs('state=forbidden');
+    renderJobs();
     await screen.findByText('Senior Product Engineer');
     expect(screen.getByText('6 open')).toBeInTheDocument();
     expect(screen.queryByText("Jobs didn't load.")).not.toBeInTheDocument();
@@ -167,14 +182,14 @@ describe('permission-denied', () => {
     // the union carried: an optional field cannot express the difference. This test
     // pins the resulting ambiguity so it stays visible instead of being forgotten.
     const permitted = await fetchJobs({});
-    const denied = await fetchJobs({ scenario: 'forbidden' });
-
     const eng204 = permitted.data.find((job) => job.reqCode === 'ENG-204');
     const eng209 = permitted.data.find((job) => job.reqCode === 'ENG-209');
     expect(eng204?.band).toEqual({ minCents: '19000000', maxCents: '22500000', currency: 'USD' });
     // ENG-209 simply has no band set.
     expect(eng209).not.toHaveProperty('band');
 
+    withoutBand();
+    const denied = await fetchJobs({});
     // ENG-204 withheld looks exactly like ENG-209 unset. Owner: api (§7.4).
     const withheld = denied.data.find((job) => job.reqCode === 'ENG-204');
     expect(Object.keys(withheld ?? {}).sort()).toEqual(Object.keys(eng209 ?? {}).sort());
@@ -188,11 +203,7 @@ describe('a failed refetch keeps the rows it already has', () => {
 
     // Same query key, so React Query retains the data it already has; the next fetch
     // over that key fails. This is the focus-refetch path from providers.tsx.
-    server.use(
-      http.get('*/v1/jobs', () =>
-        HttpResponse.json({ type: 'about:blank', title: 'boom', status: 500 }, { status: 500 }),
-      ),
-    );
+    route(() => json({ type: 'about:blank', title: 'boom', status: 500 }, 500));
     focusManager.setFocused(false);
     focusManager.setFocused(true);
 
@@ -204,7 +215,8 @@ describe('a failed refetch keeps the rows it already has', () => {
   });
 
   it('shows the full error state when there is no data to keep', async () => {
-    renderJobs('state=error');
+    route(() => json({ type: 'x', title: 'boom', status: 500 }, 500));
+    renderJobs();
     expect(await screen.findByText("Jobs didn't load.")).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Refresh' })).not.toBeInTheDocument();
   });

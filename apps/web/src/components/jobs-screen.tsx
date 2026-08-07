@@ -4,6 +4,7 @@ import { JobStatusSchema, type Job } from '@talon/contracts';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useJobs } from '../lib/jobs-query';
+import { useJobTemplate } from './app-shell';
 import { Avatar, Button, DistributionBar, Eyebrow, Select, StatusPill, buttonClass, cx } from './ui';
 
 /**
@@ -35,14 +36,6 @@ const ROW_HEIGHT = 'h-[var(--layout-row-height)]';
 
 /** A job counts toward "N open" unless it has been closed out. */
 const isOpen = (job: Job) => job.status !== 'closed';
-
-/** URL `?state=` → the mock scenario that produces it. Filtered-empty needs no entry. */
-const STATE_SCENARIOS: Record<string, string> = {
-  loading: 'slow',
-  empty: 'empty',
-  error: 'error',
-  forbidden: 'forbidden',
-};
 
 /* ── Row ───────────────────────────────────────────────────────────────────── */
 
@@ -143,6 +136,7 @@ export function JobsScreen() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const openJobTemplate = useJobTemplate();
 
   // The URL is user input. `ListJobsQuery` is `.strict()` and `status` is an enum, so
   // forwarding `?status=bogus` verbatim 400s the real endpoint while the mock merely
@@ -151,13 +145,11 @@ export function JobsScreen() {
   const rawStatus = searchParams.get('status') ?? '';
   const status = JobStatusSchema.safeParse(rawStatus).success ? rawStatus : '';
   const department = (searchParams.get('department') ?? '').trim();
-  const state = searchParams.get('state') ?? '';
   const isFiltered = Boolean(status || department);
 
   const query = useJobs({
     status: status || undefined,
     department: department || undefined,
-    scenario: STATE_SCENARIOS[state],
   });
 
   const jobs = query.data?.data ?? [];
@@ -206,14 +198,13 @@ export function JobsScreen() {
 
         {/*
           Screen 02 carries "+ New job" twice — dashed in the sidebar, primary here.
-          A link rather than a button, same as the sidebar one: it navigates, so it is
-          not an inert control, and /jobs/new is a 404 until the wizard lands (§7.4).
-          Two entry points to one destination is the reference's call, not a duplicate
-          to collapse.
+          Both now open the job template modal through the same context callback, which
+          is what #5 requires: two entry points, one code path. Spec 003 records that
+          this is a stopgap until the wizard on screen 09 exists.
         */}
-        <Link href="/jobs/new" className={buttonClass('primary')}>
+        <button type="button" onClick={openJobTemplate} className={buttonClass('primary')}>
           + New job
-        </Link>
+        </button>
       </div>
 
       {query.isPending ? <LoadingSkeleton /> : null}

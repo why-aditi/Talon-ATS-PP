@@ -2,7 +2,8 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { NAV_COUNTS } from '../mocks/fixtures';
+import { useJobs } from '../lib/jobs-query';
+import { useSession } from '../lib/session';
 import {
   BellIcon,
   BoardIcon,
@@ -16,34 +17,56 @@ import {
   SignOutIcon,
   TalonMark,
 } from './icons';
+import { createContext, useCallback, useContext, useState } from 'react';
+import { JobTemplateModal } from './job-template-modal';
 import { Avatar, Eyebrow, cx } from './ui';
 
-type NavItem = { href: string; label: string; icon: (p: { className?: string }) => React.JSX.Element; count?: number };
+/*
+  Both "+ New job" triggers have to open one modal (#5, one path per action). The
+  sidebar's lives in Sidebar, the jobs header's lives in JobsScreen, and the two meet
+  only as `children` through (app)/layout.tsx — so there is no props path between them.
+  This context is the smallest join. Spec 003 records the alternative (`?new=1` in the
+  URL, which would also give back-button dismissal) and why it was not taken: reading
+  useSearchParams in a layout forces a Suspense boundary, which is a structural change
+  to the layout for a component the wizard is going to delete.
+*/
+const JobTemplateContext = createContext<() => void>(() => {});
 
+export const useJobTemplate = () => useContext(JobTemplateContext);
+
+type NavItem = { href: string; label: string; icon: (p: { className?: string }) => React.JSX.Element };
+
+/**
+ * Nav shape only. No counts live here.
+ *
+ * The reference screen shows 6 / 9 / 4 / 4 / 1 beside these rows, and every one of
+ * those except Jobs had been a literal in this file — a number that looked like
+ * data, was read as data, and answered to nothing. Jobs now comes from the jobs
+ * query; the rest render no badge at all until an endpoint can supply one. A
+ * missing count is honest, a stale invented one is not (spec §11 open question 7:
+ * these are tenant-wide and cannot ride the jobs envelope).
+ */
 const SECTIONS: { label: string; items: NavItem[] }[] = [
   {
     label: 'Recruit',
     items: [
-      { href: '/jobs', label: 'Jobs', icon: BriefcaseIcon, count: NAV_COUNTS.jobs },
-      { href: '/pipeline', label: 'Pipeline', icon: BoardIcon, count: NAV_COUNTS.pipeline },
-      { href: '/review-inbox', label: 'Review inbox', icon: InboxIcon, count: NAV_COUNTS.reviewInbox },
+      { href: '/jobs', label: 'Jobs', icon: BriefcaseIcon },
+      { href: '/pipeline', label: 'Pipeline', icon: BoardIcon },
+      { href: '/review-inbox', label: 'Review inbox', icon: InboxIcon },
       { href: '/candidates', label: 'Candidates', icon: PersonIcon },
     ],
   },
   {
     label: 'Coordinate',
     items: [
-      { href: '/scheduling', label: 'Scheduling', icon: CalendarIcon, count: NAV_COUNTS.scheduling },
-      { href: '/offers', label: 'Offers', icon: DocumentIcon, count: NAV_COUNTS.offers },
+      { href: '/scheduling', label: 'Scheduling', icon: CalendarIcon },
+      { href: '/offers', label: 'Offers', icon: DocumentIcon },
     ],
   },
   { label: 'Insights', items: [{ href: '/reports', label: 'Reports', icon: ChartIcon }] },
 ];
 
-// No session yet — step 4 owns authentication. Values match the reference screen.
-const SIGNED_IN_USER = { id: '0198f3a1-0007-7000-8000-000000000001', name: 'Maya Reyes', title: 'Recruiting lead' };
-
-function NavRow({ item, active }: { item: NavItem; active: boolean }) {
+function NavRow({ item, active, count }: { item: NavItem; active: boolean; count?: number | undefined }) {
   const Icon = item.icon;
   return (
     <li>
@@ -62,9 +85,9 @@ function NavRow({ item, active }: { item: NavItem; active: boolean }) {
         ) : null}
         <Icon className={active ? 'text-text-link' : 'text-text-tertiary'} />
         <span className="flex-1">{item.label}</span>
-        {item.count === undefined ? null : (
+        {count === undefined ? null : (
           <span className={cx('rounded-full px-2 text-caption tabular-nums', active ? 'bg-bg-selected text-text-link' : 'text-text-tertiary')}>
-            {item.count}
+            {count}
           </span>
         )}
       </Link>
@@ -72,8 +95,24 @@ function NavRow({ item, active }: { item: NavItem; active: boolean }) {
   );
 }
 
+/** `hiring_manager` → `Hiring manager`. The role is the only title the API has. */
+const roleLabel = (role: string) => {
+  const words = role.replace(/_/g, ' ');
+  return words.charAt(0).toUpperCase() + words.slice(1);
+};
+
 function Sidebar() {
   const pathname = usePathname();
+  const openJobTemplate = useJobTemplate();
+  const { session } = useSession();
+
+  // Same query key as the jobs screen, so this reads that cache rather than
+  // firing a second request — and the badge is whatever the API actually
+  // returned, including nothing while it is still loading.
+  const jobs = useJobs({});
+  const countFor = (href: string): number | undefined =>
+    href === '/jobs' ? jobs.data?.data.length : undefined;
+
   return (
     <div className="flex h-full flex-col border-r border-border-default bg-bg-surface">
       <div className="flex h-[var(--layout-topbar-height)] items-center gap-2 px-4">
@@ -100,29 +139,43 @@ function Sidebar() {
             <Eyebrow className="px-3 pb-2">{section.label}</Eyebrow>
             <ul>
               {section.items.map((item) => (
-                <NavRow key={item.href} item={item} active={pathname === item.href} />
+                <NavRow key={item.href} item={item} active={pathname === item.href} count={countFor(item.href)} />
               ))}
             </ul>
           </div>
         ))}
 
-        <Link
-          href="/jobs/new"
+        {/*
+          A button, not a Link: it opens the template modal rather than navigating.
+          /jobs/new is the wizard's route (screen 09) and does not exist yet, so the
+          link this replaces was a 404 — see spec 003.
+        */}
+        <button
+          type="button"
+          onClick={openJobTemplate}
           className={cx(
-            'mt-6 flex h-[var(--control-height-md)] items-center justify-center rounded-md',
+            'mt-6 flex h-[var(--control-height-md)] w-full items-center justify-center rounded-md',
             'border border-dashed border-border-strong text-body text-text-secondary',
             'transition-colors duration-[var(--duration-instant)] ease-standard hover:bg-action-ghost-bg-hover',
           )}
         >
           + New job
-        </Link>
+        </button>
       </nav>
 
+      {/*
+        The signed-in user, from the session rather than a constant. This block used
+        to hardcode "Maya Reyes / Recruiting lead" — which happened to match the
+        reference screenshot and would have kept saying Maya whoever signed in.
+        "Recruiting lead" is gone with it: the API carries a role, not a job title.
+      */}
       <div className="flex items-center gap-3 border-t border-border-subtle px-4 py-3">
-        <Avatar id={SIGNED_IN_USER.id} name={SIGNED_IN_USER.name} size={32} />
+        {session ? <Avatar id={session.user.id} name={session.user.name} size={32} /> : null}
         <span className="flex-1 leading-tight">
-          <span className="block text-body-strong text-text-primary">{SIGNED_IN_USER.name}</span>
-          <span className="block text-meta text-text-tertiary">{SIGNED_IN_USER.title}</span>
+          <span className="block text-body-strong text-text-primary">{session?.user.name ?? ''}</span>
+          <span className="block text-meta text-text-tertiary">
+            {session ? roleLabel(session.user.role) : ''}
+          </span>
         </span>
         {/*
           Sign-out is a picture until the auth chain exists (step 4), for the same
@@ -172,15 +225,23 @@ function Topbar() {
 }
 
 export function AppShell({ children }: { children: React.ReactNode }) {
+  const [templateOpen, setTemplateOpen] = useState(false);
+  const open = useCallback(() => setTemplateOpen(true), []);
+  const close = useCallback(() => setTemplateOpen(false), []);
+
   return (
-    <div className="grid h-screen grid-cols-[var(--layout-sidebar-width)_minmax(0,1fr)]">
-      <Sidebar />
-      <div className="flex min-w-0 flex-col">
-        <Topbar />
-        <main id="main" className="flex-1 overflow-y-auto p-[var(--layout-page-gutter)]">
-          {children}
-        </main>
+    <JobTemplateContext.Provider value={open}>
+      <div className="grid h-screen grid-cols-[var(--layout-sidebar-width)_minmax(0,1fr)]">
+        <Sidebar />
+        <div className="flex min-w-0 flex-col">
+          <Topbar />
+          <main id="main" className="flex-1 overflow-y-auto p-[var(--layout-page-gutter)]">
+            {children}
+          </main>
+        </div>
       </div>
-    </div>
+      {/* Rendered once, here, so both triggers address the same instance. */}
+      <JobTemplateModal open={templateOpen} onClose={close} />
+    </JobTemplateContext.Provider>
   );
 }

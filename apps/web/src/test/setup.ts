@@ -1,7 +1,7 @@
 import '@testing-library/jest-dom/vitest';
 import { cleanup } from '@testing-library/react';
-import { afterAll, afterEach, beforeAll, vi } from 'vitest';
-import { server } from '../mocks/node';
+import { afterEach, beforeAll, vi } from 'vitest';
+import { installFetchStub, resetRoutes } from './fetch-stub';
 
 /** Set by tests to drive `useSearchParams`; see `renderJobs` in the screen test. */
 export const searchParams = { current: new URLSearchParams() };
@@ -31,14 +31,13 @@ beforeAll(() => {
     unobserve() {}
     disconnect() {}
   };
+  installFetchStub();
 });
 
-beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 afterEach(() => {
   cleanup();
-  server.resetHandlers();
+  resetRoutes();
   searchParams.current = new URLSearchParams();
   routerReplace.mockClear();
   routerPush.mockClear();
 });
-afterAll(() => server.close());

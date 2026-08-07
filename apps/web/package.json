@@ -30,14 +30,8 @@
     "@vitejs/plugin-react": "^4.4.0",
     "axe-core": "^4.10.3",
     "jsdom": "^26.1.0",
-    "msw": "^2.7.5",
     "tailwindcss": "^4.1.0",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"
-  },
-  "msw": {
-    "workerDirectory": [
-      "public"
-    ]
   }
 }

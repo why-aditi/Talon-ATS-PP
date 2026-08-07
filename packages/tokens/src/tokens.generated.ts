@@ -218,6 +218,7 @@ export const TOKENS = {
   '--layout-nav-marker-width': "2px",
   '--layout-notification-dot-size': "6px",
   '--layout-search-field-width': "290px",
+  '--layout-modal-max-height': "85vh",
   '--layout-sign-in-hero-width': "747px",
   '--layout-sign-in-hero-card-width': "324px",
   '--layout-sign-in-form-width': "369px",
