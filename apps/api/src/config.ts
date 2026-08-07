@@ -105,10 +105,19 @@ function loadIdentityProvider(
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
+  const identity = loadIdentityProvider(env);
   const secretFromEnv = env['TALON_JWT_SECRET'] || undefined;
-  if (!secretFromEnv && env['NODE_ENV'] === 'production') {
+  // `provider === 'cognito'` is in here alongside production because Cognito
+  // does not replace this key — both providers mint the §6.2 bearer token with
+  // it (see cognito-provider.ts). A staging deployment pointed at a real user
+  // pool with NODE_ENV unset would otherwise sign every token with a constant
+  // published in this repository, and anyone could forge one for any tenant and
+  // any role. Requiring a real key wherever a real pool is configured costs one
+  // environment variable.
+  if (!secretFromEnv && (env['NODE_ENV'] === 'production' || identity.provider === 'cognito')) {
     throw new Error(
-      'TALON_JWT_SECRET must be set in production. The built-in key is a published ' +
+      'TALON_JWT_SECRET must be set in production and whenever ' +
+        'TALON_IDENTITY_PROVIDER=cognito. The built-in key is a published ' +
         'local-development constant and is refused outside development and test.',
     );
   }
@@ -121,7 +130,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     databaseUrl: env['API_DATABASE_URL'] ?? LOCAL_DATABASE_URL,
     poolMax,
     auth: {
-      ...loadIdentityProvider(env),
+      ...identity,
       secret: secretFromEnv ?? LOCAL_JWT_SECRET,
       issuer: env['TALON_JWT_ISSUER'] ?? 'talon-local',
       audience: 'talon-api',

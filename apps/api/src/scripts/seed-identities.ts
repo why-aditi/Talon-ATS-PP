@@ -13,7 +13,8 @@
  *
  *   pnpm --filter api seed:identities
  *   TALON_IDENTITY_PROVIDER=cognito COGNITO_USER_POOL_ID=... \
- *   COGNITO_CLIENT_ID=... AWS_REGION=us-east-1 pnpm --filter api seed:identities
+ *   COGNITO_CLIENT_ID=... AWS_REGION=us-east-1 TALON_JWT_SECRET=... \
+ *   pnpm --filter api seed:identities
  *
  * Re-runnable: both providers treat re-provisioning an existing email as an
  * update, not a collision.

@@ -165,6 +165,7 @@ it.each(['COGNITO_USER_POOL_ID', 'COGNITO_CLIENT_ID'])(
   (missing) => {
     const env: NodeJS.ProcessEnv = {
       API_DATABASE_URL: APP_URL,
+      TALON_JWT_SECRET: 'test-signing-key-not-the-published-default',
       TALON_IDENTITY_PROVIDER: 'cognito',
       COGNITO_REGION: 'us-east-1',
       COGNITO_USER_POOL_ID: 'us-east-1_x',
@@ -175,6 +176,23 @@ it.each(['COGNITO_USER_POOL_ID', 'COGNITO_CLIENT_ID'])(
     expect(() => loadConfig(env)).toThrow(new RegExp(missing));
   },
 );
+
+it('refuses to run against a real pool with the published local signing key', () => {
+  // Both providers mint the §6.2 bearer token with TALON_JWT_SECRET — Cognito
+  // does not replace it. Falling back to the published constant here would let
+  // anyone forge a token for any tenant and any role.
+  expect(() =>
+    loadConfig({
+      API_DATABASE_URL: APP_URL,
+      TALON_IDENTITY_PROVIDER: 'cognito',
+      COGNITO_REGION: 'us-east-1',
+      COGNITO_USER_POOL_ID: 'us-east-1_x',
+      COGNITO_CLIENT_ID: 'client',
+    }),
+  ).toThrow(/TALON_JWT_SECRET/);
+  // Local development is unaffected: no AWS, no secret needed.
+  expect(loadConfig({ API_DATABASE_URL: APP_URL }).auth.secret).toBeTruthy();
+});
 
 // ── provisioning ───────────────────────────────────────────────────────────
 
