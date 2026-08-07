@@ -2,6 +2,7 @@ import { ERROR_TYPES, RefreshResponseSchema } from '@talon/contracts';
 import { cookies } from 'next/headers';
 import { NextResponse } from 'next/server';
 import { API_URL, REFRESH_COOKIE, refreshCookie } from '../../../../lib/auth-cookie';
+import { crossOriginRejected, isSameOrigin } from '../../../../lib/same-origin';
 
 /**
  * Exchanges the httpOnly refresh cookie for a fresh access token. This is what
@@ -10,7 +11,9 @@ import { API_URL, REFRESH_COOKIE, refreshCookie } from '../../../../lib/auth-coo
  * The window slides: every exchange returns a new refresh token and the cookie is
  * rewritten, so an active session never expires and an idle one dies after 30 days.
  */
-export async function POST(): Promise<Response> {
+export async function POST(request: Request): Promise<Response> {
+  if (!isSameOrigin(request)) return crossOriginRejected();
+
   const token = (await cookies()).get(REFRESH_COOKIE)?.value;
   if (!token) {
     return NextResponse.json(

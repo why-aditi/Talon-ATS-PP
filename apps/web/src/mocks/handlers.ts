@@ -1,5 +1,5 @@
 import { ListJobsResponseSchema } from '@talon/contracts';
-import { HttpResponse, delay, http } from 'msw';
+import { HttpResponse, delay, http, passthrough } from 'msw';
 import { JOBS } from './fixtures';
 
 /**
@@ -11,10 +11,30 @@ import { JOBS } from './fixtures';
  * key by key and drops `_scenario` outside development for exactly that reason.
  * The filtered-empty state needs no scenario — `?status=draft` genuinely matches nothing.
  */
+/** Serves the seeded fixtures for the default path. Tests only — see mocks/node.ts. */
+export const fixtureJobsHandler = http.get('*/v1/jobs', ({ request }) => {
+  const params = new URL(request.url).searchParams;
+  if (params.get('_scenario')) return undefined;
+
+  let data = JOBS;
+  const status = params.get('status');
+  const department = params.get('department');
+  if (status) data = data.filter((job) => job.status === status);
+  if (department) data = data.filter((job) => job.department.toLowerCase() === department.toLowerCase());
+  return HttpResponse.json(ListJobsResponseSchema.parse({ data, nextCursor: null }));
+});
+
 export const handlers = [
   http.get('*/v1/jobs', async ({ request }) => {
     const params = new URL(request.url).searchParams;
     const scenario = params.get('_scenario');
+
+    // The default path is live. Only the states that a real endpoint cannot be
+    // asked to produce on demand — an empty tenant, a 500, a request that never
+    // settles — are still mocked, and each one announces itself with `_scenario`.
+    // Filtered-empty is deliberately absent: `?status=draft` genuinely matches
+    // nothing, so it is real against the API too.
+    if (!scenario) return passthrough();
 
     if (scenario === 'error') {
       // RFC 9457 problem+json, per CLAUDE.md §8.

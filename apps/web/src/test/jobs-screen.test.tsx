@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { AppShell } from '../components/app-shell';
 import { JobsScreen } from '../components/jobs-screen';
 import { fetchJobs, jobsUrl } from '../lib/jobs-query';
+import { SessionProvider } from '../lib/session';
 import { JOBS } from '../mocks/fixtures';
 import { server } from '../mocks/node';
 import { routerReplace, searchParams } from './setup';
@@ -15,11 +16,15 @@ import { routerReplace, searchParams } from './setup';
 function renderJobs(query = '', queryOptions: Record<string, unknown> = {}) {
   searchParams.current = new URLSearchParams(query);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, ...queryOptions } } });
+  // SessionProvider: the live path reads the access token from it, so the screen
+  // cannot render without one even when the fixtures answer.
   return render(
     <QueryClientProvider client={client}>
-      <AppShell>
-        <JobsScreen />
-      </AppShell>
+      <SessionProvider>
+        <AppShell>
+          <JobsScreen />
+        </AppShell>
+      </SessionProvider>
     </QueryClientProvider>,
   );
 }

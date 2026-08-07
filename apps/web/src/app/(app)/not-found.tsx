@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { buttonClass } from '../components/ui';
+import { buttonClass } from '../../components/ui';
 
 // The sidebar links to all nine screens; eight of them are later specs. Landing on a
 // real page inside the shell beats a bare 404 that loses the navigation.

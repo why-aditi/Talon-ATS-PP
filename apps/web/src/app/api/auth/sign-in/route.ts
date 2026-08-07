@@ -1,6 +1,7 @@
 import { ERROR_TYPES, SignInRequestSchema, SignInResponseSchema } from '@talon/contracts';
 import { NextResponse } from 'next/server';
 import { API_URL, refreshCookie } from '../../../../lib/auth-cookie';
+import { crossOriginRejected, isSameOrigin } from '../../../../lib/same-origin';
 
 /**
  * Sign-in proxy. Exists so the refresh token can be put in an httpOnly cookie:
@@ -12,6 +13,8 @@ import { API_URL, refreshCookie } from '../../../../lib/auth-cookie';
  * `user-not-provisioned` and `mfa-required` into "something went wrong".
  */
 export async function POST(request: Request): Promise<Response> {
+  if (!isSameOrigin(request)) return crossOriginRejected();
+
   const body = await request.json().catch(() => null);
   const parsed = SignInRequestSchema.safeParse(body);
   if (!parsed.success) {

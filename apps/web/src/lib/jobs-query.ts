@@ -1,5 +1,6 @@
 import { ListJobsResponseSchema, type ListJobsResponse } from '@talon/contracts';
 import { useQuery } from '@tanstack/react-query';
+import { useSession } from './session';
 
 export type JobFilters = {
   status?: string | undefined;
@@ -24,9 +25,18 @@ export function jobsUrl(filters: JobFilters): string {
   return `${API_BASE}/v1/jobs${query ? `?${query}` : ''}`;
 }
 
-export async function fetchJobs(filters: JobFilters, signal?: AbortSignal): Promise<ListJobsResponse> {
+export async function fetchJobs(
+  filters: JobFilters,
+  signal?: AbortSignal,
+  accessToken?: string | undefined,
+): Promise<ListJobsResponse> {
+  // GET /v1/jobs sits inside the authenticated scope, so the live path needs the
+  // bearer. The token comes from session state, never from storage.
   const response = await fetch(jobsUrl(filters), {
-    headers: { accept: 'application/json' },
+    headers: {
+      accept: 'application/json',
+      ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
+    },
     ...(signal ? { signal } : {}),
   });
   if (!response.ok) {
@@ -38,8 +48,11 @@ export async function fetchJobs(filters: JobFilters, signal?: AbortSignal): Prom
 }
 
 export function useJobs(filters: JobFilters) {
+  const { session } = useSession();
   return useQuery({
-    queryKey: ['jobs', filters.status ?? null, filters.department ?? null, filters.scenario ?? null],
-    queryFn: ({ signal }) => fetchJobs(filters, signal),
+    // The token is in the key so a sign-in refetches rather than serving the
+    // previous identity's page from cache.
+    queryKey: ['jobs', filters.status ?? null, filters.department ?? null, filters.scenario ?? null, session?.user.id ?? null],
+    queryFn: ({ signal }) => fetchJobs(filters, signal, session?.accessToken),
   });
 }

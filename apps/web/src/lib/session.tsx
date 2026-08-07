@@ -1,7 +1,7 @@
 'use client';
 
 import { ERROR_TYPES, type SessionUser } from '@talon/contracts';
-import { createContext, useCallback, useContext, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 
 /**
  * The access token is held in memory only — never localStorage, never a
@@ -67,6 +67,21 @@ function toSession(payload: unknown): Session {
 
 export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
+
+  // Restore on mount. Without this the httpOnly cookie is written and never
+  // redeemed — the refresh route would be dead code and the "survives a reload"
+  // claim would be false. A 401 here just means there is no session yet.
+  useEffect(() => {
+    let cancelled = false;
+    void post('/api/auth/refresh')
+      .then((payload) => {
+        if (!cancelled) setSession(toSession(payload));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const signIn = useCallback(async (email: string, password: string) => {
     const next = toSession(await post('/api/auth/sign-in', { email, password }));
