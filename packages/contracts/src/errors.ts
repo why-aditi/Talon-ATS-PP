@@ -31,6 +31,13 @@ export const ERROR_TYPES = {
   MFA_REQUIRED: 'urn:talon:error:mfa-required',
   /** Sign-in: MFA is required for this user but no authenticator is enrolled. */
   MFA_NOT_ENROLLED: 'urn:talon:error:mfa-not-enrolled',
+  /**
+   * The endpoint exists and the caller is fine, but the configured provider
+   * cannot perform the operation — Cognito's TOTP enrolment is session-scoped
+   * and the §6.1 `enrollTotp(sub)` signature cannot carry a session (spec 002).
+   * Retrying never helps; this is for an operator, not a user.
+   */
+  NOT_IMPLEMENTED: 'urn:talon:error:not-implemented',
   /** Request body, params or query rejected by its schema. Carries `errors`. */
   VALIDATION_FAILED: 'urn:talon:error:validation-failed',
   /** Also returned for another tenant's resource — never 403 (spec 001 §6.4). */
