@@ -7,6 +7,7 @@ Companion to `PRD.md`. Covers stack, data model, the three hard subsystems, AWS 
 ## 1. Constraints that shape everything
 
 1. **Multi-tenant SaaS with hard isolation.** A leak is existential, so tenancy is enforced at two real layers: the application (repositories scope every query) and Postgres RLS as the backstop that catches the query someone forgot to scope. Drizzle enforces nothing on its own — it is a typed query builder, not a guard, and treating it as a third layer would be a false sense of depth.
+1. **Multi-tenant SaaS with hard isolation.** A leak is existential, so tenancy is enforced at two real layers: the application (repositories scope every query) and Postgres RLS as the backstop that catches the query someone forgot to scope. Drizzle enforces nothing on its own — it is a typed query builder, not a guard, and treating it as a third layer would be a false sense of depth.
 2. **Read-heavy, burst-write.** Board views and reports dominate. Writes cluster around business hours and bulk imports.
 3. **Small team, real scale requirements.** A microservice-per-domain split would cost more in operational surface than it buys. **Modular monolith + async workers** is the right shape until a single module demonstrably needs independent scaling.
 4. **Third-party latency is unavoidable.** Google/Microsoft calendar and email APIs are slow and rate-limited. Anything touching them is async, cached, and retried.
@@ -240,12 +241,28 @@ create table applications (
   status text not null default 'active' check (status in ('active','hired','rejected','withdrawn')),
   rejection_reason text,
   comp_expectation_min_cents bigint, comp_expectation_max_cents bigint,
+  comp_expectation_currency char(3),           -- a candidate's expectation may differ from the job's band currency
+  constraint comp_expectation_currency_required
+    check ((comp_expectation_min_cents is null and comp_expectation_max_cents is null)
+           or comp_expectation_currency is not null),
   notice_period_days int,
   version int not null default 1,             -- optimistic concurrency for drag/drop
   created_at timestamptz not null default now(),
   unique (tenant_id, candidate_id, job_id)    -- one application per person per role
 );
 create index on applications (tenant_id, job_id, current_stage_id, board_rank);
+
+-- Composite FKs, not plain ones. FK validation bypasses RLS, so a plain
+-- reference can point at another tenant's row and the database will happily
+-- accept it. These make cross-tenant and cross-job references structurally
+-- impossible rather than merely discouraged:
+--   applications (tenant_id, candidate_id) -> candidates (tenant_id, id)
+--   applications (tenant_id, job_id)       -> jobs (tenant_id, id)
+--   applications (job_id, current_stage_id)-> job_stages (job_id, id)
+-- The last one is the important one: without it, an application can sit in a
+-- stage belonging to a different job, and every derived metric silently lies.
+-- Requires a unique constraint on the referenced pair, e.g.
+--   alter table job_stages add unique (job_id, id);
 
 create table stage_transitions (              -- APPEND ONLY. every metric derives from this.
   id bigserial primary key, tenant_id uuid not null,
@@ -256,6 +273,7 @@ create table stage_transitions (              -- APPEND ONLY. every metric deriv
   reason text, occurred_at timestamptz not null default now()
 );
 create index on stage_transitions (tenant_id, application_id, occurred_at);
+create index on stage_transitions (tenant_id, to_stage_id, occurred_at);  -- funnel + median-time-in-stage queries join here
 
 create table interviews (
   id uuid primary key, tenant_id uuid not null, application_id uuid not null,
@@ -341,6 +359,8 @@ create table audit_log (                       -- immutable, no update/delete gr
   occurred_at timestamptz not null default now()
 );
 ```
+
+**Money columns** are `bigint` cents with an explicit `char(3)` currency alongside — never a default. A column defaulting to `'USD'` is an assumed currency wearing a constraint, and the caller that omitted it is the caller who got it wrong. Currency is required at the API contract layer, so omission is a validation error rather than a silent guess.
 
 **RLS pattern**
 
@@ -487,15 +507,14 @@ One user pool per environment, shared across all tenants.
 **The hazard — read before writing the pool resource.** Cognito's schema attributes are immutable after pool creation, and `aws_cognito_user_pool` forces replacement when `schema` changes. A replacement **destroys every user**. Two consequences that shape the design:
 
 1. **No custom attributes for tenancy.** `tenant_id`, roles, and job membership live in our `users` table keyed by Cognito `sub`. A **pre-token-generation Lambda** reads that table and injects claims at token issue. The IdP answers "who is this"; our database answers "what may they do." This is the right architecture regardless, and it happens to make the pool schema stable forever.
-2. **`prevent_destroy` on the pool**, plus a CI check that fails the build if a plan shows `aws_cognito_user_pool` being replaced. A destroy-and-recreate must be a deliberate, manual act.
+2. **`ignore_changes = [schema]`** on the pool, plus a CI check that fails the build if a plan shows `aws_cognito_user_pool` being replaced. A destroy-and-recreate must be a deliberate, manual act. Note this deliberately does **not** use `prevent_destroy` — see §9.5a: that would block `scripts/down.sh`, and one-command teardown is a requirement. Protection comes from the stack split and the `--all` confirmation gate instead.
 
 ```hcl
 resource "aws_cognito_user_pool" "main" {
   name = "talon-${var.env}"
   lifecycle {
-    prevent_destroy = true
-    ignore_changes  = [schema]  # schema changes require a documented migration, never a silent replace
-  }
+    ignore_changes = [schema]   # schema changes require a documented migration, never a silent replace
+  }                             # no prevent_destroy — it would block scripts/down.sh (§9.5a)
 }
 ```
 
@@ -530,13 +549,62 @@ Every resource is named `talon-${var.env}-*` and tagged `Project=talon, Env=${va
 
 Practically, only `dev` exists until there is something worth staging. Build the module structure so a second account is a variable change rather than a rewrite, and don't pay for environments nobody is using.
 
-**IAM is not in these modules.** The deploy identity denies `iam:*` including `iam:PassRole`. Every role lives in `stacks/iam/`, applied once by a privileged identity; every other module takes role ARNs as input variables. Adding an `aws_iam_role` to any other module will fail at apply and block the whole stack.
+**IAM lives in its own stack, by design rather than by necessity.** The deploy identity has been granted `iam:CreateRole`, `PassRole`, `AttachRolePolicy`, `PutRolePolicy`, and `CreatePolicy` — all verified against the live account — so `stacks/iam` is self-serve and runs as a normal stage of `up.sh`.
+
+It stays a separate stack anyway. Role definitions change rarely, are the highest-privilege thing in the repo, and a small isolated stack is reviewable in a way a role buried among sixty resources is not. Every other module still takes role ARNs as **input variables**, which keeps the `TALON_ROLE_ARNS` path in §9.5a working for anyone cloning this without the same grant.
+
+Check whether the grant is scoped to a name prefix. If it is, every role Terraform creates must respect it — a role named `ecs-task-execution` failing at apply looks nothing like a permissions problem and will cost an hour.
 
 **CI:** `terraform fmt -check`, `tflint`, and `checkov` on every PR. `terraform plan` is posted as a PR comment and `apply` runs on merge to main, gated on the plan being unchanged. A plan showing replacement of any protected resource (`aws_cognito_user_pool`, `aws_rds_cluster`, state buckets) fails the check and needs a manual override with a written reason.
 
-**Protection:** every stateful resource carries `lifecycle { prevent_destroy = true }` in prod — Aurora, Cognito, S3 buckets, KMS keys.
+**Protection:** not `prevent_destroy` — it can't be parameterized and it blocks one-command teardown (§9.5a). Stateful resources are protected by living in `stacks/persistent`, by `down.sh` requiring `--all` plus a typed confirmation to touch them, and by the CI check that fails any plan replacing them.
 
 **Ephemeral PR environments** use workspaces over the `compute` + `edge` modules only, pointing at the shared dev database with a per-PR tenant. Standing up full data infrastructure per PR is too slow and too expensive to be worth it. Workspaces are the right tool here and the wrong tool for environments — the difference is lifetime and blast radius.
+
+### 9.5a Single-command provisioning — the actual deliverable
+
+The requirement is not "Terraform exists." It is: **hand someone a script, they run it once, and a working Talon is reachable at a URL they can sign into.** That is a harder target, and it drives several structural decisions.
+
+Terraform alone does not get you there. Four ordering problems sit outside its graph:
+
+| Problem | Why Terraform can't solve it alone |
+|---|---|
+| State backend | The S3 bucket must exist before `terraform init` can use it |
+| Container image | ECR must exist, then the image must be built and pushed, before a task definition can reference the tag |
+| Migrations and seed | Aurora lives in isolated subnets — your laptop can't reach it. These run as ECS one-off tasks inside the VPC |
+| Demo login | The Cognito user must exist and its `sub` must reach the seed, or you get a URL nobody can sign into |
+
+**`scripts/up.sh`** encodes that ordering:
+
+```bash
+0. preflight        aws sts get-caller-identity, terraform >= 1.9, docker running;
+                    fail loudly and early with what's missing
+1. bootstrap        create the state bucket + lock table via AWS CLI if absent (idempotent)
+2. iam              terraform apply stacks/iam
+                    SKIPPED when TALON_ROLE_ARNS is set — see below
+3. persistent       terraform apply stacks/persistent  → ECR URL, Cognito pool + client ids
+4. image            docker build, tag with the git SHA, push to ECR
+5. ephemeral        terraform apply stacks/ephemeral -var image_tag=$SHA → app URL
+6. migrate          aws ecs run-task, migration entrypoint, wait for exit 0
+7. demo user        create the Cognito user, capture its sub
+8. seed             aws ecs run-task, seed entrypoint, passing that sub
+9. verify           poll /readyz until healthy, then print the URL and demo credentials
+```
+
+Requirements on that script, all of which are testable:
+
+- **Idempotent.** Running it twice is a no-op, not a second stack. Every step checks before it creates.
+- **Resumable.** A failure at step 6 is fixed and re-run from the top, not unwound by hand.
+- **Loud.** Every step prints what it's doing and what it produced. A fifteen-minute silent script is indistinguishable from a hung one.
+- **Ends with the thing you asked for** — a URL and credentials, printed. Not "apply complete."
+
+**`scripts/down.sh`** mirrors it: destroys `ephemeral` by default; `--all` additionally destroys `persistent` after an explicit typed confirmation, because that deletes the Cognito pool and every user in it.
+
+**IAM as an input, not an assumption.** The deploy identity here denies `iam:*`. So `stacks/iam` is a *separate stage the script can skip*: if `TALON_ROLE_ARNS` is set (an admin ran it, or created the roles by hand), every other stack takes those ARNs as input variables and the single click still works end to end. If the permission is granted later, unset the variable and stage 2 runs itself. Design for both from the start — a script that only works with elevated permissions isn't the deliverable.
+
+**`prevent_destroy` cannot be parameterized.** Terraform requires a literal in `lifecycle` blocks, so it can't vary by profile — and a `prevent_destroy` on Cognito or the database directly blocks `down.sh`. Resolution: **no `prevent_destroy` in this project's stacks.** Protection comes from the persistent/ephemeral split, the `--all` confirmation gate, and the CI check that fails any plan replacing a stateful resource. Reintroduce it only if a genuine prod stack is ever added, where teardown should be hard. This supersedes the earlier guidance in §9.4 — the Cognito `ignore_changes = [schema]` guard **stays**, since that one prevents accidental user destruction without blocking deliberate teardown.
+
+**Acceptance for spec 002 is behavioral, not structural:** on a clean machine with only AWS credentials, `./scripts/up.sh` completes and prints a URL that signs in. Verified by tearing down completely and running it again from nothing. A Terraform config that has never been applied from zero is a config that does not work from zero.
 
 ### 9.6 Cost profiles and teardown
 
@@ -560,11 +628,11 @@ Two levers, both structural:
 **2. Split stacks by lifetime.**
 
 ```
-stacks/persistent/   Cognito, S3, ECR, KMS, state  → apply once, prevent_destroy
+stacks/persistent/   Cognito, S3, ECR, KMS, state  → apply once, torn down only via down.sh --all
 stacks/ephemeral/    VPC, NAT, RDS, Redis, ECS, ALB → destroy between sessions
 ```
 
-`terraform destroy` on `ephemeral` between work sessions takes the bill to near zero without losing users, images, or uploaded files. This split is why `prevent_destroy` is on the persistent stack only — putting it on a database you intend to tear down nightly means fighting your own guard rail every time.
+`scripts/down.sh` (ephemeral only, the default) between work sessions takes the bill to near zero without losing users, images, or uploaded files. `scripts/up.sh` brings it back in one command. The split is what makes routine teardown safe — and it's why nothing here uses `prevent_destroy`, which would fight the teardown it's meant to protect (§9.5a).
 
 RDS keeps `skip_final_snapshot = false` in the ephemeral stack, so a teardown snapshots rather than discards; `pnpm db:seed` reproduces the reference data anyway, which is what makes routine teardown safe.
 

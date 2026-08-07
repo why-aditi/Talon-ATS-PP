@@ -12,17 +12,19 @@ Read `docs/ARCHITECTURE.md` §9 in full — topology, the Terraform layout, and 
 
 ## Account reality
 
-**One AWS account.** Environments are separated by name prefix (`talon-${var.env}-*`) and tags, not by account. Do not write modules that assume a per-account boundary. The deploy identity is `PowerUserAccess`, which **denies `iam:*` including `iam:PassRole`**.
+**One AWS account.** Environments are separated by name prefix (`talon-${var.env}-*`) and tags, not by account. Do not write modules that assume a per-account boundary.
 
-Consequently: every IAM resource lives in `infra/terraform/stacks/iam/`, applied once by a privileged identity. Every other module takes role ARNs as **input variables**. Never add an `aws_iam_role` or `aws_iam_policy` to a non-IAM module — it will fail at apply and block the whole stack.
+The deploy identity is `PowerUserAccess` **plus a granted IAM addendum** — `CreateRole`, `PassRole`, `AttachRolePolicy`, `PutRolePolicy`, `CreatePolicy`, all verified against the live account. So `stacks/iam` is self-serve and runs as a normal stage of `up.sh`.
 
-Do **not** join an AWS Organization or set up Control Tower.
+IAM resources still live only in `infra/terraform/stacks/iam/`, and every other module takes role ARNs as **input variables**. That isn't a workaround for missing permissions — it keeps the highest-privilege code in one small reviewable place and keeps the `TALON_ROLE_ARNS` path working for anyone without the same grant. Never add an `aws_iam_role` or `aws_iam_policy` to a non-IAM module.
+
+If the grant turns out to be scoped to a name prefix, every role must respect it. Do **not** join an AWS Organization or set up Control Tower.
 
 ## Cognito — the sharpest edge
 
 Pool schema attributes are immutable, and `aws_cognito_user_pool` force-replaces on a schema diff, **destroying every user**.
 
-- `lifecycle { prevent_destroy = true, ignore_changes = [schema] }` on the pool.
+- `lifecycle { ignore_changes = [schema] }` on the pool. **Not `prevent_destroy`** — it can't be parameterized and it blocks `scripts/down.sh`, and one-command teardown is a requirement (ARCHITECTURE §9.5a).
 - No custom attributes for tenancy. `tenant_id` and roles live in the `users` table keyed by `sub`; claims are injected by the pre-token-generation Lambda.
 - Per-tenant SAML IdPs are created at runtime through the application API, not in Terraform. Managing them as infrastructure would mean a customer onboarding requires a deploy.
 
@@ -31,6 +33,14 @@ Pool schema attributes are immutable, and `aws_cognito_user_pool` force-replaces
 S3 backend with versioning plus a DynamoDB lock table, bootstrapped once in `global/state` and never destroyed. Environments are separate root modules under `envs/`, **not** workspaces — workspaces share state and blur blast radius. Workspaces are for ephemeral PR environments only.
 
 Split by lifetime: persistent resources (Cognito, S3, ECR, KMS) apply once and are rarely destroyed; ephemeral resources (VPC, NAT, RDS, Redis, ECS, ALB) can be torn down between work sessions to control cost. `prevent_destroy` on a resource you intend to destroy nightly will block you — put them in different stacks rather than fighting it.
+
+## The deliverable is a script, not a config
+
+Per ARCHITECTURE §9.5a: someone runs `./scripts/up.sh` on a clean machine with only AWS credentials, and a working Talon is reachable at a printed URL they can sign into. Terraform is a component of that, not the whole of it — state bootstrap, image build and push, in-VPC migration and seed, and demo-user creation all sit outside Terraform's graph and belong to the script.
+
+The script is idempotent, resumable, loud about each step, and ends by printing the URL and credentials. `stacks/iam` is a skippable stage: when `TALON_ROLE_ARNS` is set, every other stack takes role ARNs as inputs and the single click still works without `iam:*`.
+
+**Acceptance is behavioral:** tear everything down, run it again from nothing, sign in. A config that has never been applied from zero does not work from zero.
 
 ## Cost is a constraint, not an afterthought
 

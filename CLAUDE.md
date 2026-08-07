@@ -39,6 +39,7 @@ Before planning, list what will go wrong. Actively hunt for:
 - Edge cases (empty, one, many, concurrent, offline, timezone, permission-denied)
 - Places the existing code already conflicts with the new requirement
 - Anything that touches tenancy, comp visibility, scorecard blindness, calendar writes, or candidate file handling — these are the five areas where a bug is expensive
+- Anything that touches tenancy, comp visibility, scorecard blindness, calendar writes, or candidate file handling — these are the five areas where a bug is expensive
 - Work that's larger than it looks, and work that's smaller than it looks
 
 State these plainly. "I found no problems" is almost always wrong on a first pass.
@@ -87,7 +88,7 @@ Next.js 15 App Router · React 19 · TypeScript strict · Tailwind v4 driven by 
 | Decision | Choice | Note |
 |---|---|---|
 | Auth provider | **Cognito** | Only option inside the Terraform stack, so `terraform apply` yields a loginable system. Still behind an `IdentityProvider` interface — write against the interface, not the Cognito SDK, outside the adapter |
-| IaC tool | **Terraform** | Root module per env, S3 + DynamoDB state, separate AWS accounts. Layout in ARCHITECTURE §9.5; known rough edges in §9.6 |
+| IaC tool | **Terraform** | Root module per env, S3 + DynamoDB state, **one AWS account** with environments separated by name prefix and tag. Layout in ARCHITECTURE §9.5; known rough edges in §9.6 |
 
 Rejected options and why are recorded in ARCHITECTURE §2. If you think one should be reopened, raise it — don't quietly switch.
 
@@ -121,12 +122,18 @@ These are the rules that, if broken, mean the change gets reverted rather than p
 6. **Calendar failure mode is "no slot offered," never "double-booked."** Unreadable calendars count as fully busy. Always re-validate free/busy immediately before sending invites.
 7. **Timezones:** store UTC, carry an IANA zone per user and per candidate, convert at render. Any scheduling change ships with a DST-boundary test.
 8. **No raw hex, px color, or magic spacing in components.** Semantic tokens only. `--color-action-primary-bg`, never `--color-indigo-600` and never `#4F46C9`. CI fails on violations.
-9. **Money is `bigint` cents + an explicit currency code.** Never a float, never an assumed USD.
-10. **Every mutation writes to `audit_log`** with actor, before, after, IP, request id.
-11. **Optimistic UI always has a rollback path.** A 409 from a stage move must restore the previous state and refetch, not leave the board lying.
-12. **Accessibility is a gate, not a polish task.** Keyboard path for the kanban, visible focus, no color-only status, `prefers-reduced-motion` respected. `axe` violations fail CI.
-13. **Never change the Cognito pool schema.** Attributes are immutable; Terraform force-replaces the pool on a schema diff and **every user is destroyed**. `tenant_id`, roles, and job membership belong in our `users` table keyed by `sub`, with claims injected by the pre-token-generation Lambda. The pool resource carries `prevent_destroy` and `ignore_changes = [schema]`, and CI fails any plan that would replace it. If you think you need a custom attribute, you need a database column.
-14. **Candidate files are never rendered inline.** Resumes are attacker-controlled. Presigned GET with `ResponseContentDisposition=attachment`, served from a separate subdomain, scanned before they leave quarantine. An inline-rendered HTML or SVG resume runs script in a recruiter's session with access to every candidate in the tenant. ARCHITECTURE §9.10.
+9. **Money is `bigint` cents + an explicit currency code, with no default.** Never a float, never an assumed USD. A column defaulting to `'USD'` is an assumption wearing a constraint. Currency is required at the contract layer so omission is a validation error, not a silent guess. Drizzle money columns use `mode: 'bigint'`, not `mode: 'number'` — the 2^53 precision class shouldn't exist at all.
+10. **Cross-tenant references are prevented structurally, not by convention.** FK validation bypasses RLS, so a plain foreign key can point at another tenant's row and Postgres will accept it. Use composite FKs on `(tenant_id, id)` — and on `(job_id, id)` where a row belongs to a job, so an application can never sit in another job's stage.
+11. **Migrations never create roles or contain credentials.** Role bootstrap belongs to provisioning — a Docker init script locally, Terraform plus Secrets Manager in AWS. A password literal in a migration replays into every environment it's ever run against.
+12. **Tests never touch the development database.** Testcontainers, always. A test suite that drops `public` on the dev database will eventually do it while someone is mid-demo.
+13. **Every mutation writes to `audit_log`** with actor, before, after, IP, request id.
+14. **Optimistic UI always has a rollback path.** A 409 from a stage move must restore the previous state and refetch, not leave the board lying.
+15. **Accessibility is a gate, not a polish task.** Keyboard path for the kanban, visible focus, no color-only status, `prefers-reduced-motion` respected. `axe` violations fail CI.
+16. **Never change the Cognito pool schema.** Attributes are immutable; Terraform force-replaces the pool on a schema diff and **every user is destroyed**. Guarded with `ignore_changes = [schema]` — deliberately not `prevent_destroy`, which would block one-command teardown (ARCHITECTURE §9.5a). `tenant_id`, roles, and job membership belong in our `users` table keyed by `sub`, with claims injected by the pre-token-generation Lambda. The pool resource carries `prevent_destroy` and `ignore_changes = [schema]`, and CI fails any plan that would replace it. If you think you need a custom attribute, you need a database column.
+17. **Candidate files are never rendered inline.** Resumes are attacker-controlled. Presigned GET with `ResponseContentDisposition=attachment`, served from a separate subdomain, scanned before they leave quarantine. An inline-rendered HTML or SVG resume runs script in a recruiter's session with access to every candidate in the tenant. ARCHITECTURE §9.10.
+18. **A rank-only update never bumps `version`.** Reordering within a column and moving between stages are separate repository writes. Bumping `version` on a reorder produces 409s on unrelated stage moves — flaky board behavior that looks like a race and isn't. ARCHITECTURE §6.1.
+19. **Every outbox consumer is idempotent.** Delivery is at-least-once, keyed on `outbox.id`. A consumer that can't handle a duplicate is a bug, not a tuning problem.
+20. **Candidate files are never rendered inline.** Resumes are attacker-controlled. Presigned GET with `ResponseContentDisposition=attachment`, served from a separate subdomain, scanned before they leave quarantine. An inline-rendered HTML or SVG resume runs script in a recruiter's session with access to every candidate in the tenant. ARCHITECTURE §9.10.
 15. **A rank-only update never bumps `version`.** Reordering within a column and moving between stages are separate repository writes. Bumping `version` on a reorder produces 409s on unrelated stage moves — flaky board behavior that looks like a race and isn't. ARCHITECTURE §6.1.
 16. **Every outbox consumer is idempotent.** Delivery is at-least-once, keyed on `outbox.id`. A consumer that can't handle a duplicate is a bug, not a tuning problem.
 17. **Terraform plans are reviewed, not skimmed.** A plan touching `aws_cognito_user_pool`, `aws_rds_cluster`, KMS keys, or state buckets stops and gets a human. Replacement of a stateful resource is never routine.
