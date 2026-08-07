@@ -7,7 +7,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:routes": "vitest run test/route-manifest.test.ts",
-    "test:isolation": "vitest run test/isolation.test.ts test/rls-independence.test.ts"
+    "test:isolation": "vitest run test/isolation.test.ts test/rls-independence.test.ts",
+    "seed:identities": "tsx src/scripts/seed-identities.ts"
   },
   "dependencies": {
     "@talon/contracts": "workspace:*",
@@ -20,6 +21,7 @@
   "devDependencies": {
     "@talon/testing": "workspace:*",
     "@types/node": "^22.15.0",
+    "tsx": "^4.20.3",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"
   }

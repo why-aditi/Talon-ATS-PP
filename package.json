@@ -11,7 +11,7 @@
     "test:routes": "pnpm --filter api test:routes",
     "test:isolation": "pnpm --filter api test:isolation",
     "db:migrate": "pnpm --filter @talon/db migrate",
-    "db:seed": "pnpm --filter @talon/db seed",
+    "db:seed": "pnpm --filter @talon/db seed && pnpm --filter api seed:identities",
     "tokens:build": "pnpm --filter @talon/tokens build",
     "typecheck": "turbo run typecheck",
     "lint": "eslint . --max-warnings 0",
