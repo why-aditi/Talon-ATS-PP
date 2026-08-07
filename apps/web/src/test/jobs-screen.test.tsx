@@ -1,17 +1,20 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, within } from '@testing-library/react';
+import { JobSchema, ListJobsResponseSchema } from '@talon/contracts';
+import { QueryClient, QueryClientProvider, focusManager } from '@tanstack/react-query';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import axe from 'axe-core';
+import { HttpResponse, http } from 'msw';
 import { describe, expect, it } from 'vitest';
 import { AppShell } from '../components/app-shell';
 import { JobsScreen } from '../components/jobs-screen';
-import { jobListResponseSchema, jobSchema } from '../lib/jobs-contract';
+import { fetchJobs } from '../lib/jobs-query';
 import { JOBS } from '../mocks/fixtures';
+import { server } from '../mocks/node';
 import { routerReplace, searchParams } from './setup';
 
-function renderJobs(query = '') {
+function renderJobs(query = '', queryOptions: Record<string, unknown> = {}) {
   searchParams.current = new URLSearchParams(query);
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, ...queryOptions } } });
   return render(
     <QueryClientProvider client={client}>
       <AppShell>
@@ -25,17 +28,25 @@ function renderJobs(query = '') {
 async function expectNoAxeViolations(container: HTMLElement) {
   // jsdom has no layout engine, so color-contrast can only guess — it is gated for
   // real in packages/tokens/test/contrast.test.ts, over the token pairs themselves.
-  const results = await axe.run(container, { rules: { 'color-contrast': { enabled: false } } });
+  //
+  // `resultTypes` is a performance switch, not a coverage one: every rule still runs
+  // against every node, axe just stops assembling full node detail for the passing
+  // checks. Without it, a shell-plus-rows tree (~220 nodes) never returns under jsdom,
+  // where each detail node costs a getComputedStyle. Violations are unaffected.
+  const results = await axe.run(container, {
+    rules: { 'color-contrast': { enabled: false } },
+    resultTypes: ['violations'],
+  });
   expect(results.violations.map((v) => `${v.id}: ${v.nodes.length} node(s)`)).toEqual([]);
 }
 
 describe('fixtures match the contract', () => {
   it('every fixture parses as a Job', () => {
-    for (const job of JOBS) expect(() => jobSchema.parse(job)).not.toThrow();
+    for (const job of JOBS) expect(() => JobSchema.parse(job)).not.toThrow();
   });
 
   it('the list response parses', () => {
-    expect(() => jobListResponseSchema.parse({ data: JOBS, nextCursor: null })).not.toThrow();
+    expect(() => ListJobsResponseSchema.parse({ data: JOBS, nextCursor: null })).not.toThrow();
   });
 
   it('keeps ENG-204 at the seeded counts, not the reference screen counts', () => {
@@ -98,10 +109,13 @@ describe('loading state', () => {
 });
 
 describe('empty states', () => {
-  it('invites a first job when the tenant has none', async () => {
+  it('invites a first job when the tenant has none, without an inert button', async () => {
     const { container } = renderJobs('state=empty');
     expect(await screen.findByText('No open roles yet.')).toBeInTheDocument();
-    expect(screen.getAllByRole('button', { name: '+ New job' }).length).toBeGreaterThan(0);
+    // "+ New job" is deferred with the wizard. The only affordance is the sidebar
+    // link, which actually navigates — no page-level button that does nothing.
+    expect(screen.queryByRole('button', { name: '+ New job' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '+ New job' })).toHaveAttribute('href', '/jobs/new');
     await expectNoAxeViolations(container);
   });
 
@@ -127,11 +141,61 @@ describe('error state', () => {
 });
 
 describe('permission-denied', () => {
-  it('renders every row without band data, with no error and no empty state', async () => {
+  it('strips comp to visible:false at the wire, and still renders every row', async () => {
+    // The screen renders no comp field, so this state is visually identical to the
+    // default — the assertion that matters is at the fetch layer, not in the DOM.
+    // A test named for a check it does not perform is worse than no test.
+    const response = await fetchJobs({ scenario: 'forbidden' });
+    expect(response.data).not.toHaveLength(0);
+    for (const job of response.data) {
+      expect(job.comp).toEqual({ visible: false });
+      expect(job.comp).not.toHaveProperty('band');
+    }
+
     renderJobs('state=forbidden');
     await screen.findByText('Senior Product Engineer');
     expect(screen.getByText('6 open')).toBeInTheDocument();
     expect(screen.queryByText("Jobs didn't load.")).not.toBeInTheDocument();
+  });
+
+  it('distinguishes "may not see comp" from "has no band" for a permitted caller', async () => {
+    const response = await fetchJobs({});
+    const eng204 = response.data.find((job) => job.reqCode === 'ENG-204');
+    const eng209 = response.data.find((job) => job.reqCode === 'ENG-209');
+    expect(eng204?.comp).toEqual({
+      visible: true,
+      band: { minCents: '19000000', maxCents: '22500000', currency: 'USD' },
+    });
+    expect(eng209?.comp).toEqual({ visible: true, band: null });
+  });
+});
+
+describe('a failed refetch keeps the rows it already has', () => {
+  it('shows a stale banner over the data instead of replacing it with an error', async () => {
+    const { container } = renderJobs('', { refetchOnWindowFocus: 'always', staleTime: 0 });
+    await screen.findByText('Senior Product Engineer');
+
+    // Same query key, so React Query retains the data it already has; the next fetch
+    // over that key fails. This is the focus-refetch path from providers.tsx.
+    server.use(
+      http.get('*/v1/jobs', () =>
+        HttpResponse.json({ type: 'about:blank', title: 'boom', status: 500 }, { status: 500 }),
+      ),
+    );
+    focusManager.setFocused(false);
+    focusManager.setFocused(true);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeInTheDocument());
+    // The rows are still there — the banner says "may be out of date", not "gone".
+    expect(screen.getByText('Senior Product Engineer')).toBeInTheDocument();
+    expect(screen.queryByText("Jobs didn't load.")).not.toBeInTheDocument();
+    await expectNoAxeViolations(container);
+  });
+
+  it('shows the full error state when there is no data to keep', async () => {
+    renderJobs('state=error');
+    expect(await screen.findByText("Jobs didn't load.")).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Refresh' })).not.toBeInTheDocument();
   });
 });
 
@@ -170,9 +234,16 @@ describe('keyboard path', () => {
     }
 
     expect(reached).toContain('Jobs6');
-    expect(reached).toContain('Sign out');
     expect(reached).toContain('+ New job');
     // The status filter is a native select, so it is in the tab order for free.
     expect(reached).toContain('Filter jobs by status');
+
+    // Nothing that does nothing takes focus: sign-out, the topbar search and the
+    // notification bell are all deferred features, so the keyboard path must not
+    // stop on any of them.
+    expect(reached).not.toContain('Sign out');
+    expect(reached).not.toContain('Search candidates, jobs');
+    // And every element it does reach has an accessible name.
+    expect(reached.filter((label) => label === '')).toEqual([]);
   });
 });

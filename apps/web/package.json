@@ -10,12 +10,12 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@talon/contracts": "workspace:*",
     "@talon/tokens": "workspace:*",
     "@tanstack/react-query": "^5.66.0",
     "next": "^15.4.0",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0",
-    "zod": "^4.0.0"
+    "react-dom": "^19.1.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.1.0",

@@ -56,7 +56,9 @@ function NavRow({ item, active }: { item: NavItem; active: boolean }) {
         )}
       >
         {/* 2px indigo left marker on the active row (DESIGN_SYSTEM §4). */}
-        {active ? <span className="absolute left-0 inset-y-1 w-[2px] rounded-full bg-action-primary-bg" aria-hidden="true" /> : null}
+        {active ? (
+          <span className="absolute left-0 inset-y-1 w-[var(--layout-nav-marker-width)] rounded-full bg-action-primary-bg" aria-hidden="true" />
+        ) : null}
         <Icon className={active ? 'text-text-link' : 'text-text-tertiary'} />
         <span className="flex-1">{item.label}</span>
         {item.count === undefined ? null : (
@@ -133,13 +135,15 @@ function Sidebar() {
           <span className="block text-body-strong text-text-primary">{SIGNED_IN_USER.name}</span>
           <span className="block text-meta text-text-tertiary">{SIGNED_IN_USER.title}</span>
         </span>
-        <button
-          type="button"
-          aria-label="Sign out"
-          className="grid size-6 place-items-center rounded-md text-text-tertiary hover:bg-action-ghost-bg-hover hover:text-text-secondary"
-        >
+        {/*
+          Sign-out is a picture until the auth chain exists (step 4), for the same
+          reason the topbar search is: a control that takes focus and does nothing is
+          a keyboard dead end, and it teaches the next person the route is already
+          wired. Becomes a real button when there is a session to end.
+        */}
+        <span aria-hidden="true" className="grid size-6 place-items-center rounded-md text-text-tertiary">
           <SignOutIcon />
-        </button>
+        </span>
       </div>
     </div>
   );
@@ -163,7 +167,7 @@ function Topbar() {
         focusable so the keyboard path never lands on something that does nothing.
       */}
       <div aria-hidden="true" className="flex items-center gap-3">
-        <span className="flex h-[var(--control-height-md)] w-[290px] items-center gap-2 rounded-md border border-border-default px-3 text-body text-text-placeholder">
+        <span className="flex h-[var(--control-height-md)] w-[var(--layout-search-field-width)] items-center gap-2 rounded-md border border-border-default px-3 text-body text-text-placeholder">
           <SearchIcon className="text-text-placeholder" />
           Search candidates, jobs
         </span>
@@ -171,7 +175,7 @@ function Topbar() {
           <BellIcon />
           {/* DESIGN_SYSTEM §4 names `red.500`; `text.danger` is the semantic token
               holding that exact value, so the component never touches the ramp. */}
-          <span className="absolute right-2 top-2 size-[6px] rounded-full bg-text-danger" />
+          <span className="absolute right-2 top-2 size-[var(--layout-notification-dot-size)] rounded-full bg-text-danger" />
         </span>
       </div>
     </header>

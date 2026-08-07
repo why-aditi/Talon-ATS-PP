@@ -1,6 +1,6 @@
+import type { CanonicalStage, JobStatus, StageDistribution } from '@talon/contracts';
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
 import { avatarToken, initials } from '../lib/avatar';
-import { CANONICAL_STAGES, type CanonicalStage, type JobStatus, type StageDistribution } from '../lib/jobs-contract';
 
 const cx = (...parts: (string | false | undefined)[]) => parts.filter(Boolean).join(' ');
 
@@ -86,8 +86,11 @@ export function DistributionBar({ distribution, inProcessCount }: { distribution
       : `${inProcessCount} in process: ${segments.map((s) => `${s.count} ${s.stage}`).join(', ')}`;
 
   return (
-    // 130px measured from the reference; the track around it is wider.
-    <div className="flex h-[3px] w-[130px] overflow-hidden rounded-full bg-border-subtle" role="img" aria-label={label}>
+    <div
+      className="flex h-[var(--layout-progress-rule-height)] w-[var(--layout-job-row-distribution-bar-width)] overflow-hidden rounded-full bg-border-subtle"
+      role="img"
+      aria-label={label}
+    >
       {segments.map(({ stage, count }) => (
         <span key={stage} className={STAGE_FILLS[stage]} style={{ width: `${(count / total) * 100}%` }} />
       ))}
@@ -101,4 +104,4 @@ export function Eyebrow({ children, className }: { children: ReactNode; classNam
   return <p className={cx('text-eyebrow uppercase text-text-tertiary', className)}>{children}</p>;
 }
 
-export { cx, CANONICAL_STAGES };
+export { cx };

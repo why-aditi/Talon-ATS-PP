@@ -1,5 +1,5 @@
+import { ListJobsResponseSchema } from '@talon/contracts';
 import { HttpResponse, delay, http } from 'msw';
-import { jobListResponseSchema } from '../lib/jobs-contract';
 import { JOBS } from './fixtures';
 
 /**
@@ -38,16 +38,17 @@ export const handlers = [
     let data = scenario === 'empty' ? [] : JOBS;
     if (status) data = data.filter((job) => job.status === status);
     if (department) data = data.filter((job) => job.department.toLowerCase() === department.toLowerCase());
-    if (recruiterId) data = data.filter((job) => job.recruiter.id === recruiterId);
+    if (recruiterId) data = data.filter((job) => job.recruiter?.id === recruiterId);
 
-    // A caller without `comp:read` gets the job without band fields — not nulls, and
-    // not an error (spec 001 §7.3, Forbidden row).
+    // A caller without `comp:read` gets `comp: { visible: false }` — not a null band,
+    // not an error (spec 001 §7.3 Forbidden, §6.4). The tagged union is what keeps
+    // "you may not see this" distinct from "there is no band".
     if (scenario === 'forbidden') {
-      data = data.map(({ bandMinCents: _min, bandMaxCents: _max, ...job }) => job);
+      data = data.map((job) => ({ ...job, comp: { visible: false } as const }));
     }
 
-    // The mock validates its own response, so a fixture can never drift out of the
-    // shape the screen is built against.
-    return HttpResponse.json(jobListResponseSchema.parse({ data, nextCursor: null }));
+    // The mock validates its own response against the real contract, so a fixture can
+    // never drift out of the shape the screen is built against.
+    return HttpResponse.json(ListJobsResponseSchema.parse({ data, nextCursor: null }));
   }),
 ];
