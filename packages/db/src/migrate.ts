@@ -80,10 +80,16 @@ export async function ensureAppRole(sql: postgres.Sql, databaseUrl: string): Pro
   }
 }
 
+/**
+ * Applies every pending migration (`up`) or reverts exactly the most recent one
+ * (`down`), and returns the names it touched. `down` is one step per call so
+ * `pnpm db:migrate:down` can never unwind a whole database by accident; a caller
+ * that wants the full stack (test/setup.global.ts) loops on the return value.
+ */
 export async function migrate(
   direction: 'up' | 'down',
   databaseUrl = process.env['DATABASE_URL'] ?? DEFAULT_DATABASE_URL,
-): Promise<void> {
+): Promise<string[]> {
   // Validate the app-role credential before opening a socket, so pointing this at a
   // remote database without TALON_APP_PASSWORD fails on the misconfiguration rather
   // than on a DNS or TLS error that hides it.
@@ -99,6 +105,7 @@ export async function migrate(
       (r) => r['name'] as string,
     );
 
+    const touched: string[] = [];
     if (direction === 'up') {
       // 0001_init grants to talon_app, so the role has to exist first.
       await ensureAppRole(sql, databaseUrl);
@@ -114,12 +121,13 @@ export async function migrate(
           await tx`insert into _migrations (name) values (${name})`;
         });
         console.log(`migrated up: ${name}`);
+        touched.push(name);
       }
     } else {
       const last = applied.at(-1);
       if (!last) {
         console.log('nothing to migrate down');
-        return;
+        return touched;
       }
       const ddl = readFileSync(path.join(MIGRATIONS_DIR, `${last}.down.sql`), 'utf8');
       await sql.begin(async (tx) => {
@@ -127,7 +135,9 @@ export async function migrate(
         await tx`delete from _migrations where name = ${last}`;
       });
       console.log(`migrated down: ${last}`);
+      touched.push(last);
     }
+    return touched;
   } finally {
     await sql.end();
   }

@@ -252,11 +252,11 @@ export async function seed(databaseUrl = process.env['DATABASE_URL'] ?? DEFAULT_
   const davidO = uuidv7();
   const tom = uuidv7();
   userRows.push(
-    { id: maya, tenantId: talon, email: 'maya@taloninc.com', name: 'Maya Reyes', role: 'recruiter', avatarColor: '#6E56CF', timezone: 'America/Los_Angeles' },
-    { id: sam, tenantId: talon, email: 'sam@taloninc.com', name: 'Sam Altmann', role: 'hiring_manager', avatarColor: '#8B5CF6', timezone: 'Europe/London' },
-    { id: lin, tenantId: talon, email: 'lin@taloninc.com', name: 'Lin Chen', role: 'member', avatarColor: '#0E9F6E', timezone: 'America/New_York' },
-    { id: davidO, tenantId: talon, email: 'david@taloninc.com', name: 'David Osei', role: 'member', avatarColor: '#D97706', timezone: 'America/New_York' },
-    { id: tom, tenantId: talon, email: 'tom@taloninc.com', name: 'Tom Iwu', role: 'recruiter', avatarColor: '#B45309', timezone: 'America/Los_Angeles' },
+    { id: maya, tenantId: talon, email: 'maya@taloninc.com', name: 'Maya Reyes', role: 'recruiter', timezone: 'America/Los_Angeles' },
+    { id: sam, tenantId: talon, email: 'sam@taloninc.com', name: 'Sam Altmann', role: 'hiring_manager', timezone: 'Europe/London' },
+    { id: lin, tenantId: talon, email: 'lin@taloninc.com', name: 'Lin Chen', role: 'member', timezone: 'America/New_York' },
+    { id: davidO, tenantId: talon, email: 'david@taloninc.com', name: 'David Osei', role: 'member', timezone: 'America/New_York' },
+    { id: tom, tenantId: talon, email: 'tom@taloninc.com', name: 'Tom Iwu', role: 'recruiter', timezone: 'America/Los_Angeles' },
   );
 
   const talonTemplate = uuidv7();

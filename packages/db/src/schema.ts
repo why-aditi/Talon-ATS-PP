@@ -44,7 +44,6 @@ export const users = pgTable('users', {
   tenantId: tenantId(),
   email: citext('email').notNull(),
   name: text('name').notNull(),
-  avatarColor: text('avatar_color'),
   role: text('role', { enum: ['admin', 'recruiter', 'hiring_manager', 'member'] }).notNull(),
   timezone: text('timezone').notNull().default('UTC'),
   mfaEnabled: boolean('mfa_enabled').notNull().default(false),
