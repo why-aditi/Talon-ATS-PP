@@ -5,8 +5,25 @@ import tseslint from 'typescript-eslint';
 // braces — it resolves real paths, including relative imports).
 const crossModulePatterns = [
   {
-    group: ['**/modules/*/repository', '**/modules/*/service'],
+    group: [
+      '**/modules/*/repository',
+      '**/modules/*/repository.js',
+      '**/modules/*/service',
+      '**/modules/*/service.js',
+    ],
     message: 'Cross-module access goes through index.public.ts.',
+  },
+];
+
+// A module's internals are all of it except index.public.ts — which includes the
+// concrete IdentityProvider implementations (spec 001 §6.1: nothing outside
+// modules/identity may import one). Negations are gitignore-style, so this reads
+// as "anything under a module folder, except its published interface".
+const moduleInternalPatterns = [
+  {
+    group: ['**/modules/*/*', '!**/modules/*/index.public', '!**/modules/*/index.public.js'],
+    message:
+      'Modules are imported through index.public.ts only — an implementation class never leaves its folder.',
   },
 ];
 
@@ -102,6 +119,33 @@ export default tseslint.config(
             {
               group: ['@talon/db', '@talon/db/*'],
               message: 'Only repository.ts may import @talon/db.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    // Runtime code only. `apps/api/test` deliberately reaches into module
+    // internals — a unit test for the TOTP implementation has to import the
+    // TOTP implementation — and @talon/testing is a test-only package that must
+    // never appear in a shipped import graph.
+    files: ['apps/api/src/**/*.ts'],
+    ignores: ['**/repository.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            ...crossModulePatterns,
+            ...moduleInternalPatterns,
+            {
+              group: ['@talon/db', '@talon/db/*'],
+              message: 'Only repository.ts may import @talon/db.',
+            },
+            {
+              group: ['@talon/testing', '@talon/testing/*'],
+              message: '@talon/testing is a test-only package.',
             },
           ],
         },

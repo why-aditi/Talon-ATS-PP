@@ -44,12 +44,26 @@ export const users = pgTable('users', {
   tenantId: tenantId(),
   email: citext('email').notNull(),
   name: text('name').notNull(),
-  avatarColor: text('avatar_color'),
   role: text('role', { enum: ['admin', 'recruiter', 'hiring_manager', 'member'] }).notNull(),
   timezone: text('timezone').notNull().default('UTC'),
   mfaEnabled: boolean('mfa_enabled').notNull().default(false),
   // Tokens with iat before this are rejected by the auth chain; null = all valid.
   tokensValidAfter: timestamp('tokens_valid_after', { withTimezone: true }),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+// The local IdentityProvider's credential store (migration 0003) — the stand-in
+// for Cognito, so deliberately outside the tenant model: no tenant_id, no RLS
+// policy, looked up by email before a tenant is known (spec 001 §11b).
+export const localIdentities = pgTable('local_identities', {
+  // Locally the token subject IS users.id; Cognito owns this value in AWS.
+  sub: uuid('sub').primaryKey(),
+  email: citext('email').notNull(),
+  /** scrypt, `scrypt$N=…,r=…,p=…$<salt b64>$<hash b64>`. Never plaintext. */
+  passwordHash: text('password_hash').notNull(),
+  totpSecret: text('totp_secret'),
+  totpEnrolledAt: timestamp('totp_enrolled_at', { withTimezone: true }),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });

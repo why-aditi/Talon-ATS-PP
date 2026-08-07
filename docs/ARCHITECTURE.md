@@ -190,10 +190,16 @@ create table tenants (
 
 create table users (
   id uuid primary key, tenant_id uuid not null references tenants,
-  email citext not null, name text not null, avatar_color text,
+  email citext not null, name text not null,
+  -- no avatar_color: the UI hashes the id over the avatar.1-8 token ramp, so a
+  -- stored hex would be a raw color leaving the API (CLAUDE.md §4.8). Dropped in
+  -- migration 0002.
+  tokens_valid_after timestamptz,   -- tokens issued before this are rejected
   role text not null check (role in ('admin','recruiter','hiring_manager','member')),
   timezone text not null default 'UTC', mfa_enabled boolean not null default false,
-  unique (tenant_id, email)
+  -- Global, not (tenant_id, email): one tenant per email, so the sign-in lookup
+  -- resolves a user before any tenant context exists (spec 001 open question 1).
+  unique (email)
 );
 
 create table jobs (

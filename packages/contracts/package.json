@@ -9,6 +9,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@talon/domain": "workspace:*",
     "zod": "^3.25.0"
   },
   "devDependencies": {

@@ -1,11 +1,28 @@
 import { fastify, type FastifyInstance } from 'fastify';
-import { authenticate, openTenantTransaction, resolveTenant } from './hooks/auth.js';
+import type { AwilixContainer } from 'awilix';
+import { loadConfig, type ApiConfig } from './config.js';
+import { buildContainer } from './container.js';
+import type { Cradle } from './context.js';
+import { problemErrorHandler, sendProblem } from './errors.js';
+import {
+  authenticate,
+  finishTenantTransaction,
+  openTenantTransaction,
+  resolveTenant,
+} from './hooks/auth.js';
 import { modules } from './modules/index.js';
 import { publicRoutes } from './public-routes.js';
+import { ERROR_TYPES } from '@talon/contracts';
 
 export interface RouteRecord {
   method: string;
   url: string;
+}
+
+export interface BuildAppOptions {
+  config?: ApiConfig;
+  /** Tests pass their own to point at a test database or a max-1 pool. */
+  container?: AwilixContainer<Cradle>;
 }
 
 declare module 'fastify' {
@@ -17,10 +34,32 @@ declare module 'fastify' {
   }
 }
 
-export async function buildApp(): Promise<FastifyInstance> {
+export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
+  const config = options.config ?? loadConfig();
+  const container = options.container ?? buildContainer(config);
+
   // exposeHeadRoutes off: auto-generated HEAD twins would show up in the route
   // manifest as unlisted public routes.
   const app = fastify({ exposeHeadRoutes: false });
+  app.decorate('container', container);
+  app.setErrorHandler(problemErrorHandler);
+  app.setNotFoundHandler((request, reply) => {
+    // Unmatched paths answer the same way a wrong-tenant resource does.
+    sendProblem(reply, {
+      type: ERROR_TYPES.NOT_FOUND,
+      title: 'Not found',
+      status: 404,
+      instance: request.url,
+      requestId: request.id,
+    });
+  });
+  // Only the container closes the pool, so a test that builds several apps over
+  // one container does not tear the pool out from under the others.
+  if (!options.container) {
+    app.addHook('onClose', async () => {
+      await container.cradle.sql.end();
+    });
+  }
 
   const allRoutes: RouteRecord[] = [];
   const protectedRoutes: RouteRecord[] = [];
@@ -30,13 +69,14 @@ export async function buildApp(): Promise<FastifyInstance> {
     for (const method of [r.method].flat()) allRoutes.push({ method, url: r.url });
   });
 
-  await app.register(publicRoutes, { prefix: '/v1' }); // /healthz, /readyz, /auth/* (step 4)
+  await app.register(publicRoutes, { prefix: '/v1' }); // /healthz, /readyz, /auth/*
 
   await app.register(
     async (scoped) => {
       scoped.addHook('onRequest', authenticate);
       scoped.addHook('onRequest', resolveTenant);
       scoped.addHook('preHandler', openTenantTransaction);
+      scoped.addHook('onSend', finishTenantTransaction);
       // onRoute fires only for routes registered in this scope and its children,
       // i.e. exactly the routes that inherit the hooks above. The manifest test
       // diffs this set against allRoutes.

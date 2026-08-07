@@ -1,2 +1,10 @@
-// ponytail: placeholder — entities and state machines land with their features. No I/O here, ever.
-export {};
+export {
+  ROLES,
+  type Role,
+  SCOPES,
+  type Scope,
+  ROLE_SCOPES,
+  scopesFor,
+  hasScope,
+  isRole,
+} from './permissions.js';

@@ -3,4 +3,7 @@
 export const PUBLIC_ROUTES: ReadonlySet<string> = new Set([
   'GET /v1/healthz',
   'GET /v1/readyz',
+  // You cannot present a token to the endpoint that issues one.
+  'POST /v1/auth/sign-in',
+  'POST /v1/auth/refresh',
 ]);
