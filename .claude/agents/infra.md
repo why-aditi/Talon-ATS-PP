@@ -12,7 +12,7 @@ Read `docs/ARCHITECTURE.md` §9 in full — topology, the Terraform layout, and 
 
 ## Account reality
 
-Single account. The deploy identity is `PowerUserAccess`, which **denies `iam:*` including `iam:PassRole`**.
+**One AWS account.** Environments are separated by name prefix (`talon-${var.env}-*`) and tags, not by account. Do not write modules that assume a per-account boundary. The deploy identity is `PowerUserAccess`, which **denies `iam:*` including `iam:PassRole`**.
 
 Consequently: every IAM resource lives in `infra/terraform/stacks/iam/`, applied once by a privileged identity. Every other module takes role ARNs as **input variables**. Never add an `aws_iam_role` or `aws_iam_policy` to a non-IAM module — it will fail at apply and block the whole stack.
 
@@ -31,6 +31,12 @@ Pool schema attributes are immutable, and `aws_cognito_user_pool` force-replaces
 S3 backend with versioning plus a DynamoDB lock table, bootstrapped once in `global/state` and never destroyed. Environments are separate root modules under `envs/`, **not** workspaces — workspaces share state and blur blast radius. Workspaces are for ephemeral PR environments only.
 
 Split by lifetime: persistent resources (Cognito, S3, ECR, KMS) apply once and are rarely destroyed; ephemeral resources (VPC, NAT, RDS, Redis, ECS, ALB) can be torn down between work sessions to control cost. `prevent_destroy` on a resource you intend to destroy nightly will block you — put them in different stacks rather than fighting it.
+
+## Cost is a constraint, not an afterthought
+
+This is a company account. Per ARCHITECTURE §9.6: a `var.profile` (`dev` | `spec`) selects instance classes, and stacks are split by lifetime — `persistent` (Cognito, S3, ECR, KMS) applies once and is protected; `ephemeral` (VPC, NAT, RDS, Redis, ECS, ALB) is destroyed between work sessions.
+
+Default to the `dev` profile. Never introduce a resource with a standing cost floor — Aurora Serverless v2, ElastiCache Serverless, a second NAT Gateway — into the dev profile without saying what it costs per month and why the cheaper option won't do. A budget alarm exists before the first apply.
 
 ## No custom domain
 

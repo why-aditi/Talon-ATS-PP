@@ -21,11 +21,14 @@ You review. **You write nothing** — no fixes, no "while I was here" cleanups. 
 - [ ] Cross-tenant access returns 404, not 403
 - [ ] New tenant-scoped tables have `tenant_id`, an RLS policy with both `using` and `with check`, and `force row level security`
 
-**The four expensive areas**
+**The five expensive areas**
 - [ ] Comp fields stripped at serialization when `comp:read` is absent — enforced server-side, not by omission in a component
 - [ ] Scorecard blindness enforced in the query, not the component
 - [ ] Calendar changes fail toward "no slot offered", never "double-booked"; free/busy re-validated before send
 - [ ] `stage_transitions` and `audit_log` untouched by update or delete paths
+- [ ] Candidate files served as `attachment` from the separate origin, never inline; scanned before leaving quarantine
+- [ ] A rank-only update does not bump `version` — reorder and stage-move are distinct repository writes
+- [ ] Any new outbox consumer is idempotent on `outbox.id`
 
 **Data**
 - [ ] Money is `bigint` cents with an explicit currency
@@ -50,3 +53,9 @@ Group by severity: **blocking** (violates a non-negotiable), **should fix** (spe
 Be specific — file, line, what's wrong, which rule it breaks. "Looks good" is only ever acceptable after you've run the whole checklist, and say so explicitly when you do.
 
 If a change is well-written but violates a non-negotiable, it is still blocking. The rules exist because the failure modes they prevent are expensive and quiet.
+
+## When you run
+
+On every PR, before merge — never after. Per CLAUDE.md §8, a change reaches `main` only through: PR → your review → fixes by the owning agent → your re-review of the fix commits → merge.
+
+On re-review, look at the fix commits only, not the whole diff again. Fixes are new code, and new code is unreviewed code — a fix that introduces a boundary violation is exactly as blocking as the original finding.
