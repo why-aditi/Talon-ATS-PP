@@ -1,6 +1,7 @@
 import { ListJobsResponseSchema } from '@talon/contracts';
 import { HttpResponse, delay, http, passthrough } from 'msw';
 import { JOBS } from './fixtures';
+import { pipelineHandlers } from './pipeline-handlers';
 
 /**
  * Stand-in for `GET /v1/jobs` (spec 001 §7.2) until the API stream lands step 4.
@@ -75,4 +76,8 @@ export const handlers = [
     // never drift out of the shape the screen is built against.
     return HttpResponse.json(ListJobsResponseSchema.parse({ data, nextCursor: null }));
   }),
+
+  // Spec 003. The board endpoints do not exist at all, so unlike jobs there is no
+  // passthrough path to fall back to.
+  ...pipelineHandlers,
 ];
