@@ -3,7 +3,7 @@
 import { JobStatusSchema, type Job } from '@talon/contracts';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { useJobs } from '../lib/jobs-query';
+import { isOpenJob, useJobs } from '../lib/jobs-query';
 import { useJobTemplate } from './app-shell';
 import { Avatar, Button, DistributionBar, Eyebrow, Select, StatusPill, buttonClass, cx } from './ui';
 
@@ -34,8 +34,6 @@ const ROW_GRID = [
 ].join(' ');
 const ROW_HEIGHT = 'h-[var(--layout-row-height)]';
 
-/** A job counts toward "N open" unless it has been closed out. */
-const isOpen = (job: Job) => job.status !== 'closed';
 
 /* ── Row ───────────────────────────────────────────────────────────────────── */
 
@@ -153,7 +151,7 @@ export function JobsScreen() {
   });
 
   const jobs = query.data?.data ?? [];
-  const openCount = jobs.filter(isOpen).length;
+  const openCount = jobs.filter(isOpenJob).length;
 
   // A failed *refetch* is not a failed load. React Query keeps the last good `data`
   // across a failure, so rendering the error card unconditionally would stack it on
@@ -267,7 +265,7 @@ export function JobsScreen() {
       {groups.map((group) => (
         <section key={group.department} className="mt-6 first:mt-0">
           <Eyebrow className="pb-2">
-            {group.department} · {group.jobs.filter(isOpen).length} open
+            {group.department} · {group.jobs.filter(isOpenJob).length} open
           </Eyebrow>
           <div className="overflow-hidden rounded-lg border border-border-default bg-bg-surface">
             <ul className="divide-y divide-border-subtle">

@@ -49,6 +49,15 @@ async function post(path: string, body?: unknown): Promise<unknown> {
 
 type SessionValue = {
   session: Session | null;
+  /**
+   * False until the cookie has been offered to `/api/auth/refresh` and answered.
+   *
+   * Without this, `session` is indistinguishable between "no session" and "not
+   * asked yet", and every authenticated query fires token-less on mount, 401s,
+   * and — with `retry: false` — renders an error before the session arrives. The
+   * jobs list showed "Jobs didn't load." on every reload for exactly that reason.
+   */
+  ready: boolean;
   signIn: (email: string, password: string) => Promise<SessionUser>;
   refresh: () => Promise<SessionUser>;
   signOut: () => Promise<void>;
@@ -67,6 +76,7 @@ function toSession(payload: unknown): Session {
 
 export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
+  const [ready, setReady] = useState(false);
 
   // Restore on mount. Without this the httpOnly cookie is written and never
   // redeemed — the refresh route would be dead code and the "survives a reload"
@@ -77,7 +87,13 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       .then((payload) => {
         if (!cancelled) setSession(toSession(payload));
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      // `finally`, so a refused cookie marks the session resolved just as a
+      // redeemed one does. Only the failure path leaving `ready` false would
+      // hang every dependent query forever.
+      .finally(() => {
+        if (!cancelled) setReady(true);
+      });
     return () => {
       cancelled = true;
     };
@@ -100,7 +116,10 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     setSession(null);
   }, []);
 
-  const value = useMemo(() => ({ session, signIn, refresh, signOut }), [session, signIn, refresh, signOut]);
+  const value = useMemo(
+    () => ({ session, ready, signIn, refresh, signOut }),
+    [session, ready, signIn, refresh, signOut],
+  );
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
 }
 

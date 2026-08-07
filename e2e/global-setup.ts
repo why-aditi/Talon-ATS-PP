@@ -41,7 +41,29 @@ async function hashPassword(password: string): Promise<string> {
   return ['scrypt', `N=${params.N},r=${params.r},p=${params.p}`, salt.toString('base64'), hash.toString('base64')].join('$');
 }
 
+/**
+ * This suite writes a known password to a real `users` row, as the owner role,
+ * and never cleans it up. Against a developer's database that is a nuisance;
+ * against anything shared it silently installs a committed credential on
+ * maya@taloninc.com and overwrites whatever was there.
+ *
+ * `DATABASE_URL` is the same variable a developer sets for `pnpm db:migrate`, so
+ * "it will only ever point at localhost" is an assumption, not a fact. CLAUDE.md
+ * §4.12 — tests never touch a database they were not pointed at deliberately.
+ */
+function assertLocal(url: string): void {
+  const { hostname } = new URL(url);
+  const local = ['localhost', '127.0.0.1', '::1', 'host.docker.internal'].includes(hostname);
+  if (local || process.env['TALON_E2E_ALLOW_REMOTE'] === '1') return;
+  throw new Error(
+    `Refusing to provision an e2e credential on a non-local database (${hostname}).\n` +
+      `This suite writes to local_identities and does not clean up. Point DATABASE_URL at a ` +
+      `local database, or set TALON_E2E_ALLOW_REMOTE=1 if you genuinely mean to write there.`,
+  );
+}
+
 async function provision(): Promise<void> {
+  assertLocal(DATABASE_URL);
   const sql = postgres(DATABASE_URL, { max: 1 });
   try {
     const [user] = await sql<{ id: string; email: string }[]>`

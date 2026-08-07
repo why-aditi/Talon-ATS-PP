@@ -42,12 +42,21 @@ export async function fetchJobs(
   return ListJobsResponseSchema.parse(await response.json());
 }
 
+/** A job counts as open unless it has been closed out. Shared so the sidebar badge
+ *  and the "N open" header can never disagree about what they are counting. */
+export const isOpenJob = (job: { status: string }) => job.status !== 'closed';
+
 export function useJobs(filters: JobFilters) {
-  const { session } = useSession();
+  const { session, ready } = useSession();
   return useQuery({
     // The token is in the key so a sign-in refetches rather than serving the
     // previous identity's page from cache.
     queryKey: ['jobs', filters.status ?? null, filters.department ?? null, session?.user.id ?? null],
     queryFn: ({ signal }) => fetchJobs(filters, signal, session?.accessToken),
+    // Not until the cookie has been offered to /api/auth/refresh and answered.
+    // Firing before that sends no bearer, 401s, and with retry:false paints the
+    // error state — so a reload read error → skeleton → rows instead of
+    // skeleton → rows. The query stays pending until then, which is the skeleton.
+    enabled: ready,
   });
 }

@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useJobs } from '../lib/jobs-query';
+import { isOpenJob, useJobs } from '../lib/jobs-query';
 import { useSession } from '../lib/session';
 import {
   BellIcon,
@@ -106,12 +106,17 @@ function Sidebar() {
   const openJobTemplate = useJobTemplate();
   const { session } = useSession();
 
-  // Same query key as the jobs screen, so this reads that cache rather than
-  // firing a second request — and the badge is whatever the API actually
-  // returned, including nothing while it is still loading.
+  // A tenant-wide count, so it is deliberately the UNFILTERED query. React Query
+  // dedupes it with the jobs screen only while that screen is also unfiltered; on
+  // /jobs?status=on_hold the keys differ and this is a second request. That is the
+  // cost of the badge meaning "jobs in this tenant" rather than "rows below", and
+  // it is why the earlier claim that this always shared the cache was wrong.
+  //
+  // It counts what the header counts — open jobs — so the two cannot disagree
+  // once a job is closed.
   const jobs = useJobs({});
   const countFor = (href: string): number | undefined =>
-    href === '/jobs' ? jobs.data?.data.length : undefined;
+    href === '/jobs' ? jobs.data?.data.filter(isOpenJob).length : undefined;
 
   return (
     <div className="flex h-full flex-col border-r border-border-default bg-bg-surface">
