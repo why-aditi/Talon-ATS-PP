@@ -2,7 +2,7 @@
  * Shared harness: an app wired to the test database, seeded people who can
  * actually sign in, and the ids the isolation suite needs.
  */
-import type { AwilixContainer } from 'awilix';
+import { asValue, type AwilixContainer } from 'awilix';
 import type { FastifyInstance } from 'fastify';
 import postgres from 'postgres';
 import { buildApp } from '../src/app.js';
@@ -30,9 +30,33 @@ export interface TestApp {
   close(): Promise<void>;
 }
 
-export async function startApp(overrides: { poolMax?: number } = {}): Promise<TestApp> {
+export interface StartAppOptions {
+  poolMax?: number;
+  /**
+   * Called once per statement the api actually sends. This is how "one query,
+   * not N+1" is asserted: an N+1 shows up here as N+1 calls.
+   */
+  onQuery?: (query: string) => void;
+}
+
+export async function startApp(overrides: StartAppOptions = {}): Promise<TestApp> {
   const config = testConfig(overrides);
   const container = buildContainer(config);
+  const { onQuery } = overrides;
+  if (onQuery) {
+    // The pool buildContainer made is lazy and has never connected; ending it
+    // costs nothing and leaves exactly one pool for close() to tear down.
+    await container.cradle.sql.end();
+    container.register({
+      sql: asValue(
+        postgres(config.databaseUrl, {
+          max: config.poolMax,
+          onnotice: () => {},
+          debug: (_connection, query) => onQuery(query),
+        }),
+      ),
+    });
+  }
   const app = await buildApp({ config, container });
   return {
     app,

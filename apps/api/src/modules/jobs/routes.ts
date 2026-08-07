@@ -7,12 +7,27 @@
  * inside the authenticated scope (app.ts); a per-route hook would make its
  * absence invisible on the next route someone adds (CLAUDE.md §4).
  */
-import { GetJobParamsSchema, JobSchema } from '@talon/contracts';
+import {
+  GetJobParamsSchema,
+  JobSchema,
+  ListJobsQuerySchema,
+  ListJobsResponseSchema,
+} from '@talon/contracts';
 import type { FastifyPluginAsync } from 'fastify';
 import { requireTx, requireUser, services } from '../../context.js';
 import { parseOrThrow } from '../../errors.js';
 
 export const jobsRoutes: FastifyPluginAsync = async (app) => {
+  app.get('/jobs', async (request, reply) => {
+    const query = parseOrThrow(ListJobsQuerySchema, request.query, 'query');
+    const page = await services(request).jobsService.listJobs(
+      requireTx(request),
+      requireUser(request),
+      query,
+    );
+    return reply.send(ListJobsResponseSchema.parse(page));
+  });
+
   app.get('/jobs/:id', async (request, reply) => {
     const params = parseOrThrow(GetJobParamsSchema, request.params, 'path');
     const job = await services(request).jobsService.getJob(
