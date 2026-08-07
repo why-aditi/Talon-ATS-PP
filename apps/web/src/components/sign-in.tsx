@@ -150,7 +150,13 @@ export function SignInForm() {
             Continue with SAML SSO
           </Button>
         </div>
-        <p className="mt-2 text-meta text-text-tertiary">SSO available once configured.</p>
+        {/*
+          Not "available once configured": that implies an admin can switch it on,
+          and there is nothing to switch — no OAuth client, no SAML, no setting.
+          Copy rule (§6): name the real blocker and the next move, and don't point
+          at machinery. This says what is true and what to do instead.
+        */}
+        <p className="mt-2 text-meta text-text-tertiary">Single sign-on isn’t available yet. Use your email and password.</p>
 
         <div className="my-6 flex items-center gap-3">
           <span className="h-px flex-1 bg-border-default" />

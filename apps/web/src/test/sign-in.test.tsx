@@ -60,7 +60,10 @@ describe('default state', () => {
     const forgot = screen.getByRole('button', { name: 'Forgot?' });
 
     for (const control of [google, saml, forgot]) expect(control).toBeDisabled();
-    expect(screen.getByText('SSO available once configured.')).toBeInTheDocument();
+    // The disabled state needs a reason that is true. "Available once configured"
+    // would send someone looking for a setting that does not exist.
+    expect(screen.getByText('Single sign-on isn’t available yet. Use your email and password.')).toBeInTheDocument();
+    expect(screen.queryByText(/once configured/)).not.toBeInTheDocument();
 
     // Disabled is what keeps them out of the tab order — the point of choosing it
     // over an enabled control that does nothing.

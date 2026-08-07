@@ -428,7 +428,11 @@ deliberately distinct from all of them.
 Google, SAML SSO and "Forgot?" render `disabled`. Disabled keeps them out of the tab
 order, so the keyboard path has no dead stop, while the screen keeps the shape the
 reference shows — and it satisfies the "one path per action" rule by not offering a
-second, broken one. A line beneath reads "SSO available once configured." "Forgot?"
+second, broken one. A line beneath reads "Single sign-on isn't available yet. Use
+your email and password." — deliberately not "available once configured", which
+implies a setting an admin could turn on when there is no OAuth client, no SAML and
+no config surface to turn on. §6 asks copy to name the real blocker and the next
+move; the first version named neither. "Forgot?"
 is a `<button disabled>` rather than a link, because a link cannot be disabled and
 would stay tabbable.
 
