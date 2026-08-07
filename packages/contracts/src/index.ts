@@ -4,6 +4,7 @@ export {
   type JobStatus,
   CanonicalStageSchema,
   type CanonicalStage,
+  NON_TERMINAL_STAGES,
 
   // Query
   ListJobsQuerySchema,

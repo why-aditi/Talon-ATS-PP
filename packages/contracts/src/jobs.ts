@@ -1,27 +1,15 @@
 /**
- * Contract: GET /v1/jobs
+ * Contract: GET /v1/jobs — spec 001 §7.2.
  *
- * Zod schemas for the jobs list endpoint query params, response type,
- * and cursor envelope. Spec 001 §7.2.
- *
- * Money is serialized as string-encoded cents because BigInt is not
- * JSON-serializable. The API layer strips comp fields for callers
- * without the `comp:read` scope — structurally optional here so the
- * TypeScript type reflects what a scopeless caller actually receives.
+ * Field names are camelCase across the wire, matching the spec's own
+ * `stageDistribution` / `inProcessCount` / `nextCursor`. The database is
+ * snake_case; the mapping happens in the repository, not here.
  */
 import { z } from 'zod';
 
-// ---------------------------------------------------------------------------
-// Shared enums — single source of truth for both contract and DB layer
-// ---------------------------------------------------------------------------
-
-export const JobStatusSchema = z.enum([
-  'draft',
-  'active',
-  'on_hold',
-  'closing',
-  'closed',
-]);
+// Mirrors packages/db jobs.status and jobStages.canonical. Drizzle owns the
+// column enums; these must not drift from them.
+export const JobStatusSchema = z.enum(['draft', 'active', 'on_hold', 'closing', 'closed']);
 export type JobStatus = z.infer<typeof JobStatusSchema>;
 
 export const CanonicalStageSchema = z.enum([
@@ -35,91 +23,113 @@ export const CanonicalStageSchema = z.enum([
 ]);
 export type CanonicalStage = z.infer<typeof CanonicalStageSchema>;
 
+/** Stages a candidate can still move out of — the ones `inProcessCount` counts. */
+export const NON_TERMINAL_STAGES = ['applied', 'screen', 'onsite', 'offer'] as const;
+
 // ---------------------------------------------------------------------------
-// Query params: GET /v1/jobs?status=&department=&recruiter_id=&cursor=&limit=
+// Query
 // ---------------------------------------------------------------------------
 
-export const ListJobsQuerySchema = z.object({
-  status: JobStatusSchema.optional(),
-  department: z.string().min(1).optional(),
-  recruiter_id: z.string().uuid().optional(),
-  cursor: z.string().min(1).optional(),
-  limit: z.coerce.number().int().min(1).max(100).default(50),
-});
+export const ListJobsQuerySchema = z
+  .object({
+    // Single value for M0a. The jobs list has one status control, and a repeated
+    // param would change the repository's WHERE shape — widen it when a screen
+    // actually needs it.
+    status: JobStatusSchema.optional(),
+    department: z.string().min(1).optional(),
+    recruiter_id: z.string().uuid().optional(),
+    /** Opaque. Pagination is on `(sort_key, id)` (ARCHITECTURE) — never decode this client-side. */
+    cursor: z.string().min(1).optional(),
+    // Query params arrive as strings, hence coerce. The max is a real bound, not
+    // decoration: an unbounded limit is a one-request denial of service.
+    limit: z.coerce.number().int().min(1).max(100).default(50),
+  })
+  // A typo'd filter must 400, not silently return unfiltered data that looks right.
+  .strict();
 export type ListJobsQuery = z.infer<typeof ListJobsQuerySchema>;
 
 // ---------------------------------------------------------------------------
-// Comp band — optional; absent when the caller lacks comp:read scope
+// Response
 // ---------------------------------------------------------------------------
 
+/**
+ * Money crosses the wire as a string of integer cents ("19000000").
+ * The columns are `bigint` (§4.9) and `JSON.stringify` throws on a BigInt, so
+ * a number here would either lose precision or crash serialization. Digits
+ * only — no sign, no decimal point, no thousands separator.
+ */
+const centsSchema = z.string().regex(/^\d+$/, 'integer cents as a digit string');
+
 export const CompBandSchema = z.object({
-  /** String-encoded bigint cents — never a JS number for money. */
-  band_min_cents: z.string(),
-  /** String-encoded bigint cents. */
-  band_max_cents: z.string(),
-  /** ISO 4217 currency code, always present alongside cents. */
-  currency: z.string().length(3),
+  minCents: centsSchema,
+  maxCents: centsSchema,
+  currency: z.string().regex(/^[A-Z]{3}$/, 'ISO 4217 alpha-3'),
 });
 export type CompBand = z.infer<typeof CompBandSchema>;
 
-// ---------------------------------------------------------------------------
-// Stage distribution — counts per canonical stage for the distribution bar
-// ---------------------------------------------------------------------------
+const stageCount = z.number().int().min(0);
 
-/** Record<CanonicalStage, number> — every key present, zero if empty. */
-export const StageDistributionSchema = z.record(CanonicalStageSchema, z.number().int().min(0));
+/**
+ * Every canonical stage is present, zero included — spec §9 edge case 4 says a
+ * job with no applications renders at zero width, "not NaN, not absent". A
+ * partial record would let the UI read `undefined` and compute NaN, so presence
+ * is enforced here rather than defended against in every consumer.
+ */
+export const StageDistributionSchema = z.object(
+  // Built from the enum rather than listed by hand, so a new canonical stage
+  // cannot be added without appearing here.
+  Object.fromEntries(CanonicalStageSchema.options.map((s) => [s, stageCount])) as Record<
+    CanonicalStage,
+    typeof stageCount
+  >,
+);
 export type StageDistribution = z.infer<typeof StageDistributionSchema>;
-
-// ---------------------------------------------------------------------------
-// Recruiter summary (denormalized onto the job for display)
-// ---------------------------------------------------------------------------
 
 export const RecruiterSummarySchema = z.object({
   id: z.string().uuid(),
   name: z.string(),
-  avatar_color: z.string().nullable(),
+  /** Avatar fill from the `avatar.1–8` token ramp (DESIGN_SYSTEM §JobRow). */
+  avatarColor: z.string().nullable(),
 });
 export type RecruiterSummary = z.infer<typeof RecruiterSummarySchema>;
 
-// ---------------------------------------------------------------------------
-// Job response type
-// ---------------------------------------------------------------------------
-
 export const JobSchema = z.object({
   id: z.string().uuid(),
-  req_code: z.string(),
+  reqCode: z.string(),
   title: z.string(),
   department: z.string(),
   location: z.string(),
-  employment_type: z.string().nullable(),
+  employmentType: z.string().nullable(),
   status: JobStatusSchema,
 
-  /** Non-terminal application count (active pipeline). */
-  in_process_count: z.number().int().min(0),
-  /** Total active (non-withdrawn, non-rejected) application count. */
-  active_count: z.number().int().min(0),
-
-  /** Counts per canonical stage — drives the distribution bar. */
-  stage_distribution: StageDistributionSchema,
+  /** Applications in a non-terminal stage — the "18 in process" line under the bar. */
+  inProcessCount: z.number().int().min(0),
+  /** Applications not rejected or withdrawn; includes hired. */
+  activeCount: z.number().int().min(0),
+  stageDistribution: StageDistributionSchema,
 
   recruiter: RecruiterSummarySchema.nullable(),
-  hiring_manager_id: z.string().uuid().nullable(),
+  hiringManagerId: z.string().uuid().nullable(),
 
-  /** Present only for callers with comp:read scope. */
-  comp_band: CompBandSchema.optional(),
+  /**
+   * Absent and null mean different things and the UI renders them differently:
+   * **absent** — the caller lacks `comp:read`, so the field was stripped at
+   * serialization (§4.2). Rows render without band data, no error, no empty
+   * state (§7.3 Forbidden).
+   * **null** — the caller may see comp; this job simply has no band set.
+   * Collapsing them would make "you may not see this" indistinguishable from
+   * "there is nothing to see".
+   */
+  compBand: CompBandSchema.nullable().optional(),
 
   openings: z.number().int().min(1),
-  created_at: z.string().datetime(),
-  updated_at: z.string().datetime(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
 });
 export type Job = z.infer<typeof JobSchema>;
 
-// ---------------------------------------------------------------------------
-// Cursor envelope — spec 001 §7.2, CLAUDE.md §9 (cursor, never OFFSET)
-// ---------------------------------------------------------------------------
-
 export const ListJobsResponseSchema = z.object({
   data: z.array(JobSchema),
-  next_cursor: z.string().nullable(),
+  nextCursor: z.string().nullable(),
 });
 export type ListJobsResponse = z.infer<typeof ListJobsResponseSchema>;
