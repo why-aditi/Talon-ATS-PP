@@ -4,8 +4,22 @@ import { JobStatusSchema, type Job } from '@talon/contracts';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useJobs } from '../lib/jobs-query';
-import { ChevronDownIcon } from './icons';
-import { Avatar, Button, DistributionBar, Eyebrow, StatusPill, buttonClass, cx } from './ui';
+import { Avatar, Button, DistributionBar, Eyebrow, Select, StatusPill, buttonClass, cx } from './ui';
+
+/**
+ * Not a JobStatus — a stand-in for "no filter" inside the control, because Radix
+ * treats "" as "nothing selected" and refuses it as an item value. Kept out of the
+ * URL and out of the query by the conversion at the call site.
+ */
+const ALL_STATUSES = 'all';
+
+const STATUS_OPTIONS = [
+  { value: ALL_STATUSES, label: 'All' },
+  ...JobStatusSchema.options.map((value) => ({
+    value,
+    label: value === 'on_hold' ? 'On hold' : value.charAt(0).toUpperCase() + value.slice(1),
+  })),
+];
 
 /**
  * Column tracks live in design-tokens.json under `layout.jobRow`, where the measurement
@@ -179,32 +193,27 @@ export function JobsScreen() {
         <h1 className="font-display text-page-title text-text-primary">Jobs</h1>
         <p className="flex-1 text-meta tabular-nums text-text-tertiary">{hasData ? `${openCount} open` : ''}</p>
 
+        <Select
+          prefix="Status:"
+          ariaLabel="Filter jobs by status"
+          // Radix reserves "" to mean "nothing selected", so "All" travels as a
+          // sentinel and is converted back here. The URL contract is untouched:
+          // "All" is still the absence of `?status=`, not `?status=all`.
+          value={status || ALL_STATUSES}
+          onValueChange={(next) => setStatus(next === ALL_STATUSES ? '' : next)}
+          options={STATUS_OPTIONS}
+        />
+
         {/*
-          The height belongs on the select, not the wrapper: a wrapper-sized control
-          leaves the real hit target at the select's ~20px line box, under the 24×24
-          minimum. The chevron overlays the select's own right padding and is
-          pointer-events-none, so the arrow is part of the target rather than a hole
-          in it. Neither failure is visible to axe — both need a human or a ruler.
+          Screen 02 carries "+ New job" twice — dashed in the sidebar, primary here.
+          A link rather than a button, same as the sidebar one: it navigates, so it is
+          not an inert control, and /jobs/new is a 404 until the wizard lands (§7.4).
+          Two entry points to one destination is the reference's call, not a duplicate
+          to collapse.
         */}
-        <div className="flex h-[var(--control-height-md)] items-center gap-1 rounded-md border border-border-default bg-bg-surface pl-3 pr-2 text-body">
-          <span className="pointer-events-none text-text-secondary">Status:</span>
-          <span className="relative flex h-full items-center">
-            <select
-              aria-label="Filter jobs by status"
-              value={status}
-              onChange={(event) => setStatus(event.target.value)}
-              className="h-full appearance-none bg-transparent pr-5 text-text-primary"
-            >
-              <option value="">All</option>
-              {JobStatusSchema.options.map((value) => (
-                <option key={value} value={value}>
-                  {value === 'on_hold' ? 'On hold' : value.charAt(0).toUpperCase() + value.slice(1)}
-                </option>
-              ))}
-            </select>
-            <ChevronDownIcon className="pointer-events-none absolute right-0 text-text-secondary" />
-          </span>
-        </div>
+        <Link href="/jobs/new" className={buttonClass('primary')}>
+          + New job
+        </Link>
       </div>
 
       {query.isPending ? <LoadingSkeleton /> : null}
@@ -251,10 +260,11 @@ export function JobsScreen() {
       ) : null}
 
       {/*
-        No action and no pointer to one. "+ New job" is deferred with the wizard
-        (§7.4); the sidebar link lands on the not-built page until it exists, so
-        naming it in the copy would send someone into a dead end instead of a
-        button that does nothing — not an improvement.
+        The placeholder itself carries no action: the header and the sidebar both
+        already offer "+ New job", so a third copy of it here would be the same dead
+        end stated three times. The copy still does not name them, because /jobs/new
+        is a 404 until the wizard lands (§7.4) and pointing at a dead end in prose is
+        worse than letting the button be the thing that discovers it.
       */}
       {hasData && jobs.length === 0 && !isFiltered ? (
         <Placeholder

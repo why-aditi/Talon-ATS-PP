@@ -53,11 +53,14 @@ describe.skipIf(!API_URL)('GET /v1/jobs against the seeded tenant', () => {
         'GET /v1/jobs returned 401. Set TALON_API_TOKEN, or the step-4 auth chain is not wired yet.',
       );
     }
-    expect(response.status, await response.text().catch(() => '')).toBe(200);
+    // Read once: a Response body is a stream, so consuming it for the failure
+    // message would leave nothing for the parse below.
+    const raw = await response.text();
+    expect(response.status, raw).toBe(200);
 
     // Parsing with the contract is half the assertion: a payload that does not satisfy
     // ListJobsResponseSchema fails here rather than surfacing as a render bug.
-    const body = ListJobsResponseSchema.parse(await response.json());
+    const body = ListJobsResponseSchema.parse(JSON.parse(raw));
 
     expect(body.data.map(seededShape)).toEqual(JOBS.map(seededShape));
 

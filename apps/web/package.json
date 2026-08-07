@@ -10,6 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@radix-ui/react-select": "^2.3.7",
     "@talon/contracts": "workspace:*",
     "@talon/tokens": "workspace:*",
     "@tanstack/react-query": "^5.66.0",
@@ -35,6 +36,8 @@
     "vitest": "^3.2.4"
   },
   "msw": {
-    "workerDirectory": ["public"]
+    "workerDirectory": [
+      "public"
+    ]
   }
 }

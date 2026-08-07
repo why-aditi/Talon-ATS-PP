@@ -141,8 +141,8 @@ describe('error state', () => {
     const { container } = renderJobs('status=active&state=error');
     expect(await screen.findByText("Jobs didn't load.")).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
-    // The filter survives the failure — the select is still on Active.
-    expect(screen.getByRole('combobox', { name: 'Filter jobs by status' })).toHaveValue('active');
+    // The filter survives the failure — the trigger still reads Active.
+    expect(screen.getByRole('combobox', { name: 'Filter jobs by status' })).toHaveTextContent('Active');
     await expectNoAxeViolations(container);
   });
 });
@@ -216,8 +216,14 @@ describe('filtering', () => {
     renderJobs();
     await screen.findByText('Senior Product Engineer');
 
-    const select = screen.getByRole('combobox', { name: 'Filter jobs by status' });
-    await user.selectOptions(select, 'on_hold');
+    // Opened from the keyboard, which is the path that has to keep working now the
+    // listbox is Radix's rather than the platform's. The option is then clicked:
+    // arrow-key counting from an implicit starting highlight would assert Radix's
+    // internals rather than ours.
+    const trigger = screen.getByRole('combobox', { name: 'Filter jobs by status' });
+    trigger.focus();
+    await user.keyboard('{Enter}');
+    await user.click(await screen.findByRole('option', { name: 'On hold' }));
     expect(routerReplace).toHaveBeenCalledWith('/jobs?status=on_hold', { scroll: false });
   });
 
@@ -227,7 +233,9 @@ describe('filtering', () => {
     // production on the same path, and the select honestly reads "All".
     renderJobs('status=bogus');
     await screen.findByText('Senior Product Engineer');
-    expect(screen.getByRole('combobox', { name: 'Filter jobs by status' })).toHaveValue('');
+    // The trigger is a button, not a form control, so the assertion is on what it
+    // displays rather than on a `value` — same guarantee, different mechanism.
+    expect(screen.getByRole('combobox', { name: 'Filter jobs by status' })).toHaveTextContent('All');
     expect(screen.queryByText('No jobs match this filter.')).not.toBeInTheDocument();
     expect(jobsUrl({ status: undefined })).not.toContain('status=');
   });
@@ -257,7 +265,8 @@ describe('keyboard path', () => {
 
     expect(reached).toContain('Jobs6');
     expect(reached).toContain('+ New job');
-    // The status filter is a native select, so it is in the tab order for free.
+    // The Radix trigger is a real <button>, so it stays in the tab order — this is
+    // the assertion that catches the swap away from a native select regressing it.
     expect(reached).toContain('Filter jobs by status');
 
     // Nothing that does nothing takes focus: sign-out, the topbar search and the
