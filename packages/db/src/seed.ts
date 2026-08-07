@@ -1,14 +1,26 @@
 // Seed reproducing the reference screens (spec 001 §5.4). Writes HISTORY, not state:
-// every application gets backdated stage_transitions so derived metrics match the
-// screenshots — Ana Petrova "3d in Onsite", Elena Ruiz "Stalled 8d in stage" (screen
-// SLA 5d), Screen "42% pass" (16 of 38 ENG-204 applications ever reached Screen) and
-// "median 4d" (median Screen dwell across all completed Screen exits).
+// every application gets backdated stage_transitions so derived values match the
+// screenshots rather than being asserted into place.
 //
-// Known contradiction in the reference material, resolved toward the kanban screen:
-// the jobs list shows ENG-204 "18 in process" but the pipeline screen pictures exactly
-// 9 candidates (8 non-terminal). The funnel percentages (100/42/21/8 = 38/16/8/3 over
-// 38 applications) confirm 38 total, so ENG-204 seeds 38 applications of which the
-// 29 non-pictured are terminal. See the step-3 PR description.
+// ENG-204 holds EXACTLY the nine pictured candidates and no filler (spec 001 §5.4,
+// open question 5 answered 2026-08-07 — the board is the truth). Every per-card and
+// per-column readout on 03-pipeline-kanban is reproduced from real transition rows:
+//
+//   cards      Applied 4 · Screen 2 · Onsite 1 · Offer 1 · Hired 1
+//   in stage   Tess 4d, Omar 3d, Jordan 2d, Priya 1d, Elena 8d (stalled, SLA 5d),
+//              Marcus 5d, Ana 3d, Sofia 1d, David 0d
+//   medians    Applied 2d · Screen 4d · Onsite 6d · Offer 3d
+//
+// The one thing the pictured population CANNOT produce is the funnel pass rate.
+// The screen shows 100/42/21/8; nine candidates yield 100/56/33/22. Those screen
+// percentages are exactly the ratios of a 38-application population (16/38 = 42%,
+// 8/38 = 21%, 3/38 = 8%), which is the jobs-list "38 active" cell for ENG-204 — so
+// the kanban's own funnel agrees with the jobs list and disagrees with its own nine
+// cards. Recorded as a screen-vs-screen contradiction; NOT closed by inventing rows.
+// metrics.test.ts asserts the real derived values. See the step-3 PR description.
+//
+// The other five jobs are seeded to the counts on 02-jobs-list ("N active" = total
+// applications, "M in process" = currently non-terminal).
 import { pathToFileURL } from 'node:url';
 import { uuidv7 } from 'uuidv7';
 import { createDb } from './index.js';
@@ -34,6 +46,27 @@ const TEMPLATE_STAGES: { name: string; canonical: Canonical; sla_days: number | 
   { name: 'Withdrawn', canonical: 'withdrawn', sla_days: null, is_terminal: true },
 ];
 
+// Unpictured candidates on the other five jobs still need to look like people —
+// "DES-114 Candidate 7" leaks into every later list, search result and export.
+const FIRST_NAMES = [
+  'Amara', 'Bo', 'Camille', 'Devon', 'Esther', 'Farid', 'Greta', 'Hugo',
+  'Imani', 'Jonas', 'Kiara', 'Lars', 'Mira', 'Nikhil', 'Oona', 'Pablo',
+  'Quinn', 'Rosa', 'Silas', 'Tariq', 'Ulla', 'Viktor', 'Wren', 'Yusuf',
+];
+const LAST_NAMES = [
+  'Abara', 'Bergstrom', 'Costa', 'Duval', 'Eze', 'Fontaine', 'Gallo', 'Hoffman',
+  'Ibarra', 'Jansen', 'Karlsen', 'Lombardi', 'Mensah', 'Novak', 'Okonkwo', 'Pereira',
+  'Rahman', 'Sandoval', 'Thorne', 'Ueda', 'Vasquez', 'Whitfield', 'Yamada', 'Zielinski',
+];
+const TITLES = [
+  'Software Engineer', 'Product Designer', 'Recruiting Coordinator', 'Account Executive',
+  'Engineering Manager', 'Data Engineer', 'UX Researcher', 'Sales Manager',
+];
+const COMPANIES = ['Northwind', 'Contoso', 'Initech', 'Globex', 'Umbrella', 'Vandelay', 'Soylent', 'Stark'];
+// Reserved example domains only (RFC 2606). Seed data must never hold an address
+// that could receive real mail once SES is wired up in spec 002.
+const EMAIL_DOMAINS = ['example.com', 'example.net', 'example.org'];
+
 export async function seed(databaseUrl = process.env['DATABASE_URL'] ?? DEFAULT_DATABASE_URL): Promise<void> {
   const { db, client } = createDb(databaseUrl, { max: 1 });
 
@@ -57,6 +90,38 @@ export async function seed(databaseUrl = process.env['DATABASE_URL'] ?? DEFAULT_
     return `a${String(n).padStart(3, '0')}`;
   };
 
+  // candidates carries unique (tenant_id, email) — dedupe in M1 keys on email — so
+  // every seeded address has to be distinct. The old slug stripped digits, which
+  // collapsed every "Alex Morgan N" onto one address; the Set is what actually
+  // guarantees distinctness, independent of how the names are generated.
+  const usedEmails = new Set<string>();
+  let bulkNameCursor = 0;
+
+  function nextBulkPerson(): { name: string; title: string; company: string } {
+    const i = bulkNameCursor++;
+    const first = FIRST_NAMES[i % FIRST_NAMES.length] as string;
+    const last = LAST_NAMES[Math.floor(i / FIRST_NAMES.length) % LAST_NAMES.length] as string;
+    return {
+      name: `${first} ${last}`,
+      title: TITLES[i % TITLES.length] as string,
+      company: COMPANIES[(i * 3) % COMPANIES.length] as string,
+    };
+  }
+
+  function emailFor(name: string, tenantKey: string): string {
+    const slug = name
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/\p{Diacritic}/gu, '') // combining marks left by NFD, so é → e not e.
+      .replace(/[^a-z0-9]+/g, '.')
+      .replace(/^\.+|\.+$/g, '');
+    const domain = EMAIL_DOMAINS[usedEmails.size % EMAIL_DOMAINS.length] as string;
+    let email = `${slug}@${domain}`;
+    for (let n = 2; usedEmails.has(`${tenantKey}|${email}`); n++) email = `${slug}${n}@${domain}`;
+    usedEmails.add(`${tenantKey}|${email}`);
+    return email;
+  }
+
   function addJob(opts: {
     tenantId: string;
     templateId: string;
@@ -65,10 +130,12 @@ export async function seed(databaseUrl = process.env['DATABASE_URL'] ?? DEFAULT_
     department: string;
     location: string;
     status: 'draft' | 'active' | 'on_hold' | 'closing' | 'closed';
+    /** Explicit — jobs.currency has no DB default, "never an assumed USD". */
+    currency: string;
     recruiterId: string;
     hiringManagerId?: string;
-    bandMinCents?: number;
-    bandMaxCents?: number;
+    bandMinCents?: bigint;
+    bandMaxCents?: bigint;
   }) {
     const jobId = uuidv7();
     jobRows.push({
@@ -79,6 +146,7 @@ export async function seed(databaseUrl = process.env['DATABASE_URL'] ?? DEFAULT_
       department: opts.department,
       location: opts.location,
       status: opts.status,
+      currency: opts.currency,
       recruiterId: opts.recruiterId,
       hiringManagerId: opts.hiringManagerId ?? null,
       bandMinCents: opts.bandMinCents ?? null,
@@ -127,7 +195,7 @@ export async function seed(databaseUrl = process.env['DATABASE_URL'] ?? DEFAULT_
       name: opts.candidate.name,
       currentTitle: opts.candidate.title ?? null,
       currentCompany: opts.candidate.company ?? null,
-      email: `${opts.candidate.name.toLowerCase().replace(/[^a-z]+/g, '.')}@example.com`,
+      email: emailFor(opts.candidate.name, opts.tenantId),
       createdAt: first.at,
     });
     const applicationId = uuidv7();
@@ -194,15 +262,18 @@ export async function seed(databaseUrl = process.env['DATABASE_URL'] ?? DEFAULT_
   const talonTemplate = uuidv7();
   templateRows.push({ id: talonTemplate, tenantId: talon, name: 'Default pipeline', stages: TEMPLATE_STAGES, createdAt: ago(365) });
 
-  const eng204 = addJob({ tenantId: talon, templateId: talonTemplate, reqCode: 'ENG-204', title: 'Senior Product Engineer', department: 'Engineering', location: 'Remote (US)', status: 'active', recruiterId: maya, hiringManagerId: sam, bandMinCents: 190_000_00, bandMaxCents: 225_000_00 });
-  const eng209 = addJob({ tenantId: talon, templateId: talonTemplate, reqCode: 'ENG-209', title: 'Staff Design Engineer', department: 'Engineering', location: 'SF / Hybrid', status: 'active', recruiterId: tom });
-  const eng198 = addJob({ tenantId: talon, templateId: talonTemplate, reqCode: 'ENG-198', title: 'Engineering Manager, Infra', department: 'Engineering', location: 'New York', status: 'on_hold', recruiterId: maya });
-  const des114 = addJob({ tenantId: talon, templateId: talonTemplate, reqCode: 'DES-114', title: 'Product Designer, Growth', department: 'Design', location: 'Remote (EU)', status: 'active', recruiterId: tom });
-  const ppl031 = addJob({ tenantId: talon, templateId: talonTemplate, reqCode: 'PPL-031', title: 'Recruiting Coordinator', department: 'People', location: 'Remote (US)', status: 'active', recruiterId: maya });
-  const sal076 = addJob({ tenantId: talon, templateId: talonTemplate, reqCode: 'SAL-076', title: 'Head of Sales, EMEA', department: 'Sales', location: 'London', status: 'closing', recruiterId: sam, hiringManagerId: sam });
+  const eng204 = addJob({ tenantId: talon, templateId: talonTemplate, reqCode: 'ENG-204', title: 'Senior Product Engineer', department: 'Engineering', location: 'Remote (US)', status: 'active', currency: 'USD', recruiterId: maya, hiringManagerId: sam, bandMinCents: 19_000_000n, bandMaxCents: 22_500_000n });
+  const eng209 = addJob({ tenantId: talon, templateId: talonTemplate, reqCode: 'ENG-209', title: 'Staff Design Engineer', department: 'Engineering', location: 'SF / Hybrid', status: 'active', currency: 'USD', recruiterId: tom });
+  const eng198 = addJob({ tenantId: talon, templateId: talonTemplate, reqCode: 'ENG-198', title: 'Engineering Manager, Infra', department: 'Engineering', location: 'New York', status: 'on_hold', currency: 'USD', recruiterId: maya });
+  const des114 = addJob({ tenantId: talon, templateId: talonTemplate, reqCode: 'DES-114', title: 'Product Designer, Growth', department: 'Design', location: 'Remote (EU)', status: 'active', currency: 'USD', recruiterId: tom });
+  const ppl031 = addJob({ tenantId: talon, templateId: talonTemplate, reqCode: 'PPL-031', title: 'Recruiting Coordinator', department: 'People', location: 'Remote (US)', status: 'active', currency: 'USD', recruiterId: maya });
+  const sal076 = addJob({ tenantId: talon, templateId: talonTemplate, reqCode: 'SAL-076', title: 'Head of Sales, EMEA', department: 'Sales', location: 'London', status: 'closing', currency: 'USD', recruiterId: sam, hiringManagerId: sam });
 
-  // ── ENG-204: the nine pictured candidates ─────────────────────────────────
+  // ── ENG-204: the nine pictured candidates, and nothing else ───────────────
   // The +6h anchor keeps floor(days-in-stage) stable for most of a day after seeding.
+  // Dwell times are chosen so each column's MEDIAN matches the screen exactly:
+  // Applied 2d (five 2d exits), Screen 4d (Ana/Sofia/David), Onsite 6d (Sofia/David),
+  // Offer 3d (David). Change a date here and a column median moves.
   const named = { tenantId: talon, job: eng204, actorId: maya, withActivities: true };
   addApplication({ ...named, candidate: { name: 'Tess Bianchi', title: 'Frontend Engineer', company: 'Halo' }, source: 'agency', path: [{ c: 'applied', at: ago(4, 6) }] });
   addApplication({ ...named, candidate: { name: 'Omar Haddad', title: 'Platform Engineer', company: 'Trellis' }, source: 'careers_page', path: [{ c: 'applied', at: ago(3, 6) }] });
@@ -211,67 +282,36 @@ export async function seed(databaseUrl = process.env['DATABASE_URL'] ?? DEFAULT_
   // Elena: 8d in Screen (> SLA 5) → "Stalled 8d in stage"
   addApplication({ ...named, candidate: { name: 'Elena Ruiz', title: 'Backend Engineer', company: 'Cove' }, source: 'outbound', path: [{ c: 'applied', at: ago(10, 6) }, { c: 'screen', at: ago(8, 6) }] });
   addApplication({ ...named, candidate: { name: 'Marcus Webb', title: 'SWE', company: 'Northwind' }, source: 'outbound', path: [{ c: 'applied', at: ago(7, 6) }, { c: 'screen', at: ago(5, 6) }] });
-  // Ana: entered Onsite 3d ago → "3d in stage"; Screen dwell exactly 4d
+  // Ana: entered Onsite 3d ago → "3d in stage"; Screen dwell 4d
   addApplication({ ...named, candidate: { name: 'Ana Petrova', title: 'Senior SWE', company: 'Meridian' }, source: 'referral', referredById: davidO, path: [{ c: 'applied', at: ago(9, 6) }, { c: 'screen', at: ago(7, 6) }, { c: 'onsite', at: ago(3, 6) }] });
-  addApplication({ ...named, candidate: { name: 'Sofia Lindqvist', title: 'Staff Eng', company: 'Polar' }, source: 'outbound', path: [{ c: 'applied', at: ago(12, 6) }, { c: 'screen', at: ago(10, 6) }, { c: 'onsite', at: ago(6, 6) }, { c: 'offer', at: ago(1, 6) }] });
-  addApplication({ ...named, candidate: { name: 'David Kim', title: 'Sr SWE', company: 'Argo' }, source: 'referral', referredById: lin, path: [{ c: 'applied', at: ago(14, 6) }, { c: 'screen', at: ago(12, 6) }, { c: 'onsite', at: ago(8, 6) }, { c: 'offer', at: ago(2, 6) }, { c: 'hired', at: ago(0, 6) }] });
+  // Sofia: "1d in stage" in Offer; Screen dwell 4d, Onsite dwell 6d
+  addApplication({ ...named, candidate: { name: 'Sofia Lindqvist', title: 'Staff Eng', company: 'Polar' }, source: 'outbound', path: [{ c: 'applied', at: ago(13, 6) }, { c: 'screen', at: ago(11, 6) }, { c: 'onsite', at: ago(7, 6) }, { c: 'offer', at: ago(1, 6) }] });
+  // David: "0d in stage" in Hired; the only completed Offer dwell, at 3d
+  addApplication({ ...named, candidate: { name: 'David Kim', title: 'Sr SWE', company: 'Argo' }, source: 'referral', referredById: lin, path: [{ c: 'applied', at: ago(15, 6) }, { c: 'screen', at: ago(13, 6) }, { c: 'onsite', at: ago(9, 6) }, { c: 'offer', at: ago(3, 6) }, { c: 'hired', at: ago(0, 6) }] });
 
-  // ── ENG-204: 29 historical (terminal) applications completing the funnel ──
-  // Ever-reached counts incl. the nine above: applied 38, screen 16, onsite 8,
-  // offer 3, hired 1 → 42% / 21% / 8% pass. Screen dwell median across all 14
-  // completed Screen exits (11 fillers + Ana/Sofia/David at 4d) = exactly 4d.
+  // ── Other jobs: history matching the 02-jobs-list counts ──────────────────
   const sources = ['careers_page', 'outbound', 'referral', 'agency', 'import'];
   const src = (i: number) => sources[i % sources.length] as string;
-  for (let i = 0; i < 18; i++) {
-    const rejectedAt = ago(23 + i, i % 12);
-    addApplication({ tenantId: talon, job: eng204, actorId: maya, candidate: { name: `Alex Morgan ${i + 1}` }, source: src(i), path: [{ c: 'applied', at: minus(rejectedAt, 2) }, { c: 'rejected', at: rejectedAt }] });
-  }
-  const screenRejectDwell = [2, 2, 3, 3, 3, 4];
-  screenRejectDwell.forEach((dwell, i) => {
-    const rejectedAt = ago(18 + i, 3);
-    const screenAt = minus(rejectedAt, dwell);
-    addApplication({ tenantId: talon, job: eng204, actorId: maya, candidate: { name: `Riley Chen ${i + 1}` }, source: src(i), path: [{ c: 'applied', at: minus(screenAt, 2) }, { c: 'screen', at: screenAt }, { c: 'rejected', at: rejectedAt }] });
-  });
-  const onsiteScreenDwell = [5, 5, 5, 6, 6];
-  onsiteScreenDwell.forEach((dwell, i) => {
-    const last = i === 4; // the one that reached Offer before being declined
-    const end = ago(15 + i, 9);
-    const offerAt = last ? minus(end, 3) : null;
-    const onsiteAt = minus(offerAt ?? end, 6);
-    const screenAt = minus(onsiteAt, dwell);
-    const path: { c: Canonical; at: Date }[] = [
-      { c: 'applied', at: minus(screenAt, 2) },
-      { c: 'screen', at: screenAt },
-      { c: 'onsite', at: onsiteAt },
-    ];
-    if (offerAt) path.push({ c: 'offer', at: offerAt });
-    path.push({ c: 'rejected', at: end });
-    addApplication({ tenantId: talon, job: eng204, actorId: maya, candidate: { name: `Sasha Ito ${i + 1}` }, source: src(i), rejectionReason: last ? 'declined_offer' : 'not_a_fit', path });
-  });
-
-  // ── Other jobs: bulk history matching the jobs-list counts ────────────────
-  // "N active" = total applications (the 38-denominator reading confirmed by the
-  // funnel percentages); "M in process" = currently non-terminal.
-  const bulk: { job: typeof eng204; req: string; total: number; inProcess: number }[] = [
-    { job: eng209, req: 'ENG-209', total: 21, inProcess: 8 },
-    { job: eng198, req: 'ENG-198', total: 12, inProcess: 3 },
-    { job: des114, req: 'DES-114', total: 54, inProcess: 20 },
-    { job: ppl031, req: 'PPL-031', total: 67, inProcess: 19 },
-    { job: sal076, req: 'SAL-076', total: 9, inProcess: 6 },
+  const bulk: { job: typeof eng204; total: number; inProcess: number }[] = [
+    { job: eng209, total: 21, inProcess: 8 },
+    { job: eng198, total: 12, inProcess: 3 },
+    { job: des114, total: 54, inProcess: 20 },
+    { job: ppl031, total: 67, inProcess: 19 },
+    { job: sal076, total: 9, inProcess: 6 },
   ];
   const inProcessCycle: Canonical[] = ['applied', 'applied', 'screen', 'screen', 'onsite'];
-  for (const { job, req, total, inProcess } of bulk) {
+  for (const { job, total, inProcess } of bulk) {
     for (let i = 0; i < inProcess; i++) {
       const target = inProcessCycle[i % inProcessCycle.length] as Canonical;
       const appliedAt = ago(18 + (i % 10), i % 12);
       const path: { c: Canonical; at: Date }[] = [{ c: 'applied', at: appliedAt }];
       if (target !== 'applied') path.push({ c: 'screen', at: minus(appliedAt, -2) });
       if (target === 'onsite') path.push({ c: 'onsite', at: minus(appliedAt, -6) });
-      addApplication({ tenantId: talon, job, candidate: { name: `${req} Candidate ${i + 1}` }, source: src(i), path });
+      addApplication({ tenantId: talon, job, candidate: nextBulkPerson(), source: src(i), path });
     }
     for (let i = 0; i < total - inProcess; i++) {
       const rejectedAt = ago(25 + (i % 30), i % 12);
-      addApplication({ tenantId: talon, job, candidate: { name: `${req} Past Candidate ${i + 1}` }, source: src(i), path: [{ c: 'applied', at: minus(rejectedAt, 2) }, { c: 'rejected', at: rejectedAt }] });
+      addApplication({ tenantId: talon, job, candidate: nextBulkPerson(), source: src(i), path: [{ c: 'applied', at: minus(rejectedAt, 2) }, { c: 'rejected', at: rejectedAt }] });
     }
   }
 
@@ -284,7 +324,7 @@ export async function seed(databaseUrl = process.env['DATABASE_URL'] ?? DEFAULT_
   userRows.push({ id: beth, tenantId: acme, email: 'beth@acme.test', name: 'Beth Okafor', role: 'admin', timezone: 'UTC' });
   const acmeTemplate = uuidv7();
   templateRows.push({ id: acmeTemplate, tenantId: acme, name: 'Default pipeline', stages: TEMPLATE_STAGES, createdAt: ago(200) });
-  const acm001 = addJob({ tenantId: acme, templateId: acmeTemplate, reqCode: 'ACM-001', title: 'Platform Engineer', department: 'Engineering', location: 'Berlin', status: 'active', recruiterId: beth });
+  const acm001 = addJob({ tenantId: acme, templateId: acmeTemplate, reqCode: 'ACM-001', title: 'Platform Engineer', department: 'Engineering', location: 'Berlin', status: 'active', currency: 'EUR', recruiterId: beth });
   const acmeCommon = { tenantId: acme, job: acm001, actorId: beth, withActivities: true };
   addApplication({ ...acmeCommon, candidate: { name: 'Noor Haddad', title: 'SRE', company: 'Initech' }, source: 'careers_page', path: [{ c: 'applied', at: ago(5, 3) }] });
   addApplication({ ...acmeCommon, candidate: { name: 'Petra Kovacs', title: 'Backend Engineer', company: 'Globex' }, source: 'outbound', path: [{ c: 'applied', at: ago(9, 3) }, { c: 'screen', at: ago(4, 3) }] });
@@ -316,7 +356,8 @@ export async function seed(databaseUrl = process.env['DATABASE_URL'] ?? DEFAULT_
     await chunked(s.auditLog, auditRows);
     console.log(
       `seeded: ${tenantRows.length} tenants, ${userRows.length} users, ${jobRows.length} jobs, ` +
-        `${applicationRows.length} applications, ${transitionRows.length} transitions`,
+        `${candidateRows.length} candidates, ${applicationRows.length} applications, ` +
+        `${transitionRows.length} transitions`,
     );
   } finally {
     await client.end();

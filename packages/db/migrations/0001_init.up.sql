@@ -1,20 +1,15 @@
 -- 0001_init — M0a table set (spec 001 §5.1): tenants, users, stage_templates, jobs,
 -- job_stages, candidates, applications, stage_transitions, activities, audit_log.
 -- Runs as the migration role (owner). The app connects as talon_app, which cannot bypass RLS.
+--
+-- PREREQUISITE: the talon_app role must exist before this file runs. It is created by
+-- ensureAppRole() in src/migrate.ts, NOT here — a role password written into a migration
+-- replays verbatim into every environment the migration is ever pointed at.
 
 -- Idempotent here as a belt-and-braces: the docker init script already enables these,
 -- but test setup recreates schema public from scratch.
 create extension if not exists citext;
 create extension if not exists pg_trgm;
-
--- App role: RLS applies to it (no BYPASSRLS). Cluster-global, so created idempotently
--- and deliberately NOT dropped by the down migration.
-do $$
-begin
-  if not exists (select from pg_roles where rolname = 'talon_app') then
-    create role talon_app login password 'talon_app';
-  end if;
-end $$;
 
 grant usage on schema public to talon_app;
 
@@ -51,7 +46,9 @@ create table users (
   -- Null = all tokens valid.
   tokens_valid_after timestamptz,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  -- Referenceable by composite FK so a child row cannot point at another tenant's user.
+  unique (tenant_id, id)
 );
 create index users_tenant_email_idx on users (tenant_id, email);
 
@@ -66,10 +63,17 @@ create table stage_templates (
   stages jsonb not null default '[]',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  unique (tenant_id, name)
+  unique (tenant_id, name),
+  unique (tenant_id, id)
 );
 
 -- ── jobs ───────────────────────────────────────────────────────────────────
+-- Composite FKs throughout (reviewer finding 7): FK validation runs as the table
+-- owner and BYPASSES RLS, so a plain `references users (id)` lets a buggy write
+-- point a job at another tenant's recruiter and the policy never sees it. Pairing
+-- tenant_id into every FK makes that unrepresentable in the schema rather than
+-- merely unlikely in the service layer. Nullable child columns are MATCH SIMPLE:
+-- a null recruiter_id satisfies the constraint, a non-null one must match tenant.
 create table jobs (
   id uuid primary key,
   tenant_id uuid not null references tenants (id),
@@ -80,22 +84,28 @@ create table jobs (
   employment_type text,
   band_min_cents bigint,
   band_max_cents bigint,
-  currency char(3) not null default 'USD',
+  -- No default (reviewer finding 8): CLAUDE.md §4.9 is "never an assumed USD".
+  -- Deviates from ARCHITECTURE §5's `default 'USD'` — see the PR description.
+  currency char(3) not null,
   status text not null check (status in ('draft', 'active', 'on_hold', 'closing', 'closed')),
-  recruiter_id uuid references users (id),
-  hiring_manager_id uuid references users (id),
+  recruiter_id uuid,
+  hiring_manager_id uuid,
   openings int not null default 1,
-  stage_template_id uuid not null references stage_templates (id),
+  stage_template_id uuid not null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  unique (tenant_id, req_code)
+  unique (tenant_id, req_code),
+  unique (tenant_id, id),
+  foreign key (tenant_id, recruiter_id) references users (tenant_id, id),
+  foreign key (tenant_id, hiring_manager_id) references users (tenant_id, id),
+  foreign key (tenant_id, stage_template_id) references stage_templates (tenant_id, id)
 );
 
 -- ── job_stages ─────────────────────────────────────────────────────────────
 create table job_stages (
   id uuid primary key,
   tenant_id uuid not null references tenants (id),
-  job_id uuid not null references jobs (id),
+  job_id uuid not null,
   name text not null,
   position int not null,
   canonical text not null
@@ -104,7 +114,12 @@ create table job_stages (
   is_terminal boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  unique (job_id, position)
+  unique (job_id, position),
+  unique (tenant_id, id),
+  -- Referenceable by applications (job_id, current_stage_id) — the constraint that
+  -- makes "this card's stage belongs to this card's job" a schema guarantee.
+  unique (job_id, id),
+  foreign key (tenant_id, job_id) references jobs (tenant_id, id)
 );
 create index job_stages_tenant_job_idx on job_stages (tenant_id, job_id, position);
 
@@ -125,7 +140,12 @@ create table candidates (
       coalesce(name, '') || ' ' || coalesce(current_title, '') || ' ' || coalesce(current_company, ''))
   ) stored,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  -- M1 candidate dedupe keys on email. Nulls are distinct in Postgres, so
+  -- candidates without an email (and anonymized rows, whose email is nulled)
+  -- are unaffected. Scoped per tenant: two tenants may hold the same person.
+  unique (tenant_id, email),
+  unique (tenant_id, id)
 );
 create index candidates_search_idx on candidates using gin (search_vector);
 create index candidates_name_trgm_idx on candidates using gin (name gin_trgm_ops);
@@ -135,23 +155,40 @@ create index candidates_tenant_name_idx on candidates (tenant_id, name);
 create table applications (
   id uuid primary key,
   tenant_id uuid not null references tenants (id),
-  candidate_id uuid not null references candidates (id),
-  job_id uuid not null references jobs (id),
-  current_stage_id uuid not null references job_stages (id),
+  candidate_id uuid not null,
+  job_id uuid not null,
+  current_stage_id uuid not null,
   stage_entered_at timestamptz not null,
   board_rank text not null,
   source text not null,
-  referred_by_id uuid references users (id),
+  referred_by_id uuid,
   status text not null default 'active'
     check (status in ('active', 'hired', 'rejected', 'withdrawn')),
   rejection_reason text,
   comp_expectation_min_cents bigint,
   comp_expectation_max_cents bigint,
+  -- CLAUDE.md §4.9: money is cents PLUS an explicit currency. Nullable only because
+  -- the expectation itself is optional; the check below makes "cents without a
+  -- currency" unrepresentable. ARCHITECTURE §5 omits this column — see the PR.
+  comp_expectation_currency char(3),
   notice_period_days int,
   version int not null default 1,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  unique (tenant_id, candidate_id, job_id)
+  constraint applications_comp_expectation_currency_ck check (
+    (comp_expectation_min_cents is null and comp_expectation_max_cents is null)
+    or comp_expectation_currency is not null
+  ),
+  unique (tenant_id, candidate_id, job_id),
+  unique (tenant_id, id),
+  foreign key (tenant_id, candidate_id) references candidates (tenant_id, id),
+  foreign key (tenant_id, job_id) references jobs (tenant_id, id),
+  foreign key (tenant_id, referred_by_id) references users (tenant_id, id),
+  -- Job-scoped, not tenant-scoped, and deliberately stronger than the tenant pair:
+  -- (tenant_id, job_id) pins the job to the tenant and (job_id, current_stage_id)
+  -- pins the stage to that job, so the stage's tenant follows transitively. A
+  -- separate (tenant_id, current_stage_id) FK would be redundant.
+  foreign key (job_id, current_stage_id) references job_stages (job_id, id)
 );
 create index applications_board_idx on applications (tenant_id, job_id, current_stage_id, board_rank);
 
@@ -159,29 +196,38 @@ create index applications_board_idx on applications (tenant_id, job_id, current_
 create table stage_transitions (
   id bigserial primary key,
   tenant_id uuid not null references tenants (id),
-  application_id uuid not null references applications (id),
-  from_stage_id uuid references job_stages (id),
-  to_stage_id uuid not null references job_stages (id),
-  actor_id uuid references users (id),
+  application_id uuid not null,
+  from_stage_id uuid,
+  to_stage_id uuid not null,
+  actor_id uuid,
   reason text,
   occurred_at timestamptz not null default now(),
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  foreign key (tenant_id, application_id) references applications (tenant_id, id),
+  foreign key (tenant_id, from_stage_id) references job_stages (tenant_id, id),
+  foreign key (tenant_id, to_stage_id) references job_stages (tenant_id, id),
+  foreign key (tenant_id, actor_id) references users (tenant_id, id)
 );
 create index stage_transitions_tenant_app_idx on stage_transitions (tenant_id, application_id, occurred_at);
+-- Funnel ("42% pass") and median-dwell queries group by the stage entered, not the
+-- application — they read this side of the table and had no index (finding 10).
+create index stage_transitions_tenant_to_stage_idx on stage_transitions (tenant_id, to_stage_id, occurred_at);
 
 -- ── activities ─────────────────────────────────────────────────────────────
 create table activities (
   id bigserial primary key,
   tenant_id uuid not null references tenants (id),
-  application_id uuid not null references applications (id),
+  application_id uuid not null,
   type text not null,
-  actor_id uuid references users (id),
+  actor_id uuid,
   body text,
   meta jsonb not null default '{}',
   occurred_at timestamptz not null default now(),
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  foreign key (tenant_id, application_id) references applications (tenant_id, id),
+  foreign key (tenant_id, actor_id) references users (tenant_id, id)
 );
 create index activities_tenant_app_idx on activities (tenant_id, application_id, occurred_at desc);
 
@@ -189,6 +235,11 @@ create index activities_tenant_app_idx on activities (tenant_id, application_id,
 -- tenant_id nullable per ARCHITECTURE §5 (system-level events). Rows with a null
 -- tenant_id are invisible to talon_app under the policy below — only the owner
 -- (migration role / system writer) can read or write them.
+--
+-- Deliberately NOT given composite FKs (finding 7): tenant_id is nullable, and a
+-- MATCH SIMPLE composite FK is satisfied outright whenever any column is null, so
+-- it would be a no-op on exactly the system rows. actor_id and entity_id carry no
+-- FK at all by design — an audit row must outlive the entity it describes.
 create table audit_log (
   id bigserial primary key,
   tenant_id uuid references tenants (id),

@@ -1,5 +1,10 @@
 // Acceptance 1 (spec 001 §5.4): the seed writes history whose DERIVED values match
 // the reference screens. Runs as the owner — this checks arithmetic, not isolation.
+//
+// ENG-204 holds exactly the nine pictured candidates (open question 5, answered
+// 2026-08-07: the board is the truth). Every assertion below is computed from
+// stage_transitions rows, not from a denormalized column, so a seed that set only
+// the current stage would fail here rather than in a screenshot diff three specs later.
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { OWNER_URL } from './urls.js';
@@ -29,47 +34,36 @@ async function daysInStage(candidateName: string) {
   return row as { days: number; canonical: string; sla_days: number | null } | undefined;
 }
 
-describe('ENG-204 derived metrics match the reference kanban', () => {
-  it('Ana Petrova reads "3d in Onsite"', async () => {
-    const ana = await daysInStage('Ana Petrova');
-    expect(ana).toMatchObject({ canonical: 'onsite', days: 3 });
+describe('ENG-204 cards match 03-pipeline-kanban', () => {
+  // Every "Nd in stage" string on the reference board, derived from stage_entered_at.
+  const cards: [name: string, canonical: string, days: number][] = [
+    ['Tess Bianchi', 'applied', 4],
+    ['Omar Haddad', 'applied', 3],
+    ['Jordan Cole', 'applied', 2],
+    ['Priya Nair', 'applied', 1],
+    ['Elena Ruiz', 'screen', 8],
+    ['Marcus Webb', 'screen', 5],
+    ['Ana Petrova', 'onsite', 3],
+    ['Sofia Lindqvist', 'offer', 1],
+    ['David Kim', 'hired', 0],
+  ];
+
+  it.each(cards)('%s reads "%sd in stage" in %s', async (name, canonical, days) => {
+    expect(await daysInStage(name)).toMatchObject({ canonical, days });
   });
 
-  it('Elena Ruiz reads "Stalled 8d in stage" (8d in Screen, over the 5d SLA)', async () => {
+  it('Elena Ruiz is stalled — 8d in Screen against a 5d SLA', async () => {
     const elena = await daysInStage('Elena Ruiz');
-    expect(elena).toMatchObject({ canonical: 'screen', days: 8 });
     expect(elena!.sla_days).not.toBeNull();
     expect(elena!.days).toBeGreaterThan(elena!.sla_days!);
   });
 
-  it('Screen column reads "42% pass" (16 of 38 applications ever reached Screen)', async () => {
-    const [row] = await sql`
-      with total as (select count(*)::int as n from applications where job_id = ${eng204}),
-      reached as (
-        select count(distinct st.application_id)::int as n
-        from stage_transitions st
-        join job_stages js on js.id = st.to_stage_id
-        where js.job_id = ${eng204} and js.canonical = 'screen')
-      select total.n as total, reached.n as reached,
-             round(100.0 * reached.n / total.n)::int as pct
-      from total, reached`;
-    expect(row).toMatchObject({ total: 38, reached: 16, pct: 42 });
+  it('the board holds exactly the nine pictured candidates and no filler', async () => {
+    const [row] = await sql`select count(*)::int as n from applications where job_id = ${eng204}`;
+    expect(row?.['n']).toBe(9);
   });
 
-  it('Screen column reads "median 4d" (median dwell over completed Screen exits)', async () => {
-    const [row] = await sql`
-      select percentile_cont(0.5) within group (
-               order by extract(epoch from (nxt.occurred_at - ent.occurred_at))
-             )::float8 as median_seconds
-      from stage_transitions ent
-      join job_stages js on js.id = ent.to_stage_id
-        and js.canonical = 'screen' and js.job_id = ${eng204}
-      join stage_transitions nxt on nxt.application_id = ent.application_id
-        and nxt.from_stage_id = ent.to_stage_id`;
-    expect(row?.['median_seconds']).toBe(4 * 86400);
-  });
-
-  it('board columns hold exactly the pictured cards: 4/2/1/1 + 1 hired', async () => {
+  it('columns hold exactly the pictured cards: 4/2/1/1 + 1 hired', async () => {
     const rows = await sql`
       select js.canonical, count(*)::int as n
       from applications a
@@ -78,6 +72,68 @@ describe('ENG-204 derived metrics match the reference kanban', () => {
       group by js.canonical`;
     const counts = Object.fromEntries(rows.map((r) => [r['canonical'], r['n']]));
     expect(counts).toEqual({ applied: 4, screen: 2, onsite: 1, offer: 1, hired: 1 });
+  });
+});
+
+describe('ENG-204 column medians match 03-pipeline-kanban exactly', () => {
+  /** Median dwell in a stage, over applications that have LEFT it. */
+  async function medianDwellDays(canonical: string) {
+    const [row] = await sql`
+      select percentile_cont(0.5) within group (
+               order by extract(epoch from (nxt.occurred_at - ent.occurred_at))
+             )::float8 as median_seconds
+      from stage_transitions ent
+      join job_stages js on js.id = ent.to_stage_id
+        and js.canonical = ${canonical} and js.job_id = ${eng204}
+      join stage_transitions nxt on nxt.application_id = ent.application_id
+        and nxt.from_stage_id = ent.to_stage_id`;
+    const seconds = row?.['median_seconds'] as number | null;
+    return seconds === null ? null : seconds / 86400;
+  }
+
+  // "median 2d" / "median 4d" / "median 6d" / "median 3d" on the reference board.
+  it.each([
+    ['applied', 2],
+    ['screen', 4],
+    ['onsite', 6],
+    ['offer', 3],
+  ])('%s column reads "median %sd"', async (canonical, days) => {
+    expect(await medianDwellDays(canonical as string)).toBe(days);
+  });
+});
+
+describe('ENG-204 funnel — the pictured population, not the pictured percentages', () => {
+  /**
+   * SCREEN-VS-SCREEN CONTRADICTION, recorded rather than papered over.
+   *
+   * 03-pipeline-kanban shows 100% / 42% / 21% / 8% pass. Those are exactly the ratios
+   * of a 38-application population: 16/38 = 42%, 8/38 = 21%, 3/38 = 8%. 38 is also the
+   * "38 active" cell for ENG-204 on 02-jobs-list. So the funnel bar agrees with the
+   * jobs list and disagrees with the nine cards drawn beside it on its own screen —
+   * two internally consistent readings of the same job.
+   *
+   * Spec 001 open question 5 resolved this toward the board: nine candidates, no
+   * filler. The percentages that population actually produces are asserted below.
+   * The previous seed manufactured 29 invisible applications to make 42/21/8 come
+   * out; those rows appeared on no screen and would have surfaced in every later
+   * candidate list, count and export.
+   */
+  it('pass rates are 100/56/33/22 over the nine seeded applications', async () => {
+    const rows = await sql`
+      with total as (select count(*)::int as n from applications where job_id = ${eng204})
+      select js.canonical,
+             count(distinct st.application_id)::int as reached,
+             round(100.0 * count(distinct st.application_id) / total.n)::int as pct
+      from stage_transitions st
+      join job_stages js on js.id = st.to_stage_id
+      cross join total
+      where js.job_id = ${eng204}
+      group by js.canonical, total.n`;
+    const pct = Object.fromEntries(rows.map((r) => [r['canonical'], r['pct']]));
+    const reached = Object.fromEntries(rows.map((r) => [r['canonical'], r['reached']]));
+
+    expect(reached).toEqual({ applied: 9, screen: 5, onsite: 3, offer: 2, hired: 1 });
+    expect(pct).toEqual({ applied: 100, screen: 56, onsite: 33, offer: 22, hired: 11 });
   });
 });
 
@@ -92,9 +148,10 @@ describe('jobs list counts and history consistency', () => {
       group by j.req_code`;
     const byReq = Object.fromEntries(rows.map((r) => [r['req_code'], { inProcess: r['in_process'], total: r['total'] }]));
     expect(byReq).toEqual({
-      // ENG-204 in-process is 8, matching the pictured kanban (the jobs-list "18 in
-      // process" contradicts the board's own cards; deviation documented in the seed).
-      'ENG-204': { inProcess: 8, total: 38 },
+      // ENG-204 reads from the board, not from 02-jobs-list's "18 in process / 38
+      // active" — see the funnel contradiction above.
+      'ENG-204': { inProcess: 8, total: 9 },
+      // The other five are exactly the 02-jobs-list numbers.
       'ENG-209': { inProcess: 8, total: 21 },
       'ENG-198': { inProcess: 3, total: 12 },
       'DES-114': { inProcess: 20, total: 54 },
@@ -115,5 +172,23 @@ describe('jobs list counts and history consistency', () => {
       ) last on true
       where a.stage_entered_at <> last.occurred_at or a.current_stage_id <> last.to_stage_id`;
     expect(row?.['drift']).toBe(0);
+  });
+
+  it('every seeded candidate has a distinct email — the slug used to collapse them', async () => {
+    const [row] = await sql`
+      select count(*)::int as total,
+             count(distinct email)::int as distinct_emails,
+             count(*) filter (where email is null)::int as missing
+      from candidates`;
+    expect(row?.['missing']).toBe(0);
+    expect(row?.['distinct_emails']).toBe(row?.['total']);
+  });
+
+  it('no candidate is named like generated filler', async () => {
+    // "DES-114 Candidate 7" and "Alex Morgan 12" leak into every later list and export.
+    const rows = await sql`
+      select name from candidates
+      where name ~ '[0-9]' or name ~* '(candidate|filler|test)'`;
+    expect(rows.map((r) => r['name'])).toEqual([]);
   });
 });

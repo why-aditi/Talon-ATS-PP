@@ -12,4 +12,6 @@ drop table if exists tenants;
 drop function if exists set_updated_at();
 -- talon_app role and the citext/pg_trgm extensions are intentionally left in place:
 -- the role is cluster-global (other databases may share the cluster) and the
--- extensions are owned by the docker init script. Both are created idempotently on up.
+-- extensions are owned by the docker init script. The role is (re)ensured
+-- idempotently by ensureAppRole() in src/migrate.ts on every `up`; the extensions
+-- are created idempotently by the up migration.

@@ -72,9 +72,12 @@ export const jobs = pgTable('jobs', {
   department: text('department').notNull(),
   location: text('location').notNull(),
   employmentType: text('employment_type'),
-  bandMinCents: bigint('band_min_cents', { mode: 'number' }),
-  bandMaxCents: bigint('band_max_cents', { mode: 'number' }),
-  currency: char('currency', { length: 3 }).notNull().default('USD'),
+  // mode: 'bigint' — money never round-trips through a JS number, so the 2^53
+  // precision class simply does not exist on these columns (CLAUDE.md §4.9).
+  bandMinCents: bigint('band_min_cents', { mode: 'bigint' }),
+  bandMaxCents: bigint('band_max_cents', { mode: 'bigint' }),
+  // No .default('USD') — "never an assumed USD". Callers state the currency.
+  currency: char('currency', { length: 3 }).notNull(),
   status: text('status', { enum: ['draft', 'active', 'on_hold', 'closing', 'closed'] }).notNull(),
   recruiterId: uuid('recruiter_id'),
   hiringManagerId: uuid('hiring_manager_id'),
@@ -129,8 +132,11 @@ export const applications = pgTable('applications', {
     .notNull()
     .default('active'),
   rejectionReason: text('rejection_reason'),
-  compExpectationMinCents: bigint('comp_expectation_min_cents', { mode: 'number' }),
-  compExpectationMaxCents: bigint('comp_expectation_max_cents', { mode: 'number' }),
+  compExpectationMinCents: bigint('comp_expectation_min_cents', { mode: 'bigint' }),
+  compExpectationMaxCents: bigint('comp_expectation_max_cents', { mode: 'bigint' }),
+  // Cents are meaningless without it. DB check: either cents column non-null
+  // forces this non-null (applications_comp_expectation_currency_ck).
+  compExpectationCurrency: char('comp_expectation_currency', { length: 3 }),
   noticePeriodDays: integer('notice_period_days'),
   version: integer('version').notNull().default(1),
   createdAt: createdAt(),
