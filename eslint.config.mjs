@@ -108,4 +108,36 @@ export default tseslint.config(
       ],
     },
   },
+
+  // ── UI stream additions ─────────────────────────────────────────────────────
+  // Next's build output and its generated ambient types are not ours to lint.
+  { ignores: ['apps/web/.next/**', 'apps/web/next-env.d.ts', 'apps/web/public/**'] },
+
+  // No raw color outside packages/tokens (spec 001 §7.1).
+  // Scoped to apps/web rather than the whole repo on purpose. Widening it today
+  // would fail on `users.avatarColor` in packages/db, which stores hex per user —
+  // a real conflict with DESIGN_SYSTEM §3 (avatar fills come from a hash over the
+  // token palette), but one that belongs to the schema owner, not to a lint config
+  // landing mid-stream. Widen once that column is resolved.
+  // Tailwind arbitrary values (`bg-[#fff]`) are string literals, so they are caught
+  // here; hex inside .css is covered by apps/web/src/test/token-usage.test.ts,
+  // which ESLint cannot parse.
+  {
+    files: ['apps/web/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: 'Literal[value=/#(?:[0-9a-fA-F]{3,4}){1,2}(?![0-9a-fA-F])/]',
+          message:
+            'Raw hex color. Use a semantic token — --color-action-primary-bg, never --color-indigo-600 and never #4C56C8.',
+        },
+        {
+          selector: 'TemplateElement[value.raw=/#(?:[0-9a-fA-F]{3,4}){1,2}(?![0-9a-fA-F])/]',
+          message:
+            'Raw hex color. Use a semantic token — --color-action-primary-bg, never --color-indigo-600 and never #4C56C8.',
+        },
+      ],
+    },
+  },
 );

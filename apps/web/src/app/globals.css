@@ -1,0 +1,48 @@
+@import 'tailwindcss';
+@import '@talon/tokens/tokens.css';
+
+/*
+  next/font hashes each family name, so the loaded face is prepended to the token's own
+  stack rather than replacing it — design-tokens.json still owns every fallback.
+*/
+:root {
+  --font-display: var(--font-inter-tight), 'Inter Tight', 'Inter', system-ui, sans-serif;
+  --font-body: var(--font-inter), 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: var(--font-jetbrains-mono), 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+}
+
+@layer base {
+  body {
+    background-color: var(--color-bg-canvas);
+    color: var(--color-text-primary);
+    font-family: var(--font-body);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /*
+    Focus is always visible. shadow.focusRing is the token DESIGN_SYSTEM §3 names; the
+    outline rides along with it because a 3px 28%-alpha halo alone disappears against
+    bg.selected, and "never outline: none without a replacement" cuts both ways.
+  */
+  :focus-visible {
+    outline: 2px solid var(--color-border-focus);
+    outline-offset: 2px;
+    box-shadow: var(--shadow-focus-ring);
+  }
+
+  /*
+    design-tokens.json motion.reducedMotion: transitions collapse, but opacity keeps
+    `fast` so a state change is still perceivable rather than instantaneous.
+  */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      transition-property: opacity;
+      transition-duration: var(--duration-fast);
+      animation-duration: var(--duration-fast);
+      animation-iteration-count: 1;
+      scroll-behavior: auto;
+    }
+  }
+}

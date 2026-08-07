@@ -9,6 +9,7 @@
     "test:routes": "pnpm --filter api test:routes",
     "db:migrate": "pnpm --filter @talon/db migrate",
     "db:seed": "pnpm --filter @talon/db seed",
+    "tokens:build": "pnpm --filter @talon/tokens build",
     "typecheck": "turbo run typecheck",
     "lint": "eslint . --max-warnings 0",
     "gen:module": "node scripts/gen-module.mjs",

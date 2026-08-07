@@ -204,6 +204,78 @@ Per DESIGN_SYSTEM §4. AppShell (sidebar with live counts, topbar), department g
 3. Keyboard navigable; `axe` clean.
 4. All five states reachable in Storybook or via fixtures.
 
+### 7.4 As built (2026-08-07)
+
+Acceptance 1, 3 and 4 met. **Acceptance 2 is not met** — see below.
+
+Built against MSW fixtures derived from `packages/db/src/seed.ts`, not from a live API:
+`packages/contracts` was still a placeholder while the API stream held step 4, so the
+UI carries a provisional Zod mirror at `apps/web/src/lib/jobs-contract.ts`. Deleting it
+in favour of `@talon/contracts` is the swap; `apps/web/src/test/jobs-screen.test.tsx`
+is what proves the swap is clean. States are reached with `?state=` rather than
+Storybook — filtered-empty needs no scenario, since `?status=draft` genuinely matches
+nothing.
+
+**Geometry** was measured by scanning the 2880px original for ink extents and halving,
+rather than by eye. At 1440 CSS the reference puts the row title at x=269.5, recruiter
+avatar 825, distribution bar 1064 (130 wide), active count 1206.5, status pill ~1312,
+card inner edge 1400. Every column in the build lands within ~1px of those.
+
+**Typography — acceptance 2, open.** The §2.1 pass was run and it contradicts §2.1's own
+premise. Implied sizes from cap/ascender heights in the reference, against the tokens:
+
+| token | current | measured | ratio |
+|---|---|---|---|
+| pageTitle | 26px | ~19px | 0.73 |
+| cardTitle | 15px | ~12px | 0.80 |
+| body | 14px | ~12.3px | 0.88 |
+| meta | 13px | ~11px | 0.85 |
+| caption | 12px | ~11px | 0.92 |
+| code | 12px | ~11px | 0.92 |
+| eyebrow | 11px | ~11px | 1.00 |
+
+The ratios climb monotonically as size falls: the ramp is stretched at the top and
+correct at the bottom. §2.1 says "adjust the scale, not individual components — if
+`pageTitle` is off, it's off everywhere by the same amount", and the reference says it
+is not. Reshaping the ramp's ratios is a design-system decision affecting all nine
+screens, so **nothing was applied** and `_meta.confidence.typography` stays `LOW`;
+"measured from raster with the display face still unidentified" is not a pin. Width-
+derived sizes come out consistently ~8% below height-derived ones, which says the
+reference face is narrower than Inter — so the face has to be settled (§2.1's letterform
+comparison against `01-sign-in@2x.png`) before any size is pinned. **Owner: design.**
+
+**Deltas against the reference screen**, all recorded rather than manufactured:
+
+1. ENG-204 reads 8 in process / 9 active, not 18 / 38 — open question 5, already closed.
+2. The reference distribution bars show an Offer segment on jobs the seed gives no
+   offers to. Bulk-seeded applications only reach Applied/Screen/Onsite, so those bars
+   render three segments, not four.
+3. Avatar hues match the screen only because fixture user ids are pinned to hash onto
+   them. With real uuidv7 ids the hues will differ; the hash is on id by design.
+4. The reference badges the Review-inbox count in `bg.selected`/`text.link` while its
+   row is inactive; DESIGN_SYSTEM §3 says that treatment is for the *active* row. Built
+   to the doc. **Owner: design.**
+5. The reference renders req code and location as one monospace line; §4 describes it as
+   `code`/`meta`. Built to the screen.
+6. Row hover raises the background only. §4 also calls for `border.strong`, but rows sit
+   inside one bordered card per department and have no border of their own.
+
+**Token findings** (`packages/tokens/test/contrast.test.ts` pins each with its ratio):
+`text.tertiary` 3.52:1 on surface and 3.20:1 on canvas, `text.placeholder` 2.53:1,
+`text.secondary` on `action.ghostBgHover` 4.40:1, `avatar.2` 4.40:1 and `avatar.6`
+4.18:1 under white initials — all below AA, all measured values left unchanged.
+DESIGN_SYSTEM §5's claim that every semantic pair clears 4.5:1 is therefore false as
+written. **Owner: design.** Separately, pill padding of `2px 8px` (§3) has no vertical
+token — the space scale steps 1px → 4px.
+
+**Deferred, each marked `ponytail:` in the source:** job rows are not links (no detail
+screen yet); topbar search and the notification bell are presentational until the ⌘K
+palette exists; Review-inbox / Scheduling / Offers counts are constants until their
+endpoints exist; the MSW worker starts unconditionally because there is no API to talk
+to. The no-raw-hex ESLint rule is scoped to `apps/web` — widening it fails today on
+`users.avatarColor` in `packages/db`, which stores hex per user and conflicts with
+DESIGN_SYSTEM §3. **Owner: schema.**
+
 ## 8. Events
 
 `JobCreated`, `JobStatusChanged`, `ApplicationCreated`, `ApplicationAdvanced`. Written to an `outbox` table in the same transaction as the state change. **No consumers in M0a** — the relay and EventBridge publishing are spec 002. The point is that the write path is correct from the first commit, so later consumers get a complete history rather than one starting mid-project.

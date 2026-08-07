@@ -2,12 +2,18 @@
   "name": "@talon/tokens",
   "private": true,
   "type": "module",
-  "exports": { ".": { "types": "./src/index.ts", "default": "./dist/index.js" } },
+  "exports": {
+    ".": { "types": "./src/index.ts", "default": "./src/index.ts" },
+    "./build": "./build.mjs",
+    "./tokens.css": "./dist/tokens.css"
+  },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "build": "node build.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
   },
   "devDependencies": {
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
   }
 }
