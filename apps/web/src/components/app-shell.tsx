@@ -73,11 +73,27 @@ function Sidebar() {
   const pathname = usePathname();
   return (
     <div className="flex h-full flex-col border-r border-border-default bg-bg-surface">
-      <div className="flex h-[var(--layout-topbar-height)] items-center gap-3 px-4">
-        <span className="flex size-[26px] items-center justify-center rounded-md bg-action-primary-bg" aria-hidden="true">
-          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" className="text-text-on-primary">
-            <path d="M4 3.5c3.5 0 6 1.8 7.5 4.5-2 2.6-4.4 4-7.5 4.5" />
-            <path d="M4 8h4.5" />
+      <div className="flex h-[var(--layout-topbar-height)] items-center gap-2 px-4">
+        {/*
+          The talon. Traced off 02-jobs-list@2x.png at native resolution: a 24px
+          squircle tile, and inside it a shank descending from y=5 that sweeps
+          down-left to (7.3, 17.5), plus a shorter outer toe at half strength.
+          The half-strength toe is the whole trick — it reads as depth rather than
+          as a third line, and dropping it flattens the mark into a chevron.
+        */}
+        <span className="flex size-6 items-center justify-center rounded-sm bg-action-primary-bg" aria-hidden="true">
+          <svg
+            viewBox="0 0 24 24"
+            width="24"
+            height="24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            className="text-text-on-primary"
+          >
+            <path d="M13 6v5.5c0 2.6-1.3 4.8-6 5.25" />
+            <path d="M13.6 13.4 17.4 16.9" opacity="0.5" />
           </svg>
         </span>
         <span className="flex-1 text-section-title font-display text-text-primary">Talon</span>
