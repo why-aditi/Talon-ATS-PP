@@ -116,6 +116,8 @@ Reproduces the reference screens exactly: tenant, five users (Maya Reyes recruit
 
 A second tenant with its own jobs and candidates is seeded for isolation testing.
 
+**No filler candidates** (resolves open question 5, 2026-08-07). The board is the truth: ENG-204 gets exactly the nine pictured candidates and nothing else, and the other five jobs get exactly the candidate counts shown on the jobs list. Padding a job to make a funnel percentage come out right produces candidates no screen shows, which then appear in every later list, count, and export. Where a screen-derived percentage cannot be reproduced from the pictured population, the seed reports the real derived value and the discrepancy is recorded here — never closed by inventing rows.
+
 **Acceptance:**
 1. `pnpm db:migrate && pnpm db:seed` from empty produces a database whose derived metrics match the reference screens.
 2. Tenant-isolation suite passes.
@@ -239,7 +241,11 @@ CI gates, all blocking: `lint`, `typecheck`, `test`, `test:isolation`, `test:rou
 2. **Session length and refresh?** **Answered 2026-08-07: confirmed** — 1h access token, 30d refresh, sliding.
 3. **Does the jobs list need realtime counts?** Assumed no for M0a — refetch on focus. SSE arrives with the pipeline board.
 4. **Seed tenant name?** Screens don't show one. Using "Talon Inc." from the offer letter unless told otherwise.
-5. **ENG-204: jobs list says "18 in process", kanban pictures 8 non-terminal candidates.** The screens contradict each other. Seed follows the board and funnel math (38 total applications, 100/42/21/8 funnel → 8 in process); the jobs-list count will read 8, not 18. Owner: Aditi — confirm or re-seed.
+5. **ENG-204: jobs list says "18 in process", kanban pictures 8 non-terminal candidates.** **Answered 2026-08-07: the board is the truth.** Seed the nine pictured ENG-204 candidates and no filler; seed the other five jobs to their jobs-list counts. The jobs-list "in process" cell will read the board's count, not 18. Screen-derived percentages that the pictured population cannot produce are recorded as deltas in §11b, not manufactured.
+
+## 11b. Carried to step 4
+
+1. **`tenants` slug→tenant resolution at sign-in runs before any tenant context exists.** The app role can only see its own tenant row under RLS, so the lookup must be a narrow owner-connection query or a `security definer` function scoped to that one resolution. Running the request chain on the owner connection would nullify RLS for the whole request — this is a decision to make deliberately in step 4, not an accident to discover. (Reviewer finding 9 on the step-3 PR.)
 
 ## 12. Definition of done
 
