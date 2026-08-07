@@ -31,6 +31,12 @@ const PROBLEMS: Record<IdentityFailure['code'], { status: number; type: string; 
     type: ERROR_TYPES.TOKEN_NOT_YET_VALID,
     title: 'Token not yet valid',
   },
+  // The one entry here that is not 401: nothing about the caller is wrong.
+  not_implemented: {
+    status: 501,
+    type: ERROR_TYPES.NOT_IMPLEMENTED,
+    title: 'Not implemented',
+  },
 };
 
 function asProblem(error: unknown): unknown {

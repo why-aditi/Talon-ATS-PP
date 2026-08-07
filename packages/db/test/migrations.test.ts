@@ -12,6 +12,7 @@ it('up → down → up (run in global setup) left a fully migrated, seeded datab
       '0001_init',
       '0002_drop_avatar_color',
       '0003_local_identities',
+      '0004_users_external_id',
     ]);
     // 0002 dropped users.avatar_color — the UI hashes the id over the avatar.1–8
     // token palette, so a stored hex has no reader (CLAUDE.md §4.8).
@@ -30,6 +31,21 @@ it('up → down → up (run in global setup) left a fully migrated, seeded datab
       select proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
       where n.nspname = 'public' and p.prosecdef order by proname`;
     expect(definers.map((r) => r['proname'])).toEqual(['auth_user_by_email', 'auth_user_by_sub']);
+    // 0004 retyped auth_user_by_sub's parameter uuid → text. Pinned here because
+    // the signature is what the repository's cast has to agree with: while it was
+    // uuid, a non-UUID subject raised 22P02 before the lookup ran.
+    const [subFn] = await sql`
+      select pg_get_function_arguments(p.oid) as args
+      from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname = 'public' and p.proname = 'auth_user_by_sub'`;
+    expect(subFn?.['args']).toBe('p_sub text');
+    // 0004 added users.external_id and nothing else column-wise.
+    const externalId = await sql`
+      select data_type, is_nullable from information_schema.columns
+      where table_name = 'users' and column_name = 'external_id'`;
+    expect(externalId).toHaveLength(1);
+    expect(externalId[0]?.['data_type']).toBe('text');
+    expect(externalId[0]?.['is_nullable']).toBe('YES');
     const [tenants] = await sql`select count(*)::int as n from tenants`;
     expect(tenants?.['n']).toBe(2);
   } finally {
