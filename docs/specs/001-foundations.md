@@ -182,7 +182,9 @@ Roles: `admin`, `recruiter`, `hiring_manager`, `member`. Scopes are checked in `
 1. Unauthenticated request to a protected route → 401.
 2. Authenticated as tenant B against tenant A's job id → **404, not 403** (a 403 confirms the resource exists, which is itself a leak).
 3. RLS blocks the same request even with the application check stubbed out — belt and braces, tested independently.
-4. A `member` requesting a job with band data receives `comp: { visible: false }` — no band, no error. A holder of `comp:read` receives `comp: { visible: true, band: … }`, or `band: null` where the job has none. The strip happens because the route declares `response: { 200: ListJobsResponseSchema }`; a route that omits the response schema is not comp-gated, whatever the service returns.
+4. A `member` requesting a job with band data receives the job with **no `band` key at all** — no error, no empty state. A holder of `comp:read` receives `band: { minCents, maxCents, currency }`, and jobs with no band set also omit the key. The strip happens because the route declares `response: { 200: ListJobsResponseSchema }`; a route that omits the response schema is not comp-gated, whatever the service returns.
+
+`band` is a **single nested optional**, not three loose fields — presence is atomic, so a band can never arrive missing its currency. It deliberately does not distinguish "you may not see this" from "there is nothing to see": §7.3 renders both identically (row without band data), so a discriminator would be a distinction no consumer acts on. If a screen ever needs to tell them apart, that is a contract change with a reason behind it.
 
 ## 7. Step 5 — Jobs list
 
@@ -202,7 +204,8 @@ GET /v1/jobs?status=&department=&recruiter_id=&cursor=&limit=50
 Contract notes (landed ahead of the handler so the api and ui streams build against fixed shapes):
 - Response bodies are camelCase; query params stay snake_case as written above.
 - Money crosses the wire as a **canonical digit string of integer cents** plus an alpha-3 currency — the columns are `bigint` and `JSON.stringify` throws on a BigInt.
-- Comp is a **tagged union**, not an optional field: `{ visible: false }` when the caller lacks `comp:read`, `{ visible: true, band: … | null }` otherwise. An optional field cannot express this in TypeScript — `'compBand' in job` does not narrow away `undefined`, and a handler could emit `compBand: undefined` as a silent third state. §7.3's Forbidden row depends on the distinction.
+- `band` is a single nested optional, omitted entirely without `comp:read` — see §6.4 acceptance 4.
+- The `recruiter` summary carries `{ id, name }` and **no color**: the UI hashes the id over the `avatar.1–8` token ramp, so a hex value from the API would be a raw color outside `packages/tokens` (§4.8). `users.avatar_color` is dropped in step 4 for the same reason — it had no legitimate reader.
 - `stageDistribution` requires every canonical key, zero included (§9 edge case 4), and is derived from the stage enum so a new stage cannot skip it.
 - `limit` is digits-only with a max of 100. Deliberately not `z.coerce`, which is `Number()` and accepts `0x10`, `1e2`, and `" 100 "`.
 - Unknown query params **400** rather than being ignored, so a typo'd filter can't return unfiltered data that looks correct. The web client must allow-list before forwarding `searchParams` — a shared URL carrying `utm_source` would otherwise fail.
@@ -255,12 +258,21 @@ Per DESIGN_SYSTEM §4. AppShell (sidebar with live counts, topbar), department g
 | Unit | Permission scope resolution, cursor encode/decode, distribution aggregation, seed date arithmetic |
 | Integration (Testcontainers) | RLS policies, pooled-connection isolation, migration up/down, repository queries, outbox writes in-transaction |
 | Boundary | The three lint failures + the route-manifest test from §4.5 |
-| Isolation | Every route as a hostile tenant → 404 |
+| Isolation | Step 3: every tenant-scoped table as a hostile tenant → empty (`pnpm test:isolation`). Step 5 extends the same script to every route → 404 |
 | Contract | OpenAPI generated matches committed snapshot |
 | E2E (Playwright) | Sign in with the local provider → jobs list renders seeded jobs → filter by status → filter by department → empty-filter state → sign out |
 | a11y | `axe` on the jobs list, zero violations |
 
-CI gates, all blocking: `lint`, `typecheck`, `test`, `test:isolation`, `test:routes`, `e2e`, contrast check.
+CI gates, all blocking, each wired in the step that first has something for it to guard:
+
+| Gate | Lands in |
+|---|---|
+| `lint`, `typecheck`, `test` | Step 1 |
+| `test:routes` | Step 2 |
+| `test:isolation` | Step 3 (tables); extended to routes in step 5 |
+| `e2e`, contrast check | Step 5 — nothing to drive until the jobs list exists |
+
+A gate is not "declared blocking" before its step: the script exists and the workflow runs it, or the row above says which step it arrives in. A named-but-missing gate cannot be a required status check, and its absence is silent.
 
 ## 11. Open questions
 
@@ -282,7 +294,7 @@ CI gates, all blocking: `lint`, `typecheck`, `test`, `test:isolation`, `test:rou
 ## 12. Definition of done
 
 - [ ] All step acceptance criteria met
-- [ ] CI gates green on a clean clone
+- [ ] CI gates green on a clean clone — every gate whose step has landed, per the §10 table
 - [ ] `docker compose up && pnpm db:migrate && pnpm db:seed && pnpm dev` yields a working jobs list from nothing
 - [ ] The three boundary violations demonstrably fail, then are removed
 - [ ] Open questions 1 and 2 answered and reflected in code

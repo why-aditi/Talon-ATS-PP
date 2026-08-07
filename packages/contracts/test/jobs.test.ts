@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'vitest';
 import {
-  type Job,
   JobSchema,
   ListJobsQuerySchema,
   ListJobsResponseSchema,
@@ -26,12 +25,14 @@ const job = (over: Record<string, unknown> = {}) => ({
     rejected: 0,
     withdrawn: 0,
   },
-  recruiter: { id: '018f0000-0000-7000-8000-000000000002', name: 'Maya Reyes', avatarColor: null },
-  hiringManagerId: null,
-  comp: { visible: false },
-  openings: 1,
-  createdAt: '2026-07-01T00:00:00.000Z',
-  updatedAt: '2026-08-07T00:00:00.000Z',
+  recruiter: { id: '018f0000-0000-7000-8000-000000000002', name: 'Maya Reyes' },
+  ...over,
+});
+
+const band = (over: Record<string, unknown> = {}) => ({
+  minCents: '19000000',
+  maxCents: '22500000',
+  currency: 'USD',
   ...over,
 });
 
@@ -99,49 +100,34 @@ describe('stage distribution', () => {
   });
 });
 
-describe('comp visibility', () => {
-  test('hidden and unset are different states, and both narrow in TypeScript', () => {
-    const forbidden = JobSchema.parse(job({ comp: { visible: false } }));
-    const noBandSet = JobSchema.parse(job({ comp: { visible: true, band: null } }));
-
-    // This is the branch the UI writes; it must compile without a cast.
-    const bandOf = (j: Job) => (j.comp.visible ? j.comp.band : undefined);
-
-    expect(bandOf(forbidden)).toBeUndefined(); // lacks comp:read — render no band
-    expect(bandOf(noBandSet)).toBeNull(); // may see comp — job has none
+describe('comp band', () => {
+  test('a job without comp:read parses with no band key at all', () => {
+    const parsed = JobSchema.parse(job());
+    expect('band' in parsed).toBe(false);
   });
 
-  test('a hidden comp cannot smuggle a band', () => {
-    // Unknown keys are stripped, so this must not become a readable band.
-    const parsed = JobSchema.parse(
-      job({ comp: { visible: false, band: { minCents: '1', maxCents: '2', currency: 'USD' } } }),
-    );
-    expect('band' in parsed.comp).toBe(false);
-  });
-
-  test('a malformed comp is rejected outright, not coerced', () => {
-    // The discriminator is what stops a handler emitting a comp the UI can't branch on.
-    for (const comp of [{}, { visible: 'true' }, { visible: true }, { band: null }, null]) {
-      expect(JobSchema.safeParse(job({ comp })).success, JSON.stringify(comp)).toBe(false);
+  test('a partial band is rejected — presence is atomic', () => {
+    // The whole point of nesting: a band can never arrive missing its currency.
+    for (const key of ['minCents', 'maxCents', 'currency']) {
+      const partial: Record<string, unknown> = band();
+      delete partial[key];
+      expect(JobSchema.safeParse(job({ band: partial })).success, `without ${key}`).toBe(false);
     }
   });
 
   test('a band with min above max is rejected', () => {
-    const band = { minCents: '9000000', maxCents: '1', currency: 'USD' };
-    expect(JobSchema.safeParse(job({ comp: { visible: true, band } })).success).toBe(false);
+    expect(JobSchema.safeParse(job({ band: band({ minCents: '9000000', maxCents: '1' }) })).success).toBe(
+      false,
+    );
   });
 
   test('cents survive JSON round-trip without precision loss', () => {
-    const parsed = JobSchema.parse(
-      job({
-        comp: { visible: true, band: { minCents: '19000000', maxCents: '22500000', currency: 'USD' } },
-      }),
-    );
+    const parsed = JobSchema.parse(job({ band: band() }));
     const round = JobSchema.parse(JSON.parse(JSON.stringify(parsed)));
-    if (!round.comp.visible || round.comp.band === null) throw new Error('band lost in transit');
-    expect(round.comp.band.minCents).toBe('19000000');
+    if (!round.band) throw new Error('band lost in transit');
+    expect(round.band.minCents).toBe('19000000');
     // The value a JS number would have mangled, had money been typed as one.
-    expect(BigInt(round.comp.band.maxCents)).toBe(22_500_000n);
+    expect(BigInt(round.band.maxCents)).toBe(22_500_000n);
   });
 
   test('money is canonical digits or it is not money', () => {
@@ -157,22 +143,20 @@ describe('comp visibility', () => {
       '9223372036854775808', // one past int8; the column cannot hold it
     ];
     for (const value of bad) {
-      const asMin = { visible: true, band: { minCents: value, maxCents: '1', currency: 'USD' } };
-      const asMax = { visible: true, band: { minCents: '1', maxCents: value, currency: 'USD' } };
-      expect(JobSchema.safeParse(job({ comp: asMin })).success, `min ${String(value)}`).toBe(false);
-      expect(JobSchema.safeParse(job({ comp: asMax })).success, `max ${String(value)}`).toBe(false);
+      const asMin = job({ band: band({ minCents: value, maxCents: '99999999' }) });
+      const asMax = job({ band: band({ minCents: '1', maxCents: value }) });
+      expect(JobSchema.safeParse(asMin).success, `min ${String(value)}`).toBe(false);
+      expect(JobSchema.safeParse(asMax).success, `max ${String(value)}`).toBe(false);
     }
   });
 
   test('currency must be alpha-3 uppercase', () => {
-    const band = { minCents: '1', maxCents: '2', currency: 'usd' };
-    expect(JobSchema.safeParse(job({ comp: { visible: true, band } })).success).toBe(false);
+    expect(JobSchema.safeParse(job({ band: band({ currency: 'usd' }) })).success).toBe(false);
   });
 });
 
-test('a zero-openings row is serializable, not a failed page', () => {
-  // The column carries no check constraint, so this row is legal storage.
-  expect(JobSchema.safeParse(job({ openings: 0 })).success).toBe(true);
+test('an unassigned job serializes rather than failing the page', () => {
+  expect(JobSchema.safeParse(job({ recruiter: null })).success).toBe(true);
 });
 
 test('the envelope carries a null cursor on the last page', () => {

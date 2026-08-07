@@ -88,24 +88,6 @@ export const CompBandSchema = z
   });
 export type CompBand = z.infer<typeof CompBandSchema>;
 
-/**
- * Comp visibility is a tagged union, not an optional field, because the two
- * cases render differently and an optional field cannot distinguish them in
- * TypeScript: `'compBand' in job` does not narrow away `undefined` for a
- * declared-optional property, and an api handler could emit
- * `compBand: undefined` — a third state — with no compile-time complaint.
- *
- * `visible: false` — the caller lacks `comp:read`, stripped at serialization
- * (spec §6.4); the row renders without band data, no error (§7.3 Forbidden).
- * The strip only happens if the route declares this as its response schema.
- * `visible: true, band: null` — the caller may see comp; this job has no band.
- */
-export const CompSchema = z.discriminatedUnion('visible', [
-  z.object({ visible: z.literal(false) }),
-  z.object({ visible: z.literal(true), band: CompBandSchema.nullable() }),
-]);
-export type Comp = z.infer<typeof CompSchema>;
-
 const stageCount = z.number().int().min(0);
 
 /**
@@ -124,11 +106,12 @@ export const StageDistributionSchema = z.object(
 );
 export type StageDistribution = z.infer<typeof StageDistributionSchema>;
 
+// No avatar color: the UI hashes the id over the avatar.1–8 token ramp
+// (DESIGN_SYSTEM §JobRow). A hex value from the API would be a raw color
+// outside packages/tokens, which §4.8 forbids.
 export const RecruiterSummarySchema = z.object({
   id: z.string().uuid(),
   name: z.string(),
-  /** Avatar fill from the `avatar.1–8` token ramp (DESIGN_SYSTEM §JobRow). */
-  avatarColor: z.string().nullable(),
 });
 export type RecruiterSummary = z.infer<typeof RecruiterSummarySchema>;
 
@@ -138,26 +121,28 @@ export const JobSchema = z.object({
   title: z.string(),
   department: z.string(),
   location: z.string(),
-  employmentType: z.string().nullable(),
   status: JobStatusSchema,
 
+  // Nullable because `jobs.recruiter_id` is: an unassigned job must serialize,
+  // not fail the whole page.
+  recruiter: RecruiterSummarySchema.nullable(),
+
+  stageDistribution: StageDistributionSchema,
   /** Applications in a non-terminal stage — the "18 in process" line under the bar. */
   inProcessCount: z.number().int().min(0),
   /** Applications not rejected or withdrawn; includes hired. */
   activeCount: z.number().int().min(0),
-  stageDistribution: StageDistributionSchema,
 
-  recruiter: RecruiterSummarySchema.nullable(),
-  hiringManagerId: z.string().uuid().nullable(),
-
-  comp: CompSchema,
-
-  // min(0), not min(1): the column has no check constraint, so a zero-openings
-  // row is legal storage. A response schema stricter than what it serializes
-  // turns one odd row into a failed page.
-  openings: z.number().int().min(0),
-  createdAt: z.string().datetime(),
-  updatedAt: z.string().datetime(),
+  /**
+   * Omitted entirely for callers without `comp:read` (spec §6.4), and for jobs
+   * with no band set. One nested optional rather than three loose fields, so a
+   * band can never arrive missing its currency — presence is atomic.
+   *
+   * The strip happens because the route declares
+   * `response: { 200: ListJobsResponseSchema }`; a route without a response
+   * schema is not comp-gated, whatever the service returns.
+   */
+  band: CompBandSchema.optional(),
 });
 export type Job = z.infer<typeof JobSchema>;
 

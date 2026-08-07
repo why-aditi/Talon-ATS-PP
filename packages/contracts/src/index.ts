@@ -12,8 +12,6 @@ export {
   // Response types
   CompBandSchema,
   type CompBand,
-  CompSchema,
-  type Comp,
   StageDistributionSchema,
   type StageDistribution,
   RecruiterSummarySchema,
