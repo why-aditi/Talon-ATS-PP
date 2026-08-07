@@ -14,3 +14,4 @@ tfplan.binary
 plan.json
 *.tfstate
 *.tfstate.*
+next-env.d.ts

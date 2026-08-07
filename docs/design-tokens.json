@@ -233,10 +233,28 @@
     "schedulingLeftPane": { "$value": "289px", "$description": "matches the review pane" },
     "schedulingRowHeight": { "$value": "44px", "$description": "estimated" },
     "rowHeight":        { "$value": "55px",   "$description": "measured - job list dividers at 55px intervals" },
+    "progressRuleHeight": { "$value": "3px",  "$description": "thin capsule under kanban column headers and in job rows (DESIGN_SYSTEM §3)" },
+    "navMarkerWidth":   { "$value": "2px",    "$description": "indigo left marker on the active sidebar item" },
+    "notificationDotSize": { "$value": "6px", "$description": "unread dot on the topbar bell" },
+    "searchFieldWidth": { "$value": "290px",  "$description": "measured - topbar search field" },
+    "signIn": {
+      "_note": "Measured on 01-sign-in@2x.png at 1440 CSS. The split is 747 hero / 693 form.",
+      "heroWidth":     { "$value": "747px" },
+      "heroCardWidth": { "$value": "324px", "$description": "the Ana Petrova card in the hero" },
+      "formWidth":     { "$value": "369px", "$description": "the sign-in form column" }
+    },
+    "jobRow": {
+      "_note": "Measured on 02-jobs-list@2x.png by scanning the 2880px original for ink extents, then halving. At 1440 CSS the title sits at x=269.5, recruiter avatar 825, bar 1064, active count 1206.5, status pill ~1312, card inner edge 1400. Tracks carry their own gutters, so the row grid has no gap.",
+      "recruiterColumn":   { "$value": "239px" },
+      "distributionColumn":{ "$value": "142px" },
+      "activeCountColumn": { "$value": "106px" },
+      "statusColumn":      { "$value": "88px" },
+      "distributionBarWidth": { "$value": "130px", "$description": "the rule itself, narrower than its track" }
+    },
     "controlHeight": {
       "sm": { "$value": "28px", "$description": "estimated" },
       "md": { "$value": "34px", "$description": "estimated - default button, filter select" },
-      "lg": { "$value": "40px", "$description": "estimated - form inputs, primary CTA" }
+      "lg": { "$value": "36px", "$description": "measured 2026-08-07 on 01-sign-in@2x.png - inputs scan 35px, the Sign in CTA 37px; was estimated at 40" }
     },
     "breakpoint": {
       "sm": { "$value": "640px" }, "md": { "$value": "768px" },
