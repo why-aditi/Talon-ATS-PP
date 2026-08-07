@@ -4,7 +4,6 @@ export {
   type JobStatus,
   CanonicalStageSchema,
   type CanonicalStage,
-  NON_TERMINAL_STAGES,
 
   // Query
   ListJobsQuerySchema,
@@ -13,6 +12,8 @@ export {
   // Response types
   CompBandSchema,
   type CompBand,
+  CompSchema,
+  type Comp,
   StageDistributionSchema,
   type StageDistribution,
   RecruiterSummarySchema,
@@ -24,3 +25,5 @@ export {
   ListJobsResponseSchema,
   type ListJobsResponse,
 } from './jobs.js';
+
+export { ProblemSchema, type Problem } from './problem.js';

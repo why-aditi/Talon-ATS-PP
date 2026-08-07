@@ -199,6 +199,16 @@ GET /v1/jobs?status=&department=&recruiter_id=&cursor=&limit=50
 
 `Job` includes `stageDistribution` (counts per canonical stage), `inProcessCount` (non-terminal), `activeCount`, and comp band **only** for holders of `comp:read`. Zod schema in `packages/contracts`; OpenAPI generated from it.
 
+Contract notes (landed ahead of the handler so the api and ui streams build against fixed shapes):
+- Response bodies are camelCase; query params stay snake_case as written above.
+- Money crosses the wire as a **canonical digit string of integer cents** plus an alpha-3 currency — the columns are `bigint` and `JSON.stringify` throws on a BigInt.
+- Comp is a **tagged union**, not an optional field: `{ visible: false }` when the caller lacks `comp:read`, `{ visible: true, band: … | null }` otherwise. An optional field cannot express this in TypeScript — `'compBand' in job` does not narrow away `undefined`, and a handler could emit `compBand: undefined` as a silent third state. §7.3's Forbidden row depends on the distinction.
+- `stageDistribution` requires every canonical key, zero included (§9 edge case 4), and is derived from the stage enum so a new stage cannot skip it.
+- `limit` is digits-only with a max of 100. Deliberately not `z.coerce`, which is `Number()` and accepts `0x10`, `1e2`, and `" 100 "`.
+- Unknown query params **400** rather than being ignored, so a typo'd filter can't return unfiltered data that looks correct. The web client must allow-list before forwarding `searchParams` — a shared URL carrying `utm_source` would otherwise fail.
+- `packages/contracts` also owns the RFC 9457 `Problem` envelope (ARCHITECTURE §7), since the ui switches on `type` for the §7.3 Error state and §9 edge case 1. Stable `type` values are declared by the endpoints that emit them.
+- `inProcessCount` counts non-terminal stages, and terminality is per-job data (`job_stages.is_terminal`), not a constant — the api stream must read it, not hardcode a stage list.
+
 One query, not N+1: distribution comes from a single grouped aggregate joined to the job list, not a per-job count.
 
 ### 7.3 UI
@@ -259,6 +269,11 @@ CI gates, all blocking: `lint`, `typecheck`, `test`, `test:isolation`, `test:rou
 3. **Does the jobs list need realtime counts?** Assumed no for M0a — refetch on focus. SSE arrives with the pipeline board.
 4. **Seed tenant name?** Screens don't show one. Using "Talon Inc." from the offer letter unless told otherwise.
 5. **ENG-204: jobs list says "18 in process", kanban pictures 8 non-terminal candidates.** **Answered 2026-08-07: the board is the truth.** Seed the nine pictured ENG-204 candidates and no filler; seed the other five jobs to their jobs-list counts. The jobs-list "in process" cell will read the board's count, not 18. Screen-derived percentages that the pictured population cannot produce are recorded as deltas in §11b, not manufactured.
+
+6. **Does the job row show a comp band at all?** DESIGN_SYSTEM §JobRow specifies the grid exactly — title + `code · location` → recruiter → distribution bar → active count → status pill — and it contains no band, while §7.2 requires the band in the payload and §7.3 specs a Forbidden row state for it. The contract ships the band (the API needs it either way; §7.2 is explicit), but whether the row *renders* it is undecided and blocks the step-5 UI. Owner: Aditi.
+7. **Where do the AppShell sidebar's live counts come from?** §7.3 requires them; they are tenant-wide, not page-scoped, so they cannot ride the `{ data, nextCursor }` envelope. Either a separate endpoint or an envelope change — and an envelope change breaks both streams at once. Needs answering before the ui stream builds the shell. Owner: Aditi.
+8. **Row height: 52px or 55px?** DESIGN_SYSTEM §JobRow says `rowHeight` 52px; §7.3 specs skeleton rows at "the real row height (55px)". One is wrong, and the whole point of the skeleton is that it doesn't shift on load. Owner: Aditi.
+9. **Nothing catches DB-vs-contract enum drift.** The job status and canonical stage enums exist in the SQL check constraints, the Drizzle columns, and `packages/contracts` — three copies, no test. `packages/contracts` cannot import `packages/db` under the boundary graph, so the test belongs in `apps/api` and should land with the jobs repository.
 
 ## 11b. Carried to step 4
 

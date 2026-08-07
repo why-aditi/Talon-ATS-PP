@@ -1,9 +1,10 @@
 /**
  * Contract: GET /v1/jobs — spec 001 §7.2.
  *
- * Field names are camelCase across the wire, matching the spec's own
- * `stageDistribution` / `inProcessCount` / `nextCursor`. The database is
- * snake_case; the mapping happens in the repository, not here.
+ * Response bodies are camelCase, matching the spec's own `stageDistribution` /
+ * `inProcessCount` / `nextCursor`. Query params stay snake_case (`recruiter_id`)
+ * because §7.2 writes the query string that way and URLs are conventionally
+ * snake. The database is snake_case throughout; the repository maps.
  */
 import { z } from 'zod';
 
@@ -23,9 +24,6 @@ export const CanonicalStageSchema = z.enum([
 ]);
 export type CanonicalStage = z.infer<typeof CanonicalStageSchema>;
 
-/** Stages a candidate can still move out of — the ones `inProcessCount` counts. */
-export const NON_TERMINAL_STAGES = ['applied', 'screen', 'onsite', 'offer'] as const;
-
 // ---------------------------------------------------------------------------
 // Query
 // ---------------------------------------------------------------------------
@@ -36,13 +34,19 @@ export const ListJobsQuerySchema = z
     // param would change the repository's WHERE shape — widen it when a screen
     // actually needs it.
     status: JobStatusSchema.optional(),
-    department: z.string().min(1).optional(),
+    // Trimmed: a whitespace-only filter would render "No jobs match this filter"
+    // for what is effectively no filter at all.
+    department: z.string().trim().min(1).optional(),
     recruiter_id: z.string().uuid().optional(),
     /** Opaque. Pagination is on `(sort_key, id)` (ARCHITECTURE) — never decode this client-side. */
-    cursor: z.string().min(1).optional(),
-    // Query params arrive as strings, hence coerce. The max is a real bound, not
-    // decoration: an unbounded limit is a one-request denial of service.
-    limit: z.coerce.number().int().min(1).max(100).default(50),
+    cursor: z.string().min(1).max(512).optional(),
+    // Digits only, deliberately not z.coerce: coerce is Number(), which quietly
+    // accepts "0x10" (16), "1e2" (100), "+50" and " 100 ". The max is a real
+    // bound, not decoration — an unbounded limit is a one-request denial of service.
+    limit: z
+      .union([z.number().int(), z.string().regex(/^\d+$/, 'digits only').transform(Number)])
+      .pipe(z.number().int().min(1).max(100))
+      .default(50),
   })
   // A typo'd filter must 400, not silently return unfiltered data that looks right.
   .strict();
@@ -58,14 +62,35 @@ export type ListJobsQuery = z.infer<typeof ListJobsQuerySchema>;
  * a number here would either lose precision or crash serialization. Digits
  * only — no sign, no decimal point, no thousands separator.
  */
-const centsSchema = z.string().regex(/^\d+$/, 'integer cents as a digit string');
+// Canonical form only: no leading zeros, so one amount has exactly one wire
+// representation and string equality matches value equality. Capped at 19
+// digits because anything longer overflows the bigint column on the write path.
+const centsSchema = z.string().regex(/^(0|[1-9]\d{0,18})$/, 'integer cents as a digit string');
 
 export const CompBandSchema = z.object({
   minCents: centsSchema,
   maxCents: centsSchema,
-  currency: z.string().regex(/^[A-Z]{3}$/, 'ISO 4217 alpha-3'),
+  /** Shape-checked only — alpha-3, not validated against the ISO 4217 register. */
+  currency: z.string().regex(/^[A-Z]{3}$/, 'alpha-3 currency code'),
 });
 export type CompBand = z.infer<typeof CompBandSchema>;
+
+/**
+ * Comp visibility is a tagged union, not an optional field, because the two
+ * cases render differently and an optional field cannot distinguish them in
+ * TypeScript: `'compBand' in job` does not narrow away `undefined` for a
+ * declared-optional property, and an api handler could emit
+ * `compBand: undefined` — a third state — with no compile-time complaint.
+ *
+ * `visible: false` — the caller lacks `comp:read`, stripped at serialization
+ * (§4.2); the row renders without band data, no error (§7.3 Forbidden).
+ * `visible: true, band: null` — the caller may see comp; this job has no band.
+ */
+export const CompSchema = z.discriminatedUnion('visible', [
+  z.object({ visible: z.literal(false) }),
+  z.object({ visible: z.literal(true), band: CompBandSchema.nullable() }),
+]);
+export type Comp = z.infer<typeof CompSchema>;
 
 const stageCount = z.number().int().min(0);
 
@@ -111,18 +136,12 @@ export const JobSchema = z.object({
   recruiter: RecruiterSummarySchema.nullable(),
   hiringManagerId: z.string().uuid().nullable(),
 
-  /**
-   * Absent and null mean different things and the UI renders them differently:
-   * **absent** — the caller lacks `comp:read`, so the field was stripped at
-   * serialization (§4.2). Rows render without band data, no error, no empty
-   * state (§7.3 Forbidden).
-   * **null** — the caller may see comp; this job simply has no band set.
-   * Collapsing them would make "you may not see this" indistinguishable from
-   * "there is nothing to see".
-   */
-  compBand: CompBandSchema.nullable().optional(),
+  comp: CompSchema,
 
-  openings: z.number().int().min(1),
+  // min(0), not min(1): the column has no check constraint, so a zero-openings
+  // row is legal storage. A response schema stricter than what it serializes
+  // turns one odd row into a failed page.
+  openings: z.number().int().min(0),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });
