@@ -6,11 +6,12 @@ import { server } from '../mocks/node';
 /** Set by tests to drive `useSearchParams`; see `renderJobs` in the screen test. */
 export const searchParams = { current: new URLSearchParams() };
 export const routerReplace = vi.fn();
+export const routerPush = vi.fn();
 
 vi.mock('next/navigation', () => ({
   usePathname: () => '/jobs',
   useSearchParams: () => searchParams.current,
-  useRouter: () => ({ replace: routerReplace, push: vi.fn(), refresh: vi.fn() }),
+  useRouter: () => ({ replace: routerReplace, push: routerPush, refresh: vi.fn() }),
   redirect: vi.fn(),
 }));
 
@@ -20,5 +21,6 @@ afterEach(() => {
   server.resetHandlers();
   searchParams.current = new URLSearchParams();
   routerReplace.mockClear();
+  routerPush.mockClear();
 });
 afterAll(() => server.close());

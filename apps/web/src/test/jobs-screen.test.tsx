@@ -149,10 +149,7 @@ describe('permission-denied', () => {
     // A test named for a check it does not perform is worse than no test.
     const response = await fetchJobs({ scenario: 'forbidden' });
     expect(response.data).not.toHaveLength(0);
-    for (const job of response.data) {
-      expect(job.comp).toEqual({ visible: false });
-      expect(job.comp).not.toHaveProperty('band');
-    }
+    for (const job of response.data) expect(job).not.toHaveProperty('band');
 
     renderJobs('state=forbidden');
     await screen.findByText('Senior Product Engineer');
@@ -160,15 +157,22 @@ describe('permission-denied', () => {
     expect(screen.queryByText("Jobs didn't load.")).not.toBeInTheDocument();
   });
 
-  it('distinguishes "may not see comp" from "has no band" for a permitted caller', async () => {
-    const response = await fetchJobs({});
-    const eng204 = response.data.find((job) => job.reqCode === 'ENG-204');
-    const eng209 = response.data.find((job) => job.reqCode === 'ENG-209');
-    expect(eng204?.comp).toEqual({
-      visible: true,
-      band: { minCents: '19000000', maxCents: '22500000', currency: 'USD' },
-    });
-    expect(eng209?.comp).toEqual({ visible: true, band: null });
+  it('cannot tell "may not see comp" apart from "has no band" — and that is the contract', async () => {
+    // Step 4 replaced the comp tagged union with `band?`, reversing the rationale
+    // the union carried: an optional field cannot express the difference. This test
+    // pins the resulting ambiguity so it stays visible instead of being forgotten.
+    const permitted = await fetchJobs({});
+    const denied = await fetchJobs({ scenario: 'forbidden' });
+
+    const eng204 = permitted.data.find((job) => job.reqCode === 'ENG-204');
+    const eng209 = permitted.data.find((job) => job.reqCode === 'ENG-209');
+    expect(eng204?.band).toEqual({ minCents: '19000000', maxCents: '22500000', currency: 'USD' });
+    // ENG-209 simply has no band set.
+    expect(eng209).not.toHaveProperty('band');
+
+    // ENG-204 withheld looks exactly like ENG-209 unset. Owner: api (§7.4).
+    const withheld = denied.data.find((job) => job.reqCode === 'ENG-204');
+    expect(Object.keys(withheld ?? {}).sort()).toEqual(Object.keys(eng209 ?? {}).sort());
   });
 });
 

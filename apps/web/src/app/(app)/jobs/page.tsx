@@ -1,5 +1,5 @@
 import { Suspense } from 'react';
-import { JobsScreen } from '../../components/jobs-screen';
+import { JobsScreen } from '../../../components/jobs-screen';
 
 export default function JobsPage() {
   // useSearchParams needs a Suspense boundary; the screen renders its own skeleton

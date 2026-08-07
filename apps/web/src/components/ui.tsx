@@ -14,20 +14,32 @@ const VARIANTS = {
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: keyof typeof VARIANTS;
+  /** `lg` is the form-scale control — inputs and the primary CTA beside them. */
+  size?: 'md' | 'lg';
 };
 
+const SIZES = {
+  md: 'h-[var(--control-height-md)]',
+  lg: 'h-[var(--control-height-lg)]',
+} as const;
+
 /** Shared so a link can be styled as a button without nesting one inside an anchor. */
-export const buttonClass = (variant: keyof typeof VARIANTS = 'secondary', className?: string) =>
+export const buttonClass = (
+  variant: keyof typeof VARIANTS = 'secondary',
+  className?: string,
+  size: keyof typeof SIZES = 'md',
+) =>
   cx(
     'inline-flex items-center justify-center gap-2 rounded-md px-4 text-body-strong',
-    'h-[var(--control-height-md)] transition-colors duration-[var(--duration-instant)] ease-standard',
+    SIZES[size],
+    'transition-colors duration-[var(--duration-instant)] ease-standard',
     'disabled:bg-action-disabled-bg disabled:text-action-disabled-text disabled:cursor-not-allowed',
     VARIANTS[variant],
     className,
   );
 
-export function Button({ variant = 'secondary', className, ...props }: ButtonProps) {
-  return <button type="button" className={buttonClass(variant, className)} {...props} />;
+export function Button({ variant = 'secondary', size = 'md', className, ...props }: ButtonProps) {
+  return <button type="button" className={buttonClass(variant, className, size)} {...props} />;
 }
 
 /* ── Status pill ───────────────────────────────────────────────────────────── */

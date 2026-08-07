@@ -1,7 +1,5 @@
 import type { Metadata } from 'next';
 import { Inter, Inter_Tight, JetBrains_Mono } from 'next/font/google';
-import { AppShell } from '../components/app-shell';
-import { buttonClass } from '../components/ui';
 import './globals.css';
 import { Providers } from './providers';
 
@@ -14,16 +12,14 @@ export const metadata: Metadata = {
   description: 'Hiring, coordinated.',
 };
 
+// The AppShell lives in the `(app)` group, not here: its sidebar and topbar are
+// meaningless before sign-in, and wrapping /sign-in in them would render a nav for
+// a session that does not exist yet.
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${inter.variable} ${interTight.variable} ${jetbrainsMono.variable}`}>
       <body>
-        <a href="#main" className={buttonClass('secondary', 'sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-[var(--z-modal)]')}>
-          Skip to content
-        </a>
-        <Providers>
-          <AppShell>{children}</AppShell>
-        </Providers>
+        <Providers>{children}</Providers>
       </body>
     </html>
   );

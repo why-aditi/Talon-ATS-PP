@@ -41,11 +41,14 @@ export const handlers = [
     if (department) data = data.filter((job) => job.department.toLowerCase() === department.toLowerCase());
     if (recruiterId) data = data.filter((job) => job.recruiter?.id === recruiterId);
 
-    // A caller without `comp:read` gets `comp: { visible: false }` — not a null band,
-    // not an error (spec 001 §7.3 Forbidden, §6.4). The tagged union is what keeps
-    // "you may not see this" distinct from "there is no band".
+    // A caller without `comp:read` gets the job with `band` omitted entirely — not
+    // null, not an error (spec 001 §7.3 Forbidden, §6.4).
+    //
+    // Step 4 reshaped this: comp was a tagged union whose stated purpose was to keep
+    // "you may not see comp" distinct from "this job has no band". An optional field
+    // cannot, and the two now serialize identically. Recorded in §7.4 — owner: api.
     if (scenario === 'forbidden') {
-      data = data.map((job) => ({ ...job, comp: { visible: false } as const }));
+      data = data.map(({ band: _band, ...job }) => job);
     }
 
     // The mock validates its own response against the real contract, so a fixture can

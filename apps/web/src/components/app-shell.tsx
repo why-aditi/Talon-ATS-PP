@@ -14,6 +14,7 @@ import {
   PersonIcon,
   SearchIcon,
   SignOutIcon,
+  TalonMark,
 } from './icons';
 import { Avatar, Eyebrow, cx } from './ui';
 
@@ -84,19 +85,7 @@ function Sidebar() {
           as a third line, and dropping it flattens the mark into a chevron.
         */}
         <span className="flex size-6 items-center justify-center rounded-sm bg-action-primary-bg" aria-hidden="true">
-          <svg
-            viewBox="0 0 24 24"
-            width="24"
-            height="24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            className="text-text-on-primary"
-          >
-            <path d="M13 6v5.5c0 2.6-1.3 4.8-6 5.25" />
-            <path d="M13.6 13.4 17.4 16.9" opacity="0.5" />
-          </svg>
+          <TalonMark className="size-6 text-text-on-primary" />
         </span>
         <span className="flex-1 text-section-title font-display text-text-primary">Talon</span>
         {/* Presentational until the command palette ships — see the topbar search. */}

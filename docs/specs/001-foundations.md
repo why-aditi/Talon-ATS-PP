@@ -388,6 +388,86 @@ filter control — filtering works via URL only, so §10's E2E "filter by depart
 cannot be walked yet. The no-raw-hex ESLint rule is scoped to `apps/web`; widening it
 fails today on `users.avatarColor`.
 
+## 7b. Sign-in screen (added 2026-08-07)
+
+**Scope addition.** §2 lists "AppShell; jobs list screen" and not the sign-in screen;
+§6 built the auth chain with no UI in front of it. Built against PRD §5.1 and
+`docs/reference/01-sign-in@2x.png`, using the step-4 contracts directly — no
+provisional mirror.
+
+### 7b.1 Session handling
+
+Access token in memory (React state), refresh token in an **httpOnly cookie**.
+
+The API returns both tokens in the JSON body and sets no cookie, and a cookie set
+from the browser cannot be httpOnly — it would be readable by any injected script,
+which is the same exposure as the localStorage it replaced. So `apps/web` owns three
+Route Handlers that proxy the auth endpoints server-side: `POST /api/auth/sign-in`,
+`/api/auth/refresh` and `/api/auth/sign-out`. They read the upstream body, keep the
+refresh token, and return only the access token and the user to the browser. The
+cookie is `httpOnly`, `SameSite=Lax`, `Secure` outside development, scoped to
+`/api/auth`, with a 30-day sliding window rewritten on every exchange.
+
+**This is a BFF layer, which ARCHITECTURE does not currently describe.** It exists
+because the alternatives were: tokens in JS-readable storage (rejected), or an API
+change to set the cookie itself (owner: api — the cleaner long-term answer, and the
+one to take if a second client ever appears). Recorded for ARCHITECTURE §3.
+
+### 7b.2 States
+
+Six, not five. `identity/service.ts` emits `MFA_REQUIRED` and `MFA_NOT_ENROLLED`
+from the sign-in path, and TOTP is out of scope — rendering either as "invalid
+credentials" would send the user round a loop that cannot end, so both get their own
+message naming what has to happen instead. Every branch keys off the RFC 9457 `type`,
+never the status: `INVALID_CREDENTIALS`, `USER_NOT_PROVISIONED`, `MFA_REQUIRED`,
+`MFA_NOT_ENROLLED`, `VALIDATION_FAILED`, and a client-side network failure that is
+deliberately distinct from all of them.
+
+### 7b.3 Disabled, not absent and not inert
+
+Google, SAML SSO and "Forgot?" render `disabled`. Disabled keeps them out of the tab
+order, so the keyboard path has no dead stop, while the screen keeps the shape the
+reference shows — and it satisfies the "one path per action" rule by not offering a
+second, broken one. A line beneath reads "SSO available once configured." "Forgot?"
+is a `<button disabled>` rather than a link, because a link cannot be disabled and
+would stay tabbable.
+
+### 7b.4 Measured corrections
+
+`controlHeight.lg` was **40px, marked estimated**. Scanning `01-sign-in@2x.png`
+gives inputs at 35px and the Sign in CTA at 37px, so the token is now **36px** and
+`Button` gained a `size` prop — the sign-in CTA was rendering at `md` (34) while its
+own inputs were at 40, i.e. inverted against the reference. Field-to-field spacing
+was 80px against the reference's 70 and is now 72.
+
+New `layout.signIn` tokens: `heroWidth` 747, `heroCardWidth` 324, `formWidth` 369.
+
+### 7b.5 Deltas against the reference
+
+1. The two SSO buttons render in `action.disabledBg`/`disabledText` where the screen
+   shows them white with a border. That is the cost of disabling them, and it is the
+   right trade against a focusable control that does nothing.
+2. The hero omits the reference's soft colour blooms; it ships the gradient and the
+   dot field. Decoration, not signal.
+3. The Google mark is monochrome. A full-colour glyph needs brand hex values that
+   cannot be semantic tokens, and colour on a disabled control reads as enabled.
+4. Ana Petrova's avatar id is pinned so the hash lands on the reference's violet —
+   same accepted delta as the recruiter avatars (§7.4 delta 3).
+
+### 7b.6 Not built
+
+No route guard. `/(app)` renders without a session, and `/` still redirects to
+`/jobs`, because the jobs list has no live endpoint to be authorised against
+(`GET /v1/jobs` does not exist at any layer — only `/v1/jobs/:id`). The guard lands
+with the list endpoint.
+
+**No seeded credentials.** `local_identities` carries a `password_hash` column and
+`packages/db/src/seed.ts` never inserts a row, so no account can actually sign in
+against a running API. End-to-end sign-in cannot be demonstrated until the seed
+provisions one. **Owner: schema.**
+
+TOTP enrollment, SSO domain discovery, password reset and sign-up are M1.
+
 ## 8. Events
 
 `JobCreated`, `JobStatusChanged`, `ApplicationCreated`, `ApplicationAdvanced`. Written to an `outbox` table in the same transaction as the state change. **No consumers in M0a** — the relay and EventBridge publishing are spec 002. The point is that the write path is correct from the first commit, so later consumers get a complete history rather than one starting mid-project.
