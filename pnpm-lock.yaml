@@ -56,7 +56,13 @@ importers:
       fastify:
         specifier: ^5.4.0
         version: 5.11.2
+      postgres:
+        specifier: ^3.4.7
+        version: 3.4.9
     devDependencies:
+      '@talon/testing':
+        specifier: workspace:*
+        version: link:../../packages/testing
       '@types/node':
         specifier: ^22.15.0
         version: 22.20.1
@@ -83,6 +89,9 @@ importers:
 
   packages/contracts:
     dependencies:
+      '@talon/domain':
+        specifier: workspace:*
+        version: link:../domain
       zod:
         specifier: ^3.25.0
         version: 3.25.76
@@ -126,7 +135,17 @@ importers:
         version: 5.9.3
 
   packages/testing:
+    dependencies:
+      '@talon/db':
+        specifier: workspace:*
+        version: link:../db
+      postgres:
+        specifier: ^3.4.7
+        version: 3.4.9
     devDependencies:
+      '@types/node':
+        specifier: ^22.15.0
+        version: 22.20.1
       typescript:
         specifier: ^5.9.2
         version: 5.9.3

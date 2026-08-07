@@ -52,6 +52,10 @@ export const ListJobsQuerySchema = z
   .strict();
 export type ListJobsQuery = z.infer<typeof ListJobsQuerySchema>;
 
+/** GET /v1/jobs/:id. Strict so `/v1/jobs/:id` can never grow a silent filter. */
+export const GetJobParamsSchema = z.object({ id: z.string().uuid() }).strict();
+export type GetJobParams = z.infer<typeof GetJobParamsSchema>;
+
 // ---------------------------------------------------------------------------
 // Response
 // ---------------------------------------------------------------------------
