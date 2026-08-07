@@ -5,8 +5,25 @@ import tseslint from 'typescript-eslint';
 // braces — it resolves real paths, including relative imports).
 const crossModulePatterns = [
   {
-    group: ['**/modules/*/repository', '**/modules/*/service'],
+    group: [
+      '**/modules/*/repository',
+      '**/modules/*/repository.js',
+      '**/modules/*/service',
+      '**/modules/*/service.js',
+    ],
     message: 'Cross-module access goes through index.public.ts.',
+  },
+];
+
+// A module's internals are all of it except index.public.ts — which includes the
+// concrete IdentityProvider implementations (spec 001 §6.1: nothing outside
+// modules/identity may import one). Negations are gitignore-style, so this reads
+// as "anything under a module folder, except its published interface".
+const moduleInternalPatterns = [
+  {
+    group: ['**/modules/*/*', '!**/modules/*/index.public', '!**/modules/*/index.public.js'],
+    message:
+      'Modules are imported through index.public.ts only — an implementation class never leaves its folder.',
   },
 ];
 
@@ -108,6 +125,33 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    // Runtime code only. `apps/api/test` deliberately reaches into module
+    // internals — a unit test for the TOTP implementation has to import the
+    // TOTP implementation — and @talon/testing is a test-only package that must
+    // never appear in a shipped import graph.
+    files: ['apps/api/src/**/*.ts'],
+    ignores: ['**/repository.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            ...crossModulePatterns,
+            ...moduleInternalPatterns,
+            {
+              group: ['@talon/db', '@talon/db/*'],
+              message: 'Only repository.ts may import @talon/db.',
+            },
+            {
+              group: ['@talon/testing', '@talon/testing/*'],
+              message: '@talon/testing is a test-only package.',
+            },
+          ],
+        },
+      ],
+    },
+  },
 
   // ── UI stream additions ─────────────────────────────────────────────────────
   // Next's build output and its generated ambient types are not ours to lint.
@@ -117,8 +161,7 @@ export default tseslint.config(
   // Scoped to apps/web rather than the whole repo on purpose. Widening it today
   // would fail on `users.avatarColor` in packages/db, which stores hex per user —
   // a real conflict with DESIGN_SYSTEM §3 (avatar fills come from a hash over the
-  // token palette), but one that belongs to the schema owner, not to a lint config
-  // landing mid-stream. Widen once that column is resolved.
+  // token palette), but one that belongs to the schema owner. Widen once resolved.
   // Tailwind arbitrary values (`bg-[#fff]`) are string literals, so they are caught
   // here; hex inside .css is covered by apps/web/src/test/token-usage.test.ts,
   // which ESLint cannot parse.
@@ -130,12 +173,12 @@ export default tseslint.config(
         {
           selector: 'Literal[value=/#(?:[0-9a-fA-F]{3,4}){1,2}(?![0-9a-fA-F])/]',
           message:
-            'Raw hex color. Use a semantic token — --color-action-primary-bg, never --color-indigo-600 and never #4C56C8.',
+            'Raw hex color. Use a semantic token — --color-action-primary-bg, never --color-indigo-600.',
         },
         {
           selector: 'TemplateElement[value.raw=/#(?:[0-9a-fA-F]{3,4}){1,2}(?![0-9a-fA-F])/]',
           message:
-            'Raw hex color. Use a semantic token — --color-action-primary-bg, never --color-indigo-600 and never #4C56C8.',
+            'Raw hex color. Use a semantic token — --color-action-primary-bg, never --color-indigo-600.',
         },
       ],
     },

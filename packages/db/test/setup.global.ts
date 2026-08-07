@@ -34,7 +34,11 @@ export default async function globalSetup(): Promise<void> {
   await admin.end();
 
   await migrate('up', OWNER_URL);
-  await migrate('down', OWNER_URL);
+  // `down` reverts one migration per call; unwind the whole stack so the
+  // zero-tables assertion below stays a real test as more migrations land.
+  while ((await migrate('down', OWNER_URL)).length > 0) {
+    // keep stepping back
+  }
 
   const check = postgres(OWNER_URL, { max: 1, onnotice: () => {} });
   const [row] = await check`

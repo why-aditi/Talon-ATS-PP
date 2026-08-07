@@ -2,14 +2,19 @@
   "name": "@talon/db",
   "private": true,
   "type": "module",
-  "exports": { ".": { "types": "./src/index.ts", "default": "./dist/index.js" } },
+  "exports": {
+    ".": { "types": "./src/index.ts", "default": "./dist/index.js" },
+    "./migrate": { "types": "./src/migrate.ts", "default": "./dist/migrate.js" },
+    "./seed": { "types": "./src/seed.ts", "default": "./dist/seed.js" }
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "migrate": "tsx src/migrate.ts up",
     "migrate:down": "tsx src/migrate.ts down",
     "seed": "tsx src/seed.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:isolation": "vitest run test/rls.test.ts test/leak.test.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.44.4",
