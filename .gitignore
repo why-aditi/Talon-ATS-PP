@@ -5,3 +5,12 @@ dist/
 coverage/
 *.tsbuildinfo
 .next/
+
+# Terraform: provider binaries and plan/state artifacts. The lock file IS committed.
+**/.terraform/
+*.tfplan
+*.tfplan.binary
+tfplan.binary
+plan.json
+*.tfstate
+*.tfstate.*
