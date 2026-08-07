@@ -22,10 +22,14 @@ terraform {
   # credentials and zero pre-existing infrastructure, which is the property the
   # single-command deliverable depends on.
   #
-  # Migration to the shared backend, once stage 1 has run — see README.md:
-  #   cp backend.tf.example backend.tf
-  #   terraform init -backend-config=backend-dev.s3.tfbackend -migrate-state
+  # Migration to the shared backend, once stage 1 has run — the exact command,
+  # with every -backend-config flag, is in README.md in this directory.
   #
-  # `backend.tf` is gitignored so the local-state default stays the checked-in
-  # behaviour and CI opts in explicitly with -backend-config.
+  #   cp backend.tf.example backend.tf
+  #   terraform init -migrate-state -backend-config="bucket=..." ...
+  #
+  # `backend.tf` is gitignored (see /.gitignore) so the local-state default stays
+  # the checked-in behaviour and an operator opts in explicitly. The block in
+  # backend.tf.example is empty because a backend block cannot interpolate
+  # variables and the bucket name embeds the account id.
 }
