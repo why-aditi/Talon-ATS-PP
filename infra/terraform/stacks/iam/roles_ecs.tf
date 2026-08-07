@@ -47,9 +47,10 @@ data "aws_iam_policy_document" "ecs_tasks_trust" {
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_role" "ecs_task_execution" {
-  name               = "${local.name}-ecs-task-execution"
-  description        = "ECS agent role for ${local.name}: image pull, log stream creation, secret resolution."
-  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_trust.json
+  name                 = "${local.name}-ecs-task-execution"
+  description          = "ECS agent role for ${local.name}: image pull, log stream creation, secret resolution."
+  assume_role_policy   = data.aws_iam_policy_document.ecs_tasks_trust.json
+  permissions_boundary = aws_iam_policy.permissions_boundary.arn
 }
 
 # ECR pull + CreateLogStream/PutLogEvents. AWS maintains it; hand-rolling it
@@ -122,9 +123,10 @@ resource "aws_iam_role_policy" "ecs_task_execution_secrets" {
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_role" "ecs_task" {
-  name               = "${local.name}-ecs-task"
-  description        = "Application runtime role for ${local.name} ECS tasks."
-  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_trust.json
+  name                 = "${local.name}-ecs-task"
+  description          = "Application runtime role for ${local.name} ECS tasks."
+  assume_role_policy   = data.aws_iam_policy_document.ecs_tasks_trust.json
+  permissions_boundary = aws_iam_policy.permissions_boundary.arn
 }
 
 data "aws_iam_policy_document" "ecs_task" {
@@ -167,11 +169,20 @@ data "aws_iam_policy_document" "ecs_task" {
     resources = ["arn:${local.partition}:sqs:${var.aws_region}:${local.account_id}:${local.name}-*"]
   }
 
+  # `${local.name}-*`, matching every other late-bound ARN in this file. It used
+  # to name the bus exactly `talon-dev`, which is a naming contract with a stack
+  # that does not exist yet and which nothing would have checked — the failure
+  # mode is an AccessDenied inside the outbox relay (§6.1), at runtime, on a
+  # consumer whose whole job is at-least-once delivery.
+  #
+  # NAMING CONTRACT: stacks/ephemeral must name the EventBridge bus with the
+  # `talon-<env>-` prefix, e.g. `talon-dev-events`. A bus named bare `talon-dev`
+  # does NOT match this and will not be writable.
   statement {
     sid       = "DomainEvents"
     effect    = "Allow"
     actions   = ["events:PutEvents"]
-    resources = ["arn:${local.partition}:events:${var.aws_region}:${local.account_id}:event-bus/${local.name}"]
+    resources = ["arn:${local.partition}:events:${var.aws_region}:${local.account_id}:event-bus/${local.name}-*"]
   }
 
   statement {
@@ -209,30 +220,46 @@ data "aws_iam_policy_document" "ecs_task" {
     resources = ["arn:${local.partition}:ssm:${var.aws_region}:${local.account_id}:parameter/${local.name}/*"]
   }
 
-  statement {
-    sid    = "TenantIdentityProviders"
-    effect = "Allow"
-    actions = [
-      # §9.4: per-tenant SAML IdPs are created through the API at runtime, not
-      # in Terraform, so this permission belongs to the application.
-      "cognito-idp:CreateIdentityProvider",
-      "cognito-idp:UpdateIdentityProvider",
-      "cognito-idp:DeleteIdentityProvider",
-      "cognito-idp:DescribeIdentityProvider",
-      "cognito-idp:ListIdentityProviders",
-      "cognito-idp:AdminCreateUser",
-      "cognito-idp:AdminGetUser",
-      "cognito-idp:AdminUpdateUserAttributes",
-      "cognito-idp:AdminDisableUser",
-      "cognito-idp:AdminEnableUser",
-      "cognito-idp:AdminUserGlobalSignOut",
-      "cognito-idp:ListUsers",
-    ]
-    # Pool ids are generated at create time and cannot be predicted here; set
-    # var.cognito_user_pool_arns after stacks/persistent runs to pin this to the
-    # one pool. Note the absence of AdminDeleteUser and of any schema action:
-    # nothing the application does should be able to mutate pool schema (§9.4).
-    resources = local.cognito_user_pool_arns
+  # Per-tenant SAML IdPs are created through the API at runtime, not in Terraform
+  # (§9.4), so these permissions belong to the application.
+  #
+  # Conditional for the same reason the KMS statement below is, and it is the
+  # stronger case of the two. Pool ids are generated at create time and cannot be
+  # predicted here, and the fallback used to be `userpool/*` — which in a shared
+  # single-account setup (§9.5) is a grant to create identity providers in, and
+  # disable users of, every other team's pool in the account. An identity
+  # provider in someone else's pool is an authentication bypass for their
+  # application. No statement is the correct behaviour until the ARN is known:
+  # the failure is a clear AccessDenied on tenant SSO setup, not silent reach.
+  #
+  # ORDERING: stacks/persistent creates the pool and consumes this stack's role
+  # ARNs, so it cannot be referenced from here without a cycle. scripts/up.sh
+  # re-applies stacks/iam with -var cognito_user_pool_arns=... after stage 3.
+  #
+  # Note the absence of AdminDeleteUser and of any schema action: nothing the
+  # application does should be able to mutate pool schema (§9.4).
+  dynamic "statement" {
+    for_each = length(var.cognito_user_pool_arns) > 0 ? [1] : []
+
+    content {
+      sid    = "TenantIdentityProviders"
+      effect = "Allow"
+      actions = [
+        "cognito-idp:CreateIdentityProvider",
+        "cognito-idp:UpdateIdentityProvider",
+        "cognito-idp:DeleteIdentityProvider",
+        "cognito-idp:DescribeIdentityProvider",
+        "cognito-idp:ListIdentityProviders",
+        "cognito-idp:AdminCreateUser",
+        "cognito-idp:AdminGetUser",
+        "cognito-idp:AdminUpdateUserAttributes",
+        "cognito-idp:AdminDisableUser",
+        "cognito-idp:AdminEnableUser",
+        "cognito-idp:AdminUserGlobalSignOut",
+        "cognito-idp:ListUsers",
+      ]
+      resources = var.cognito_user_pool_arns
+    }
   }
 
   statement {

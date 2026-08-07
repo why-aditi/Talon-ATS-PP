@@ -10,6 +10,7 @@ resource "aws_iam_role" "github_plan" {
   description          = "GitHub Actions terraform plan (read-only) role for ${local.name}. Trusted only from ${var.github_repo}."
   assume_role_policy   = data.aws_iam_policy_document.github_plan_trust.json
   max_session_duration = 3600
+  permissions_boundary = aws_iam_policy.permissions_boundary.arn
 }
 
 # `terraform plan` refreshes every resource in the graph, so it needs Describe/
@@ -43,18 +44,32 @@ resource "aws_iam_role_policy" "github_plan_state" {
 }
 
 data "aws_iam_policy_document" "github_plan_guardrails" {
+  # ReadOnlyAccess includes s3:GetObject on every bucket in the account, which
+  # would let a pull-request workflow — code nobody has merged — print candidate
+  # resumes (§9.10) into a CI log.
+  #
+  # This is an allow-list expressed as a Deny, and the inversion is the point.
+  # The previous version named the three application buckets and denied those,
+  # which meant every bucket added afterwards was readable until someone
+  # remembered to extend the list. The quarantine bucket from §9.10 was already
+  # missing, so an UNSCANNED resume was readable by CI. Deny everything, except
+  # the one prefix `terraform plan` genuinely needs an object body from — the
+  # state file. A new bucket is now denied by default and a reviewer has to add
+  # it here deliberately.
+  #
+  # NotResource, so the exception is exact: it is the state bucket's objects, not
+  # the state bucket's name as a prefix of some other bucket.
   statement {
-    sid    = "DenyReadingCandidateData"
+    sid    = "DenyReadingObjectBodiesExceptTerraformState"
     effect = "Deny"
     actions = [
       "s3:GetObject",
       "s3:GetObjectVersion",
+      "s3:GetObjectTorrent",
     ]
-    # ReadOnlyAccess includes s3:GetObject on every bucket in the account, which
-    # would let a workflow run read candidate resumes and exports (§9.10) out of
-    # a CI log. `terraform plan` never needs an object body from these buckets;
-    # it needs bucket metadata, which this does not touch.
-    resources = local.data_bucket_object_arns
+    not_resources = [
+      "${local.state_bucket_arn}/*",
+    ]
   }
 }
 

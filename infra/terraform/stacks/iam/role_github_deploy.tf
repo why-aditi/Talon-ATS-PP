@@ -9,6 +9,7 @@ resource "aws_iam_role" "github_deploy" {
   description          = "GitHub Actions terraform apply role for ${local.name}. Trusted only from ${var.github_repo}."
   assume_role_policy   = data.aws_iam_policy_document.github_deploy_trust.json
   max_session_duration = var.deploy_role_max_session_seconds
+  permissions_boundary = aws_iam_policy.permissions_boundary.arn
 }
 
 # Broad on purpose, and this is the honest reason: this role runs
@@ -37,27 +38,81 @@ resource "aws_iam_role_policy_attachment" "github_deploy_power_user" {
 # ---------------------------------------------------------------------------
 
 data "aws_iam_policy_document" "github_deploy_iam_addendum" {
+  # The four actions that can manufacture privilege, and the condition that stops
+  # them doing it. iam:PermissionsBoundary is the boundary attached to the TARGET
+  # role, so this reads: you may create a role or give a role a policy only if
+  # that role's ceiling is permissions_boundary.tf. See that file for the
+  # escalation this closes and why an identity-policy Allow-with-condition is not
+  # enough on its own (the matching explicit Deny is in the guardrails below).
+  statement {
+    sid    = "ManageProjectRolesUnderTheBoundary"
+    effect = "Allow"
+    actions = [
+      "iam:CreateRole",
+      "iam:PutRolePolicy",
+      "iam:AttachRolePolicy",
+      "iam:PutRolePermissionsBoundary",
+    ]
+    # Name-scoped, both because §9.5 warns the company grant may itself be
+    # prefix-scoped and because it keeps a compromised CI run away from every
+    # role in the account that is not ours.
+    resources = ["arn:${local.partition}:iam::${local.account_id}:role/${local.name}-*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PermissionsBoundary"
+      values   = [local.permissions_boundary_arn]
+    }
+  }
+
+  # The rest of the role lifecycle. None of these can widen a role's effective
+  # permissions on their own — the boundary is already attached and cannot be
+  # detached (see DenyRemovingTheBoundary in the guardrails) — so they carry no
+  # condition and terraform can still tag, retitle, retrust and delete.
   statement {
     sid    = "ManageProjectRoles"
     effect = "Allow"
     actions = [
-      "iam:CreateRole",
       "iam:DeleteRole",
       "iam:UpdateRole",
       "iam:UpdateRoleDescription",
       "iam:UpdateAssumeRolePolicy",
       "iam:TagRole",
       "iam:UntagRole",
-      "iam:PutRolePolicy",
       "iam:DeleteRolePolicy",
-      "iam:AttachRolePolicy",
       "iam:DetachRolePolicy",
-      "iam:PassRole",
     ]
-    # Name-scoped, both because §9.5 warns the company grant may itself be
-    # prefix-scoped and because it keeps a compromised CI run away from every
-    # role in the account that is not ours.
     resources = ["arn:${local.partition}:iam::${local.account_id}:role/${local.name}-*"]
+  }
+
+  # PassRole separated out and scoped by destination service. Without
+  # iam:PassedToService, "pass any talon-dev-* role" means the deploy role can
+  # hand the ECS task role to a service that was never meant to hold it — an
+  # EC2 instance it controls, say — and read every application secret from a
+  # shell. The list is what this architecture actually passes a role to (§9.1,
+  # §9.2, §9.6's NAT instance). An apply failing with AccessDenied on PassRole
+  # means a service is missing from it: add the service here, in the same PR.
+  statement {
+    sid       = "PassProjectRolesToProjectServices"
+    effect    = "Allow"
+    actions   = ["iam:PassRole"]
+    resources = ["arn:${local.partition}:iam::${local.account_id}:role/${local.name}-*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values = [
+        "ecs-tasks.amazonaws.com",
+        "ecs.amazonaws.com",
+        "lambda.amazonaws.com",
+        "ec2.amazonaws.com",
+        "events.amazonaws.com",
+        "scheduler.amazonaws.com",
+        "application-autoscaling.amazonaws.com",
+        "monitoring.rds.amazonaws.com",
+        "vpc-flow-logs.amazonaws.com",
+      ]
+    }
   }
 
   statement {
@@ -184,15 +239,124 @@ data "aws_iam_policy_document" "github_deploy_guardrails" {
     ]
     resources = ["*"]
 
-    # Partial mitigation, stated plainly: CreateRole + PutRolePolicy + PassRole
-    # is inherently escalatable, and the complete answer is a permissions
-    # boundary required on every role this identity creates (open question in
-    # docs/specs/002-infrastructure.md). This blocks the laziest path.
+    # Narrow by construction — iam:PolicyARN only exists for MANAGED policies, so
+    # this statement cannot see an inline document at all. It is the cheap half
+    # of the answer; the expensive half is DenyCreatingRolesOutsideTheBoundary
+    # below plus permissions_boundary.tf, which is what actually closes
+    # CreateRole + PutRolePolicy + AssumeRole.
     condition {
       test     = "ArnEquals"
       variable = "iam:PolicyARN"
       values   = ["arn:${local.partition}:iam::aws:policy/AdministratorAccess"]
     }
+  }
+
+  # The explicit half of the boundary requirement. The Allow above is already
+  # conditioned, so an unconditioned CreateRole would fall through to an implicit
+  # deny — but implicit denials are invisible in `aws iam simulate-custom-policy`
+  # output and in a policy review, and they evaporate the moment someone adds a
+  # broader Allow. This makes it explicitDeny, which nothing can override.
+  statement {
+    sid    = "DenyCreatingRolesOutsideTheBoundary"
+    effect = "Deny"
+    actions = [
+      "iam:CreateRole",
+      "iam:PutRolePolicy",
+      "iam:AttachRolePolicy",
+      "iam:PutRolePermissionsBoundary",
+    ]
+    resources = ["*"]
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "iam:PermissionsBoundary"
+      values   = [local.permissions_boundary_arn]
+    }
+  }
+
+  statement {
+    sid    = "DenyRemovingOrRewritingTheBoundary"
+    effect = "Deny"
+    actions = [
+      "iam:DeleteRolePermissionsBoundary",
+      "iam:DeleteUserPermissionsBoundary",
+    ]
+    resources = ["*"]
+  }
+
+  # ManageProjectCustomerManagedPolicies covers policy/talon-dev-*, and the
+  # boundary is policy/talon-dev-permissions-boundary. Without this the deploy
+  # role could publish a new default version of its own ceiling that allows
+  # everything, and the boundary would be a formality.
+  statement {
+    sid    = "DenyRewritingTheBoundaryPolicy"
+    effect = "Deny"
+    actions = [
+      "iam:CreatePolicyVersion",
+      "iam:DeletePolicyVersion",
+      "iam:SetDefaultPolicyVersion",
+      "iam:DeletePolicy",
+    ]
+    resources = [local.permissions_boundary_arn]
+  }
+
+  # ---------------------------------------------------------------------------
+  # This role cannot modify itself or the plan role. That is the decision that
+  # makes the `sub` pin in oidc.tf a real boundary rather than a comment: without
+  # it, one workflow run on the default branch could call UpdateAssumeRolePolicy
+  # and add a subject claim for any repository on github.com, permanently, and
+  # the next run would already be somebody else's.
+  #
+  # The consequence is deliberate and load-bearing: **stacks/iam cannot be
+  # applied by CI.** It is applied by a human or admin identity — which is what
+  # ARCHITECTURE §9.5 describes anyway, and what scripts/up.sh stage 2 does. CI
+  # takes the TALON_ROLE_ARNS skip path in §9.5a, where every other stack
+  # receives role ARNs as input variables and stage 2 is skipped entirely. A
+  # workflow that tries to apply this stack fails on the first IAM write, loudly,
+  # with the reason in the AccessDenied message.
+  #
+  # Scoped to github-* rather than the whole prefix on purpose: the deploy role
+  # legitimately manages the application roles, and a CI apply of a future stack
+  # that adds one should keep working.
+  # ---------------------------------------------------------------------------
+  statement {
+    sid    = "DenySelfModificationOfCiRoles"
+    effect = "Deny"
+    actions = [
+      "iam:UpdateAssumeRolePolicy",
+      "iam:PutRolePolicy",
+      "iam:DeleteRolePolicy",
+      "iam:AttachRolePolicy",
+      "iam:DetachRolePolicy",
+      "iam:DeleteRole",
+      "iam:PutRolePermissionsBoundary",
+      "iam:DeleteRolePermissionsBoundary",
+    ]
+    resources = ["arn:${local.partition}:iam::${local.account_id}:role/${local.name}-github-*"]
+  }
+
+  # ---------------------------------------------------------------------------
+  # Stateful resources. CLAUDE.md §4: replacement of a stateful resource is never
+  # routine, and ARCHITECTURE §9.5a rules out prevent_destroy because it would
+  # block scripts/down.sh. This is the middle path — the resource stays
+  # destroyable by the human running down.sh --all, and is not destroyable by an
+  # automated apply. A plan that needs one of these replaced (an engine-version
+  # change that forces new, say) fails at apply against CI and gets the human
+  # §9.5's CI rule asks for.
+  #
+  # Not listed: rds:DeleteDBInstance. The dev cost profile (§9.6) uses a plain
+  # db.t4g.micro instance, not a cluster, and tearing the ephemeral stack down
+  # between work sessions is routine by design. Denying it here would fight the
+  # teardown it is meant to protect — the same mistake as prevent_destroy.
+  # ---------------------------------------------------------------------------
+  statement {
+    sid    = "DenyDestroyingStatefulResources"
+    effect = "Deny"
+    actions = [
+      "cognito-idp:DeleteUserPool",
+      "rds:DeleteDBCluster",
+    ]
+    resources = ["*"]
   }
 
   statement {

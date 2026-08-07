@@ -26,6 +26,11 @@ output "github_plan_role_arn" {
   description = "CI role for terraform plan on pull requests. Read-only."
 }
 
+output "permissions_boundary_arn" {
+  value       = aws_iam_policy.permissions_boundary.arn
+  description = "Ceiling carried by every role in this stack, and required by name on any role the deploy role creates. Changing it is a human-run apply of this stack — the deploy role is explicitly denied rewriting it."
+}
+
 output "oidc_provider_arn" {
   value       = local.oidc_provider_arn
   description = "The GitHub OIDC provider this stack created, or the pre-existing one it was told to reuse."

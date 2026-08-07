@@ -22,9 +22,30 @@ data "aws_iam_policy_document" "lambda_trust" {
       identifiers = ["lambda.amazonaws.com"]
     }
 
-    # Confused-deputy guard. Only aws:SourceAccount, not aws:SourceArn: the
-    # function ARN is created by stacks/persistent, which already depends on this
-    # stack's outputs, so naming it here would invert that into a cycle.
+    # Confused-deputy guard, aws:SourceAccount only.
+    #
+    # This used to claim aws:SourceArn was omitted because naming the function
+    # would create a dependency cycle. That was wrong and is corrected here: the
+    # function ARN is constructible from the naming convention without referring
+    # to stacks/persistent at all —
+    # `arn:aws:lambda:<region>:<account>:function:talon-dev-*` — exactly as the
+    # Secrets Manager and SSM ARNs below are constructed. There is no cycle.
+    #
+    # The real reason it is absent is that it is unverified. AWS documents
+    # aws:SourceArn for the ECS task trust policy above, and documents
+    # confused-deputy prevention for Lambda on the FUNCTION's resource policy;
+    # it does not document that Lambda populates aws:SourceArn when it assumes an
+    # EXECUTION role. If it does not, this condition never matches, the function
+    # cannot assume its role, and the symptom is that sign-in stops issuing
+    # claims — a broken login with an error message about the token generator,
+    # discovered in production rather than in a plan.
+    #
+    # The marginal gain is small: aws:SourceAccount already blocks the
+    # cross-account case that "confused deputy" names, and reaching this role
+    # in-account requires iam:PassRole on `talon-dev-*`, which only the deploy
+    # role has and which is now itself scoped by iam:PassedToService. Add the
+    # ArnLike condition once the first apply proves Lambda sets the key —
+    # tracked as open question 5 in docs/specs/002-infrastructure.md.
     condition {
       test     = "StringEquals"
       variable = "aws:SourceAccount"
@@ -34,9 +55,10 @@ data "aws_iam_policy_document" "lambda_trust" {
 }
 
 resource "aws_iam_role" "lambda_pretoken" {
-  name               = "${local.name}-lambda-pretoken"
-  description        = "Cognito pre-token-generation Lambda for ${local.name}: reads claims from the users table."
-  assume_role_policy = data.aws_iam_policy_document.lambda_trust.json
+  name                 = "${local.name}-lambda-pretoken"
+  description          = "Cognito pre-token-generation Lambda for ${local.name}: reads claims from the users table."
+  assume_role_policy   = data.aws_iam_policy_document.lambda_trust.json
+  permissions_boundary = aws_iam_policy.permissions_boundary.arn
 }
 
 # The ENI create/describe/delete set a VPC-attached Lambda needs. AWS maintains
