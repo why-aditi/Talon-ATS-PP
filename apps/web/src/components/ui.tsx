@@ -171,7 +171,10 @@ export function Avatar({ id, name, size = 24 }: { id: string; name: string; size
     <span
       // A var() reference, not a color literal — the value stays inside packages/tokens.
       style={{ backgroundColor: `var(${avatarToken(id)})`, width: size, height: size }}
-      className="inline-flex shrink-0 items-center justify-center rounded-full text-caption font-bold text-text-on-primary"
+      // No font-bold: `text-caption` already carries its own weight (500), and a
+      // Tailwind weight utility on top silently overrides the token — which is how
+      // these initials ended up at 700 while the reference renders them at 500.
+      className="inline-flex shrink-0 items-center justify-center rounded-full text-caption text-text-on-primary"
       aria-hidden="true"
     >
       {initials(name)}
