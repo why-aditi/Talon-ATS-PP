@@ -151,15 +151,16 @@ export class IdentityService {
   }
 
   /**
-   * Creates or replaces a local credential. There is no self-service sign-up in
-   * M0a; this exists for provisioning and for the E2E/test fixtures that need a
-   * seeded person to be able to sign in.
+   * Creates or replaces the credential at the identity provider and returns the
+   * subject it allocated. There is no self-service sign-up in M0a; this exists
+   * for operator provisioning (`scripts/seed-identities.ts`) and for the test
+   * fixtures that need a seeded person to be able to sign in.
+   *
+   * The caller is responsible for the second half — writing the returned subject
+   * to `users.external_id`. That write is deliberately not here: it needs RLS
+   * bypass, and the request process must not have it (spec 001 §11b).
    */
-  async provisionCredential(input: {
-    email: string;
-    password: string;
-    sub?: string;
-  }): Promise<{ sub: string }> {
+  async provisionCredential(input: { email: string; password: string }): Promise<{ sub: string }> {
     return this.#run(() => this.#provider.createUser(input));
   }
 

@@ -4,12 +4,16 @@
  * Nothing here is mocked in the `vi.mock` sense: the real AWS SDK serialises,
  * signs and sends real HTTP, the real `JwksVerifier` fetches and verifies a real
  * RS256 key set, and the real `users` table answers who the subject is. The only
- * substitution is where the packets go.
+ * substitution is where the packets go — which is what lets `pnpm test` pass with
+ * no AWS account at all, now that Cognito is the only identity provider.
  *
- * The claims are the thing under test. Spec 001 §6.2 says the shape is identical
- * in both implementations and that `tenant_id`/`role` never live on the identity
- * provider — so the assertions below decode both providers' tokens and compare
- * them, and change a role in the database to prove which side is authoritative.
+ * The claims are the thing under test. Spec 001 §6.2 fixes the shape and says
+ * `tenant_id`/`role` never live on the identity provider — so the assertions
+ * below decode the minted token and change a role in the database to prove which
+ * side is authoritative. The side-by-side comparison against
+ * `LocalIdentityProvider` went with the provider itself (spec 002 open question
+ * 1); what survives it is the claim list, pinned literally, because `session.ts`
+ * is now the only thing keeping that promise.
  */
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, expect, it } from 'vitest';
@@ -31,7 +35,15 @@ let owner: postgres.Sql;
 let userId: string;
 let tenantId: string;
 let cognito: Awaited<ReturnType<typeof buildStack>>;
-let local: Awaited<ReturnType<typeof buildStack>>;
+
+/** A complete, valid environment. Every boot test below removes one thing from it. */
+const COGNITO_ENV: NodeJS.ProcessEnv = {
+  API_DATABASE_URL: APP_URL,
+  TALON_JWT_SECRET: 'test-signing-key-not-the-published-default',
+  COGNITO_REGION: 'us-east-1',
+  COGNITO_USER_POOL_ID: 'us-east-1_x',
+  COGNITO_CLIENT_ID: 'client',
+};
 
 function buildStack(env: Record<string, string>): {
   config: ApiConfig;
@@ -98,19 +110,15 @@ beforeAll(async () => {
     values (${userId}::uuid, ${tenantId}::uuid, ${EMAIL}::citext, 'Cognito Probe', 'recruiter', 'UTC')`;
 
   cognito = buildStack({
-    TALON_IDENTITY_PROVIDER: 'cognito',
     COGNITO_REGION: stub.region,
     COGNITO_USER_POOL_ID: stub.userPoolId,
     COGNITO_CLIENT_ID: stub.clientId,
   });
-  local = buildStack({ TALON_IDENTITY_PROVIDER: 'local' });
 });
 
 afterAll(async () => {
   await cognito?.close();
-  await local?.close();
   if (owner) {
-    await owner`delete from local_identities where email = ${EMAIL}::citext`;
     await owner`delete from users where id = ${userId}::uuid`;
     await owner.end();
   }
@@ -132,9 +140,6 @@ async function provision(): Promise<string> {
   const { sub } = await cognito.cradle.identityProvider.createUser({
     email: EMAIL,
     password: PASSWORD,
-    // Local-only, and Cognito must ignore it: honouring it would mean claiming
-    // a subject the IdP never issued.
-    sub: userId,
   });
   await setExternalId(sub);
   return sub;
@@ -142,82 +147,76 @@ async function provision(): Promise<string> {
 
 // ── container selection ────────────────────────────────────────────────────
 
-it('selects the provider by configuration, with local as the default', () => {
-  expect(cognito.config.auth.provider).toBe('cognito');
+it('Cognito is the only provider, and it is not selected by a flag', () => {
   expect(cognito.cradle.identityProvider.constructor.name).toBe('CognitoIdentityProvider');
-  expect(local.config.auth.provider).toBe('local');
-  expect(local.cradle.identityProvider.constructor.name).toBe('LocalIdentityProvider');
-  // No env var at all is local — a clean clone with no AWS account still boots.
-  expect(loadConfig({ API_DATABASE_URL: APP_URL }).auth.provider).toBe('local');
+  expect(cognito.config.auth.cognito).toEqual({
+    region: stub.region,
+    userPoolId: stub.userPoolId,
+    clientId: stub.clientId,
+  });
 });
 
-it.each(['Cognito', 'COGNITO', 'aws', ''])(
-  'refuses to boot on an unrecognised provider name (%s)',
+it.each(['local', 'Cognito', 'COGNITO', 'aws', ''])(
+  'refuses to boot on TALON_IDENTITY_PROVIDER=%s',
   (raw) => {
-    expect(() =>
-      loadConfig({ API_DATABASE_URL: APP_URL, TALON_IDENTITY_PROVIDER: raw }),
-    ).toThrow(/TALON_IDENTITY_PROVIDER/);
+    // `local` is in this list on purpose. A stale value in somebody's .env has to
+    // fail loudly: silently running Cognito while the configuration says
+    // otherwise is the same class of mistake the old "anything that is not
+    // cognito is local" coercion caused, pointing the other way.
+    expect(() => loadConfig({ ...COGNITO_ENV, TALON_IDENTITY_PROVIDER: raw })).toThrow(
+      /TALON_IDENTITY_PROVIDER/,
+    );
   },
 );
 
-it.each(['COGNITO_USER_POOL_ID', 'COGNITO_CLIENT_ID'])(
-  'refuses to boot as cognito without %s',
+it.each(['COGNITO_USER_POOL_ID', 'COGNITO_CLIENT_ID', 'COGNITO_REGION'])(
+  'refuses to boot without %s — there is no fallback to degrade to',
   (missing) => {
-    const env: NodeJS.ProcessEnv = {
-      API_DATABASE_URL: APP_URL,
-      TALON_JWT_SECRET: 'test-signing-key-not-the-published-default',
-      TALON_IDENTITY_PROVIDER: 'cognito',
-      COGNITO_REGION: 'us-east-1',
-      COGNITO_USER_POOL_ID: 'us-east-1_x',
-      COGNITO_CLIENT_ID: 'client',
-    };
+    const env: NodeJS.ProcessEnv = { ...COGNITO_ENV };
     delete env[missing];
-    // A pool-id typo must stop the process, not turn every login into a 500.
+    // A pool-id typo must stop the process, not turn every login into a 500 —
+    // and a missing one must not start a deployment that cannot authenticate.
     expect(() => loadConfig(env)).toThrow(new RegExp(missing));
   },
 );
 
-it('refuses to run against a real pool with the published local signing key', () => {
-  // Both providers mint the §6.2 bearer token with TALON_JWT_SECRET — Cognito
-  // does not replace it. Falling back to the published constant here would let
-  // anyone forge a token for any tenant and any role.
-  expect(() =>
-    loadConfig({
-      API_DATABASE_URL: APP_URL,
-      TALON_IDENTITY_PROVIDER: 'cognito',
-      COGNITO_REGION: 'us-east-1',
-      COGNITO_USER_POOL_ID: 'us-east-1_x',
-      COGNITO_CLIENT_ID: 'client',
-    }),
-  ).toThrow(/TALON_JWT_SECRET/);
+it.each(['COGNITO_USER_POOL_ID', 'COGNITO_CLIENT_ID', 'COGNITO_REGION', 'TALON_JWT_SECRET'])(
+  'treats whitespace in %s as unset',
+  (blanked) => {
+    expect(() => loadConfig({ ...COGNITO_ENV, [blanked]: '   ' })).toThrow(new RegExp(blanked));
+  },
+);
+
+it('refuses to run with the published local signing key', () => {
+  // Talon mints the §6.2 bearer token with TALON_JWT_SECRET — Cognito proves the
+  // credential but does not replace this key. Signing with the constant
+  // published in this repository would let anyone forge a token for any tenant
+  // and any role.
+  const withoutSecret: NodeJS.ProcessEnv = { ...COGNITO_ENV };
+  delete withoutSecret['TALON_JWT_SECRET'];
+  expect(() => loadConfig(withoutSecret)).toThrow(/TALON_JWT_SECRET/);
 
   // The case the title actually claims: supplying the published constant
   // explicitly must be refused too. A presence-only guard passes the assertion
   // above while leaving every token forgeable, so this is the one that matters.
-  const cognitoEnv = {
-    API_DATABASE_URL: APP_URL,
-    TALON_IDENTITY_PROVIDER: 'cognito',
-    COGNITO_REGION: 'us-east-1',
-    COGNITO_USER_POOL_ID: 'us-east-1_x',
-    COGNITO_CLIENT_ID: 'client',
-  };
   for (const secret of [LOCAL_JWT_SECRET, ' ', '\t\n']) {
     expect(
-      () => loadConfig({ ...cognitoEnv, TALON_JWT_SECRET: secret }),
+      () => loadConfig({ ...COGNITO_ENV, TALON_JWT_SECRET: secret }),
       JSON.stringify(secret),
     ).toThrow(/TALON_JWT_SECRET/);
   }
   // A real key is accepted, so the guard is not simply refusing everything.
-  expect(loadConfig({ ...cognitoEnv, TALON_JWT_SECRET: 'a-real-key' }).auth.secret).toBe('a-real-key');
-
-  // Local development is unaffected: no AWS, no secret needed.
-  expect(loadConfig({ API_DATABASE_URL: APP_URL }).auth.secret).toBeTruthy();
+  expect(loadConfig({ ...COGNITO_ENV, TALON_JWT_SECRET: 'a-real-key' }).auth.secret).toBe(
+    'a-real-key',
+  );
 });
 
 // ── provisioning ───────────────────────────────────────────────────────────
 
-it('lets Cognito allocate the sub and ignores the caller-supplied one', async () => {
+it('lets Cognito allocate the sub, which is never users.id', async () => {
   const sub = await provision();
+  // `CreateUserInput` no longer carries a caller-supplied subject at all, and
+  // this is the assertion that says why: the subject belongs to the IdP.
   expect(sub).not.toBe(userId);
   expect(stub.users.get(EMAIL)?.sub).toBe(sub);
   // Created, then given a permanent password — otherwise the account sits in
@@ -247,24 +246,19 @@ it('re-provisioning an existing person keeps the original sub', async () => {
 
 // ── the claim shape (§6.2) ─────────────────────────────────────────────────
 
-it('mints the §6.2 claim shape, identical to the local provider', async () => {
+it('mints exactly the §6.2 claim set and nothing else', async () => {
   await provision();
-  const viaCognito = authenticated(
+  const signedIn = authenticated(
     await cognito.cradle.identityProvider.initiatePasswordAuth(EMAIL, PASSWORD),
   );
+  const claims = decode(signedIn.tokens.accessToken);
 
-  // Same person, provisioned locally instead. external_id must go back to null:
-  // migration 0004 resolves users.id only where there is no external subject.
-  await setExternalId(null);
-  await local.cradle.identityProvider.createUser({ email: EMAIL, password: PASSWORD, sub: userId });
-  const viaLocal = authenticated(
-    await local.cradle.identityProvider.initiatePasswordAuth(EMAIL, PASSWORD),
-  );
-
-  const cognitoClaims = decode(viaCognito.tokens.accessToken);
-  const localClaims = decode(viaLocal.tokens.accessToken);
-
-  expect(Object.keys(cognitoClaims).sort()).toEqual([
+  // Pinned literally, in both directions. With one provider left there is no
+  // second token to diff against, so this list IS the §6.2 contract: a claim
+  // added to `session.ts` fails here, and so does one removed. `toEqual` on the
+  // sorted key set is deliberate — `toMatchObject` would let an extra claim
+  // (say, a leaked `password_hash` or a Cognito group list) through unnoticed.
+  expect(Object.keys(claims).sort()).toEqual([
     'aud',
     'email',
     'exp',
@@ -275,29 +269,29 @@ it('mints the §6.2 claim shape, identical to the local provider', async () => {
     'sub',
     'tenant_id',
   ]);
-  expect(Object.keys(cognitoClaims).sort()).toEqual(Object.keys(localClaims).sort());
-
-  // Identical everywhere the shape is a promise. `jti` is unique per token by
-  // construction, `iat`/`exp` are clocks, and `sub` names the IdP's subject —
-  // which is the one claim that is SUPPOSED to differ, because it is the key
-  // `auth_user_by_sub` resolves and the two providers key differently.
-  for (const claim of ['email', 'tenant_id', 'role', 'iss', 'aud']) {
-    expect(cognitoClaims[claim]).toEqual(localClaims[claim]);
-  }
-  expect(cognitoClaims['jti']).not.toBe(localClaims['jti']);
-  expect(localClaims['sub']).toBe(userId);
-  expect(cognitoClaims['sub']).toBe(stub.users.get(EMAIL)?.sub);
-  expect(cognitoClaims['sub']).not.toBe(userId);
-  expect(cognitoClaims).toMatchObject({
+  expect(claims).toMatchObject({
     email: EMAIL,
     tenant_id: tenantId,
     role: 'recruiter',
     aud: 'talon-api',
   });
-  // The session payload the client sees is `users.id`-shaped either way, so the
-  // web app cannot tell which provider is configured.
-  expect(viaCognito.user).toEqual(viaLocal.user);
-  expect(viaCognito.user.id).toBe(userId);
+
+  // The subject is the IdP's, never `users.id` — see `session.ts`. This is the
+  // one value that is provider-specific (spec 001 §6.2's nuance).
+  expect(claims['sub']).toBe(stub.users.get(EMAIL)?.sub);
+  expect(claims['sub']).not.toBe(userId);
+
+  // The session payload the client sees stays `users.id`-shaped, so nothing in
+  // apps/web has to know which provider issued the credential.
+  expect(signedIn.user.id).toBe(userId);
+  expect(signedIn.user).toEqual({
+    id: userId,
+    tenantId,
+    email: EMAIL,
+    name: 'Cognito Probe',
+    role: 'recruiter',
+    timezone: 'UTC',
+  });
 });
 
 /**
@@ -382,19 +376,17 @@ it('reads tenant_id and role from OUR users table, not from Cognito', async () =
   expect(after['sub']).toBe(before['sub']);
 });
 
-it('the bearer token means the same thing whichever provider is configured', async () => {
+it('verifies the bearer token it just minted', async () => {
   const sub = await provision();
-  const viaCognito = authenticated(
+  const signedIn = authenticated(
     await cognito.cradle.identityProvider.initiatePasswordAuth(EMAIL, PASSWORD),
   );
-  // Both mint and verify with the same secret, issuer and audience — because it
-  // is one function (`session.ts`). Verified by BOTH providers is the point: the
-  // bearer token does not change meaning when the env var flips.
-  for (const provider of [local, cognito]) {
-    await expect(
-      provider.cradle.identityProvider.verifyToken(viaCognito.tokens.accessToken),
-    ).resolves.toMatchObject({ sub, email: EMAIL });
-  }
+  // Minting and verification are separate code paths that only agree because
+  // they read the same `AuthConfig`; a mismatch in secret, issuer or audience is
+  // a deployment that signs people in and then 401s them.
+  await expect(
+    cognito.cradle.identityProvider.verifyToken(signedIn.tokens.accessToken),
+  ).resolves.toMatchObject({ sub, email: EMAIL });
 });
 
 it('refuses a bearer token it did not mint', async () => {
@@ -410,29 +402,40 @@ it('refuses a bearer token it did not mint', async () => {
 });
 
 /**
- * Flipping TALON_IDENTITY_PROVIDER is an env change AND a re-provision, because
- * `users.external_id` is exclusive by design. The failure has to happen at the
- * door: before this guard the local provider minted a token that signed in
- * perfectly and then 401'd on every subsequent request, so the user saw
+ * `users.external_id` is exclusive by design (migration 0004), so a person whose
+ * row does not point at the subject Cognito issued cannot sign in — and the
+ * failure has to happen AT THE DOOR. Before this guard, sign-in minted a token
+ * that worked once and then 401'd on every subsequent request, so the user saw
  * "signed in" immediately followed by "session invalid" and nothing named why.
+ *
+ * The half of this that used to be demonstrated by flipping to the local
+ * provider is now demonstrated by pointing `external_id` at the wrong subject,
+ * which is the same state a half-finished re-provision leaves behind.
  */
-it('refuses a local sign-in for someone currently provisioned against Cognito', async () => {
-  await local.cradle.identityProvider.createUser({ email: EMAIL, password: PASSWORD, sub: userId });
-  await expect(
-    local.cradle.identityProvider.initiatePasswordAuth(EMAIL, PASSWORD),
-  ).resolves.toMatchObject({ status: 'authenticated' });
-
-  // Now point the same person at Cognito. The stale local credential must stop
-  // working, rather than minting an unusable token.
+it('refuses a sign-in whose subject our users table does not point at', async () => {
   await provision();
   await expect(
-    local.cradle.identityProvider.initiatePasswordAuth(EMAIL, PASSWORD),
+    cognito.cradle.identityProvider.initiatePasswordAuth(EMAIL, PASSWORD),
+  ).resolves.toMatchObject({ status: 'authenticated' });
+
+  // A stale external_id — an old pool's sub, or a re-provision that wrote the
+  // credential and died before the users update.
+  await setExternalId(randomUUID());
+  await expect(
+    cognito.cradle.identityProvider.initiatePasswordAuth(EMAIL, PASSWORD),
   ).rejects.toMatchObject({ code: 'user_not_provisioned' });
 
-  // Re-provisioning locally (what `seed:identities` does) restores it.
-  await setExternalId(null);
+  // `users.id` is NOT a fallback subject once external_id is set to anything —
+  // that exclusivity is what stops IdP revocation being toothless.
+  await setExternalId(userId);
   await expect(
-    local.cradle.identityProvider.initiatePasswordAuth(EMAIL, PASSWORD),
+    cognito.cradle.identityProvider.initiatePasswordAuth(EMAIL, PASSWORD),
+  ).rejects.toMatchObject({ code: 'user_not_provisioned' });
+
+  // Re-running `seed:identities` restores it.
+  await provision();
+  await expect(
+    cognito.cradle.identityProvider.initiatePasswordAuth(EMAIL, PASSWORD),
   ).resolves.toMatchObject({ status: 'authenticated' });
 });
 

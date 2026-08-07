@@ -15,9 +15,11 @@ Written retrospectively: the adapter was built from a task brief and six commits
 
 ## 2. Scope
 
-**In:** `users.external_id` (migration 0004) and a text-typed `auth_user_by_sub`; `CognitoIdentityProvider`; a JWKS verifier; `session.ts` as the single source of the §6.2 claim shape; provider selection by env var; a network-level Cognito stub so the suite needs no AWS.
+**In:** `users.external_id` (migration 0004) and a text-typed `auth_user_by_sub`; `CognitoIdentityProvider`; a JWKS verifier; `session.ts` as the single source of the §6.2 claim shape; a network-level Cognito stub so the suite needs no AWS; **the removal of `LocalIdentityProvider`** (open question 1, answered "Cognito only" — see §10).
 
-**Out:** the pre-token-generation Lambda; Terraform for the pool (`002-infrastructure.md`); SSO and hosted-UI flows (spec 003); removing `LocalIdentityProvider`.
+**Out:** the pre-token-generation Lambda; Terraform for the pool (`002-infrastructure.md`); SSO and hosted-UI flows (spec 003); dropping `local_identities` and `auth_user_by_email` from the schema (spec 003 §6 — a table of password hashes goes in a migration with a rollback story, not as a footnote to a code change).
+
+**Scope amendment, 2026-08-08.** "Provider selection by env var" and "removing `LocalIdentityProvider`" swapped sides. There is nothing left to select between, so `TALON_IDENTITY_PROVIDER` no longer chooses anything: it accepts `cognito` or nothing at all, and rejects every other value — `local` loudest of all — so a stale `.env` fails at boot instead of silently getting a Cognito deployment it did not ask for.
 
 ## 3. The decision: Cognito is the credential authority, Talon is the session authority
 
@@ -49,15 +51,21 @@ The `is null` is load-bearing: a user reachable by both subjects is a user whose
 
 ## 6. Configuration
 
-`TALON_IDENTITY_PROVIDER` selects the implementation; **local remains the default** so nothing changes for anyone without AWS. Cognito mode additionally requires `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID`, a region, and `TALON_JWT_SECRET`.
+**Rewritten 2026-08-08, when open question 1 was answered.** There is no provider to select. `loadConfig` requires `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID`, a region (`COGNITO_REGION`, falling back to `AWS_REGION`/`AWS_DEFAULT_REGION` because ECS already sets it), and `TALON_JWT_SECRET`. Any of them missing — or whitespace, which counts as unset — stops the process at boot.
 
-That last one is a security fix, not a convenience: the secret guard previously only fired on `NODE_ENV=production`, so a staging deployment against a real pool would have signed every token with the constant published in this repo — forgeable for any tenant and any role. Boot now refuses `cognito` unless a **real** key is supplied — the published constant is rejected even when named explicitly, and whitespace counts as unset. A presence-only check would be satisfied by an operator pasting the value they found in `config.ts`, which is the exact outcome the guard exists to prevent.
+**No fallback, on purpose.** The obvious alternative, "start anyway and fail at first sign-in", produces a deployment that looks healthy, passes a readiness probe and cannot authenticate a single person. A pool-id typo has to be a boot failure, not a 500 per login.
+
+`TALON_IDENTITY_PROVIDER` survives only as a tripwire: `cognito` or unset is accepted, everything else throws, and `local` is called out by name in the message. Deleting the variable outright would have made a stale `TALON_IDENTITY_PROVIDER=local` silently ignored — the same class of mistake as the old "anything that is not `cognito` is local" coercion, pointing the other way.
+
+`TALON_JWT_SECRET` is a security fix, not a convenience: the guard previously only fired on `NODE_ENV=production`, so a staging deployment against a real pool would have signed every token with the constant published in this repo — forgeable for any tenant and any role. It is now required unconditionally, because Cognito is now unconditional and Cognito does not replace it: the pool proves the credential, Talon mints the §6.2 bearer token. The published constant is rejected even when named explicitly. A presence-only check would be satisfied by an operator pasting the value they found in `config.ts`, which is the exact outcome the guard exists to prevent.
+
+**What this costs, and where it is written down.** Spec 001 §12's "yields a working jobs list from nothing" is now "from nothing plus an AWS account", §5.4 acceptance 1 is annotated, and §10's E2E flow no longer signs in with a local provider. All three are amended in place rather than left to lie.
 
 ## 7. Testing
 
 The Cognito boundary is stubbed at the **network** layer — the SDK is pointed at a local `node:http` server speaking AWS JSON 1.1, and JWKS is intercepted at `globalThis.fetch` — so the real serialiser, signer, deserialiser and retry middleware all execute. Verified green with every `AWS_*` variable unset and the credential files pointed at nonexistent paths.
 
-This matters more than a convenience: if `LocalIdentityProvider` is ever removed, that stub becomes the only way `pnpm test` runs without AWS, and it stops being a test helper and becomes load-bearing infrastructure.
+**That happened.** With `LocalIdentityProvider` removed (§10 open question 1), `cognito-stub.ts` is the only way `pnpm test` runs without AWS: it stopped being a test helper and became load-bearing infrastructure, and it is commented as such. It also now blanks `AWS_PROFILE`, `AWS_CONFIG_FILE`, `AWS_SHARED_CREDENTIALS_FILE` and disables IMDS, so a developer's ambient credentials can be neither the reason the suite passes nor a route to a real pool from CI. Re-verified green on 2026-08-08 with every `AWS_*` variable unset, the credential files pointed at nonexistent paths and `HOME`/`USERPROFILE` pointed at a directory that does not exist: 152 tests, 12 files.
 
 ## 8. Accepted divergences from spec 001
 
@@ -75,7 +83,7 @@ This matters more than a convenience: if `LocalIdentityProvider` is ever removed
 
 ## 10. Open questions
 
-1. **Does `LocalIdentityProvider` stay?** Answered verbally "Cognito only", not yet implemented. Removing it touches ~20 files across three owners, breaks `pnpm db:seed && pnpm dev` without AWS, and makes spec 001 §12's definition of done false. Owner: Aditi.
+1. **Does `LocalIdentityProvider` stay?** **Answered "Cognito only" and implemented 2026-08-08.** `local-provider.ts` is deleted, along with `password.ts` and `totp.ts` (both had no other caller — Cognito holds the credential, and its TOTP enrolment is session-scoped and returns 501, see §8.2), the local credential-store methods on `IdentityRepository`, `issueTokens`/`issueRefreshToken` (Talon never mints a refresh token; Cognito's is opaque and Cognito owns the exchange), and `AuthConfig.refreshAudience`/`refreshTtlSeconds` with them. `CreateUserInput.sub` went too. `local_identities` and `auth_user_by_email` stay in the database with no readers — see §2. The cost is recorded in spec 001 §5.4, §6.1, §10 and §12.
 2. **`AccessTokenClaimsSchema.sub` is `z.string().uuid()`.** A Cognito sub satisfies it; a SAML `NameID` will not. Must loosen before per-tenant SAML. Owner: Aditi.
 3. **No client secret on the app client.** Fine for admin flows from a trusted server, but `SECRET_HASH` is unimplemented, so adding one later is a code change. Decide before Terraform owns the pool. Owner: infra.
 4. **The pool is hand-built and throwaway** (`us-east-1_08d7fh6x5`). Terraform does not know about it. Owner: infra.
@@ -88,5 +96,5 @@ This matters more than a convenience: if `LocalIdentityProvider` is ever removed
 - [x] End to end under Cognito: sign in → `GET /v1/jobs` → six-job table, `band` gated by role
 - [x] Suite passes with zero AWS credentials
 - [ ] Reviewed per CLAUDE.md §8
-- [ ] Open question 1 answered and reflected in code
+- [x] Open question 1 answered and reflected in code (2026-08-08)
 - [ ] Pool owned by Terraform, not the CLI

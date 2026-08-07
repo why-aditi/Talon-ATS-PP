@@ -13,10 +13,9 @@
  * switch that turns tenant filtering off.
  */
 import { afterAll, beforeAll, expect, it } from 'vitest';
-import { loadConfig } from '../src/config.js';
 import { buildContainer } from '../src/container.js';
 import type { TenantTransaction } from '../src/request-context.js';
-import { loadFixtures, startApp, type Fixtures, type TestApp } from './helpers.js';
+import { loadFixtures, startApp, testConfig, type Fixtures, type TestApp } from './helpers.js';
 import { OWNER_URL } from './urls.js';
 
 let test: TestApp;
@@ -77,7 +76,7 @@ it('an unfiltered read of every tenant-scoped table returns only the caller’s 
 it('the api refuses to run on a connection that bypasses RLS', async () => {
   // §11b's actual danger: a service pointed at the owner connection nullifies
   // every policy above, and nothing else in the system notices.
-  const container = buildContainer(loadConfig({ API_DATABASE_URL: OWNER_URL }));
+  const container = buildContainer({ ...testConfig(), databaseUrl: OWNER_URL });
   try {
     await expect(
       container.cradle.identityService.openTenantTransaction(

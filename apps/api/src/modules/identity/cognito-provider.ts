@@ -7,11 +7,10 @@
  * ── The design decision, and why ───────────────────────────────────────────
  *
  * §6.2 fixes one claim shape for every implementation, and says `tenant_id` and
- * `role` are never stored on the identity provider: locally the stub reads them
- * from `users` at sign-in, and in AWS the pre-token-generation Lambda does the
- * same. **That Lambda does not exist yet.** A raw Cognito token therefore
- * carries no `tenant_id` and no `role`, and CLAUDE.md §4 forbids the obvious
- * shortcut — a custom pool attribute is immutable, forces a pool replacement on
+ * `role` are never stored on the identity provider: the pre-token-generation
+ * Lambda is supposed to read them from `users` at sign-in. **That Lambda does
+ * not exist yet.** A raw Cognito token therefore carries no `tenant_id` and no
+ * `role`, and CLAUDE.md §4 forbids the obvious shortcut — a custom pool attribute is immutable, forces a pool replacement on
  * any schema diff, and destroys every user with it.
  *
  * So: **Cognito is the credential authority, Talon is the session authority.**
@@ -21,8 +20,8 @@
  *           → the verified `sub` selects our `users` row, via
  *             `users.external_id` (migration 0004)
  *           → we mint the §6.2 access token from that row, with `session.ts`,
- *             the same function the local provider calls, carrying the Cognito
- *             `sub` as its subject
+ *             the one function every provider mints through, carrying the
+ *             Cognito `sub` as its subject
  *
  * That last clause is load-bearing and cost a live-run failure to learn:
  * `auth_user_by_sub` resolves `users.id` only where `external_id is null`, so a
@@ -121,10 +120,11 @@ function nameOf(error: unknown): string {
 
 /**
  * Sign-in failures that must be indistinguishable to the caller. `UserNotFound`
- * is in here for the same reason the local provider burns a hash verification on
- * an unknown email: anything else is an account-enumeration oracle. (The pool
- * also sets `PreventUserExistenceErrors`, but that only covers the unauthenticated
- * `InitiateAuth`; the admin flows answer honestly and we have to not pass it on.)
+ * is in here because anything else is an account-enumeration oracle: an unknown
+ * address and a wrong password must be one answer, indistinguishable in status,
+ * type and detail. (The pool also sets `PreventUserExistenceErrors`, but that
+ * only covers the unauthenticated `InitiateAuth`; the admin flows answer
+ * honestly and we have to not pass it on.)
  */
 const CREDENTIAL_FAILURES = new Set([
   'NotAuthorizedException',
@@ -171,8 +171,7 @@ export class CognitoIdentityProvider implements IdentityProvider {
   }
 
   /**
-   * Verifies OUR access token, identically to the local provider — see the
-   * header. Under the Lambda this becomes `this.#accessTokens.verify(token)`
+   * Verifies OUR access token — see the header for why we mint one at all. Under the Lambda this becomes `this.#accessTokens.verify(token)`
    * against the same JWKS machinery `#idTokens` already uses.
    */
   async verifyToken(token: string): Promise<VerifiedIdentity> {
@@ -201,9 +200,6 @@ export class CognitoIdentityProvider implements IdentityProvider {
    * needs either RLS bypass or a `security definer` *writer*, and neither
    * belongs in the request process (§11b). `scripts/seed-identities.ts` does it
    * over the owner connection, where operator provisioning belongs.
-   *
-   * `input.sub` is ignored. It is documented on `CreateUserInput` as local-only,
-   * and honouring it here would mean claiming a subject Cognito did not issue.
    */
   async createUser(input: CreateUserInput): Promise<{ sub: string }> {
     let sub: string;
@@ -229,9 +225,9 @@ export class CognitoIdentityProvider implements IdentityProvider {
       // `nameOf` states: one mechanism for every Cognito error, and an
       // `instanceof` also fails silently if two copies of the SDK are resolved.
       if (nameOf(err) !== 'UsernameExistsException') throw err;
-      // Re-provisioning an existing person is not an error — the local provider
-      // upserts on email for the same reason. Cognito keeps the original sub,
-      // which is exactly what `users.external_id` already points at.
+      // Re-provisioning an existing person is not an error: `seed:identities` is
+      // re-runnable by design. Cognito keeps the original sub, which is exactly
+      // what `users.external_id` already points at.
       const existing = await this.#client.send(
         new AdminGetUserCommand({
           UserPoolId: this.#cognito.userPoolId,
@@ -266,8 +262,8 @@ export class CognitoIdentityProvider implements IdentityProvider {
     // Talon's MFA policy lives in our table, not the pool (ARCHITECTURE §9.4:
     // TOTP is OPTIONAL at the pool level precisely so the application decides).
     // Reaching here with `mfa_enabled` set means Cognito did not challenge,
-    // i.e. nothing is enrolled — the same fail-closed branch the local provider
-    // takes when `local_identities.totp_secret` is null.
+    // i.e. nothing is enrolled. Fail closed: a password alone must not satisfy a
+    // policy that says it must not.
     if (user.mfaEnabled) {
       throw new IdentityFailure('mfa_not_enrolled', 'This account requires an authenticator app.');
     }
@@ -325,10 +321,9 @@ export class CognitoIdentityProvider implements IdentityProvider {
         /*
          * Carried forward, because Cognito returns no new one here.
          *
-         * DEVIATION from spec 001 open question 2 ("30d refresh, sliding"). The
-         * local provider mints a fresh 30-day token on every exchange, so an
-         * active session never expires. Cognito only rotates when the app client
-         * has refresh token rotation enabled — and with rotation enabled BOTH
+         * DEVIATION from spec 001 open question 2 ("30d refresh, sliding"),
+         * whose 2026-08-08 amendment records this. Cognito only rotates when the
+         * app client has refresh token rotation enabled — and with rotation enabled BOTH
          * `AdminInitiateAuth` and `InitiateAuth` answer
          * `UnsupportedOperationException: This API does not support refresh
          * token rotation`. Verified against a real pool, both flows. Rotation is
@@ -417,8 +412,8 @@ export class CognitoIdentityProvider implements IdentityProvider {
       switch (output.ChallengeName) {
         case 'SOFTWARE_TOKEN_MFA':
         case 'SELECT_MFA_TYPE':
-          // Mirrors the local provider exactly: the service turns this into a
-          // 401 `mfa-required`, because M0a has no screen to collect the code.
+          // The service turns this into a 401 `mfa-required`, because M0a has no
+          // screen to collect the code.
           return { status: 'challenge', answer: { status: 'mfa_required', challenge: 'totp' } };
         case 'MFA_SETUP':
           throw new IdentityFailure(

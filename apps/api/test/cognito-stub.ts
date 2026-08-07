@@ -1,6 +1,22 @@
 /**
  * A fake Cognito, stubbed at the NETWORK layer (CLAUDE.md §6).
  *
+ * ── LOAD-BEARING ───────────────────────────────────────────────────────────
+ * `LocalIdentityProvider` is gone (spec 002 open question 1), so Cognito is the
+ * only identity provider and this file is the ONLY reason `pnpm test` runs
+ * without an AWS account. It is no longer a test convenience: if it breaks, the
+ * suite does not degrade — it either cannot authenticate at all, or it starts
+ * talking to a real user pool from CI. Both failure modes are worse than a red
+ * test, so treat a change here with the care of production code:
+ *
+ *   - Every fetch that is not the pool's JWKS URL THROWS. That is deliberate:
+ *     an un-stubbed call must be a loud failure, never a silent request to AWS.
+ *   - The AWS credentials it exports are dummies. The suite is verified green
+ *     with every `AWS_*` variable unset and `AWS_CONFIG_FILE` /
+ *     `AWS_SHARED_CREDENTIALS_FILE` pointed at paths that do not exist.
+ *   - It rejects a request addressed at the wrong pool or client, so a command
+ *     built without `UserPoolId`/`ClientId` fails here rather than only in AWS.
+ *
  * Two boundaries, both intercepted where the bytes leave the process rather than
  * where the code is convenient to mock:
  *
@@ -148,7 +164,14 @@ export class CognitoStub {
     this.#setEnv('AWS_ACCESS_KEY_ID', 'stub-access-key');
     this.#setEnv('AWS_SECRET_ACCESS_KEY', 'stub-secret-key');
     this.#setEnv('AWS_SESSION_TOKEN', undefined);
+    // A developer's ambient profile must not be able to make the suite pass —
+    // nor to make it reach a real pool. Point the credential resolution chain at
+    // nothing, and turn IMDS off so a machine with an instance role cannot be
+    // the difference between green and red.
     this.#setEnv('AWS_PROFILE', undefined);
+    this.#setEnv('AWS_CONFIG_FILE', '/nonexistent/talon-suite/config');
+    this.#setEnv('AWS_SHARED_CREDENTIALS_FILE', '/nonexistent/talon-suite/credentials');
+    this.#setEnv('AWS_EC2_METADATA_DISABLED', 'true');
 
     this.#previousFetch = globalThis.fetch;
     const jwksUri = this.jwksUri;

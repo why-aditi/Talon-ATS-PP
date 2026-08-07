@@ -10,14 +10,32 @@
 import postgres from 'postgres';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { loadFixtures, type Fixtures } from './helpers.js';
-import { APP_URL } from './urls.js';
+import { APP_URL, OWNER_URL } from './urls.js';
 
 let sql: postgres.Sql;
 let fixtures: Fixtures;
+/**
+ * The recruiter's TOKEN SUBJECT, which is not the same thing as their id: other
+ * files in this suite provision against the fake pool and write
+ * `users.external_id`, and `auth_user_by_sub` matches `users.id` only where
+ * `external_id is null` (migration 0004). Reading it here rather than assuming
+ * keeps this file order-independent.
+ */
+let subject: string;
 
 beforeAll(async () => {
   fixtures = await loadFixtures();
   sql = postgres(APP_URL, { max: 1, onnotice: () => {} });
+  const owner = postgres(OWNER_URL, { max: 1, onnotice: () => {} });
+  try {
+    const [row] = await owner<{ sub: string }[]>`
+      select coalesce(external_id, id::text) as sub from users
+      where id = ${fixtures.talon.recruiter.id}::uuid`;
+    if (!row) throw new Error('seed is missing the recruiter');
+    subject = row.sub;
+  } finally {
+    await owner.end();
+  }
 });
 
 afterAll(async () => {
@@ -51,7 +69,7 @@ it('the bootstrap function returns exactly the one row sign-in needs', async () 
 it('the bootstrap functions expose no password material and no other columns', async () => {
   const columns = Object.keys(
     (await sql<Record<string, unknown>[]>`
-      select * from auth_user_by_sub(${fixtures.talon.recruiter.id}::text)`)[0] ?? {},
+      select * from auth_user_by_sub(${subject}::text)`)[0] ?? {},
   ).sort();
   expect(columns).toEqual([
     'email',

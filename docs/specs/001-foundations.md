@@ -136,7 +136,7 @@ A second tenant with its own jobs and candidates is seeded for isolation testing
 The screen's percentages are exactly the ratios of a 38-application population (16/38 = 42%, 8/38 = 21%, 3/38 = 8%), matching the jobs list's "38 active" — so the kanban's funnel bar agrees with the jobs list and disagrees with the nine cards drawn beside it on the same screen. The four column medians reproduce exactly from the nine, which confirms the panel is ENG-204-scoped rather than tenant-wide. Step 5's reference-screen comparison will differ in these three cells and only these; that is expected, not a regression.
 
 **Acceptance:**
-1. `pnpm db:migrate && pnpm db:seed` from empty produces a database whose derived metrics match the reference screens.
+1. `pnpm db:migrate && pnpm db:seed` from empty produces a database whose derived metrics match the reference screens. **Amended 2026-08-08:** the seed still needs nothing but Postgres, but it writes `users` rows and no credentials, so the seeded people cannot *sign in* until `pnpm --filter api seed:identities` has run against a real Cognito pool. `LocalIdentityProvider` is gone (spec 002 open question 1), so there is no offline credential store for it to write to. "From empty" now means "from empty plus an AWS account" the moment a person has to authenticate — see §12.
 2. Tenant-isolation suite passes.
 3. **Pooled-connection leak test** passes: with a max-1 connection pool, request as tenant A, then tenant B, on the same physical connection — B must never see A's rows. This is the test that catches `SET` where `SET LOCAL` was required.
 4. Migrations are reversible; `down` then `up` is clean.
@@ -155,12 +155,14 @@ interface IdentityProvider {
 }
 ```
 
-Two implementations: `LocalIdentityProvider` (dev/test — signs JWTs with a local key, stores password hashes in a `local_identities` table) and `CognitoIdentityProvider` (spec 002). **Nothing outside `modules/identity/` imports either concrete class.**
+Two implementations were built: `LocalIdentityProvider` (dev/test — signed JWTs with a local key, stored password hashes in a `local_identities` table) and `CognitoIdentityProvider` (spec 002). **Nothing outside `modules/identity/` imports a concrete class.**
+
+**Amended 2026-08-08 — `LocalIdentityProvider` is removed** (spec 002 open question 1, answered "Cognito only"). `CognitoIdentityProvider` is the only implementation, there is no provider-selection branch, and `loadConfig` refuses to boot without a pool id, a client id, a region and a real `TALON_JWT_SECRET` rather than degrading to something that cannot authenticate anyone. The seam stays — spec 003's SSO flows sit behind it, and `apps/api/test/cognito-stub.ts` substitutes the *network* rather than the class, which is what keeps `pnpm test` runnable with zero AWS credentials. `local_identities` and `auth_user_by_email` are deliberately left in the database with no readers; dropping a table of password hashes is a migration with a rollback story, and spec 003 §6 owns it.
 
 Step-4 notes on the interface as built:
 - A **sixth method, `refreshSession(refreshToken)`**, was added. Open question 2 answered "30d refresh, sliding", and a refresh token nothing can redeem is worse than none; the exchange has to sit behind the same seam as the issue. Cognito implements the exchange natively (`REFRESH_TOKEN_AUTH`), though not the *sliding* part — see open question 2's amendment.
 - `initiatePasswordAuth` returns a discriminated `AuthResult`, `authenticated` or `mfa_required`, mirroring Cognito's challenge flow. M0a has no screen for the challenge, so a user with `mfa_enabled` gets a 401 `urn:talon:error:mfa-required` — fail closed rather than inventing an unspecced exchange.
-- `CreateUserInput` carries an optional `sub` for the local provider only. **Superseded by migration 0004 (spec 002):** `users.external_id` now exists, and `auth_user_by_sub` resolves it first, falling back to `users.id` **only where `external_id is null`**. That exclusivity is deliberate — a user reachable by both subjects is a user whose IdP revocation does nothing — and it means one person has exactly one sign-in method.
+- `CreateUserInput` carried an optional `sub` for the local provider only. **Superseded by migration 0004 (spec 002):** `users.external_id` now exists, and `auth_user_by_sub` resolves it first, falling back to `users.id` **only where `external_id is null`**. That exclusivity is deliberate — a user reachable by both subjects is a user whose IdP revocation does nothing — and it means one person has exactly one sign-in method. The field itself was removed with the local provider: asking an IdP to adopt a subject we chose means claiming an identity it never issued.
 - The concrete class is named in exactly one file (`modules/identity/container.ts`), and `no-restricted-imports` now bans every module-internal path outside its own folder, so the lint graph backs the rule rather than the convention.
 
 ### 6.2 Claim shape — identical in both implementations
@@ -508,7 +510,7 @@ TOTP enrollment, SSO domain discovery, password reset and sign-up are M1.
 | Boundary | The three lint failures + the route-manifest test from §4.5 |
 | Isolation | Step 3: every tenant-scoped table as a hostile tenant → empty (packages/db, runs under `pnpm test`). **Step 4 (not step 5) moved `pnpm test:isolation` to the endpoint suite** in `apps/api`, per CLAUDE.md §6 ("runs every endpoint as a hostile tenant — must be 404 across the board"): a protected route with no hostile-tenant case fails the gate rather than being skipped |
 | Contract | OpenAPI generated matches committed snapshot |
-| E2E (Playwright) | Sign in with the local provider → jobs list renders seeded jobs → filter by status → filter by department → empty-filter state → sign out |
+| E2E (Playwright) | Sign in against Cognito → jobs list renders seeded jobs → filter by status → filter by department → empty-filter state → sign out. **Amended 2026-08-08:** was "sign in with the local provider", which no longer exists. The run needs a reachable user pool and `pnpm --filter api seed:identities`; the `cognito-stub.ts` network stub covers the unit/integration suites but not a browser driving a real server, so E2E is the one gate that acquires an AWS dependency here. Recorded rather than quietly dropped |
 | a11y | `axe` on the jobs list, zero violations |
 
 CI gates, all blocking, each wired in the step that first has something for it to guard:
@@ -553,7 +555,7 @@ Belt and braces on the other side: `beginTenantTransaction` refuses to open a tr
 
 - [ ] All step acceptance criteria met
 - [ ] CI gates green on a clean clone — every gate whose step has landed, per the §10 table
-- [ ] `docker compose up && pnpm db:migrate && pnpm db:seed && pnpm dev` yields a working jobs list from nothing
+- [ ] `docker compose up && pnpm db:migrate && pnpm db:seed && pnpm dev` yields a working jobs list from nothing. **Amended 2026-08-08 — this is now false as written, deliberately.** With `LocalIdentityProvider` removed (spec 002 open question 1) the sequence is `docker compose up && pnpm db:migrate && pnpm db:seed && pnpm --filter api seed:identities && pnpm dev`, and it requires a Cognito user pool, AWS credentials, `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID`, a region and a real `TALON_JWT_SECRET`. The criterion is "from nothing **plus an AWS account**". This was the known cost of answering open question 1 and it is written down rather than discovered: the alternative was keeping a second credential path that nothing in production would ever exercise. `pnpm test` is unaffected — `apps/api/test/cognito-stub.ts` stubs the pool at the network layer and the suite is verified green with every `AWS_*` variable unset.
 - [ ] The three boundary violations demonstrably fail, then are removed
 - [ ] Open questions 1 and 2 answered and reflected in code
 - [ ] Spec updated in place if reality diverged — a spec that lies is worse than no spec

@@ -2,21 +2,21 @@
  * Talon's own session tokens — the §6.2 claim shape, minted from one `users`
  * row by one function.
  *
- * This file exists because §6.2 says the claim shape is *identical in both
- * implementations*, and two providers each building their own claims object is a
+ * This file exists because §6.2 says the claim shape is *identical in every
+ * implementation*, and a provider that builds its own claims object is a
  * promise, not a guarantee: the day someone adds a claim to one of them, the
- * shape silently forks. Here it is structural — `LocalIdentityProvider` and
- * `CognitoIdentityProvider` call the same function over the same `UserRecord`,
- * so "identical" is not something a test has to keep re-proving.
+ * shape silently forks. Here it is structural — every provider mints through
+ * this one function over the same `UserRecord`, so "identical" is not something
+ * a test has to keep re-proving. It stayed after `LocalIdentityProvider` was
+ * removed for exactly that reason: spec 003 adds SSO flows behind the same seam.
  *
  * `tenant_id` and `role` are read from the `users` row and from nowhere else.
- * Neither provider stores them on the identity provider, which is the whole
- * point: the IdP answers "who is this", our database answers "what may they do"
- * (ARCHITECTURE §9.4).
+ * The provider does not store them, which is the whole point: the IdP answers
+ * "who is this", our database answers "what may they do" (ARCHITECTURE §9.4).
  */
-import type { AuthTokens, SessionUser } from '@talon/contracts';
+import type { SessionUser } from '@talon/contracts';
 import type { AuthConfig } from '../../config.js';
-import { newJti, nowSeconds, signJwt } from './jwt.js';
+import { newJti, signJwt } from './jwt.js';
 import type { UserRecord } from './repository.js';
 
 export function toSessionUser(user: UserRecord): SessionUser {
@@ -46,19 +46,11 @@ export function toSessionUser(user: UserRecord): SessionUser {
  * the first live run against a real pool did.
  *
  * The subject is therefore "whatever this deployment's identity provider calls
- * this person": `users.id` locally, the Cognito `sub` under Cognito. Callers:
- *   - `LocalIdentityProvider` (via `issueTokens`) → `user.id`
- *   - `CognitoIdentityProvider` → the `sub` from the verified Cognito id token
+ * this person" — under Cognito, the `sub` from the verified id token.
  *
  * Nothing downstream assumes `claims.sub === users.id`; `resolveTenant` goes
  * through the lookup and puts `users.id` on `request.user` itself. That should
  * stay true.
- *
- * Known limit: `AccessTokenClaimsSchema.sub` is `z.string().uuid()`, which a
- * Cognito sub satisfies. `users.external_id` is `text` because a future SAML
- * NameID is not a UUID, so that contract has to loosen before a non-UUID subject
- * can sign in. Recorded rather than pre-emptively loosened — today it would only
- * weaken validation of tokens we mint ourselves.
  */
 export function issueAccessToken(
   user: UserRecord,
@@ -82,40 +74,13 @@ export function issueAccessToken(
   );
 }
 
-/**
- * Sliding: every refresh returns a new 30-day token, so an active session never
- * expires and an idle one dies on schedule (spec 001 open question 2).
- *
- * Only the local provider mints these. Cognito issues its own refresh token and
- * owns the exchange, which is what makes disabling a user at the IdP actually
- * end their session — see `cognito-provider.ts`.
+/*
+ * There is no `issueRefreshToken` here any more, and its absence is deliberate.
+ * Talon never mints a refresh token: Cognito issues one and owns the exchange,
+ * which is what makes `AdminUserGlobalSignOut` or disabling a user actually end
+ * a session, within one access-token lifetime rather than thirty days. The
+ * refresh token that reaches `POST /v1/auth/refresh` is Cognito's opaque string,
+ * not a JWT — nothing here can or should verify it. See `cognito-provider.ts`,
+ * and spec 001 open question 2's 2026-08-08 amendment for what that costs (the
+ * 30-day window is absolute from sign-in, not sliding).
  */
-export function issueRefreshToken(user: UserRecord, config: AuthConfig, iat: number): string {
-  return signJwt(
-    {
-      sub: user.id,
-      email: user.email,
-      iss: config.issuer,
-      aud: config.refreshAudience,
-      iat,
-      exp: iat + config.refreshTtlSeconds,
-      jti: newJti(),
-    },
-    config.secret,
-  );
-}
-
-/**
- * The local provider's pair. Its token subject IS `users.id` — the local
- * identity store is keyed on it and `users.external_id` stays null, which is the
- * case `auth_user_by_sub`'s fallback exists for.
- */
-export function issueTokens(user: UserRecord, config: AuthConfig): AuthTokens {
-  const iat = nowSeconds();
-  return {
-    accessToken: issueAccessToken(user, config, iat, user.id),
-    refreshToken: issueRefreshToken(user, config, iat),
-    tokenType: 'Bearer',
-    expiresIn: config.accessTtlSeconds,
-  };
-}
