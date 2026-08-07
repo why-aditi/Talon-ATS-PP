@@ -94,8 +94,14 @@ export class IdentityRepository {
     return toUser(rows[0]);
   }
 
+  /**
+   * `::text`, not `::uuid`. Migration 0004 retyped the parameter and dropped the
+   * uuid overload deliberately: a Cognito sub is the IdP's string, and casting it
+   * client-side would raise 22P02 on any non-UUID subject (a SAML NameID, a
+   * hostile token) before the function's own guard could return zero rows.
+   */
   async findUserBySub(sub: string): Promise<UserRecord | null> {
-    const rows = await this.#sql<UserRow[]>`select * from auth_user_by_sub(${sub}::uuid)`;
+    const rows = await this.#sql<UserRow[]>`select * from auth_user_by_sub(${sub}::text)`;
     return toUser(rows[0]);
   }
 

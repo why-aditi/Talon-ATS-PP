@@ -49,6 +49,12 @@ export const users = pgTable('users', {
   mfaEnabled: boolean('mfa_enabled').notNull().default(false),
   // Tokens with iat before this are rejected by the auth chain; null = all valid.
   tokensValidAfter: timestamp('tokens_valid_after', { withTimezone: true }),
+  // Identity provider subject (migration 0004): Cognito's `sub`, a SAML NameID.
+  // Null for local-provider users, whose token subject IS users.id — that is the
+  // branch auth_user_by_sub() takes when this is null. Globally unique (the IdP
+  // subject space is not tenant-scoped) and case-sensitive text, not citext; the
+  // migration carries the reasoning.
+  externalId: text('external_id'),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });

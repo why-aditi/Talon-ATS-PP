@@ -11,6 +11,7 @@
     "seed:identities": "tsx src/scripts/seed-identities.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-cognito-identity-provider": "^3.1106.0",
     "@talon/contracts": "workspace:*",
     "@talon/db": "workspace:*",
     "@talon/domain": "workspace:*",
