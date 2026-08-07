@@ -32,6 +32,10 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   await app.register(publicRoutes, { prefix: '/v1' }); // /healthz, /readyz, /auth/* (step 4)
 
+  // VIOLATION FIXTURE 3: route registered outside the authenticated scope and
+  // not in PUBLIC_ROUTES — the manifest test must name it.
+  app.get('/v1/rogue', async () => ({ leaked: true }));
+
   await app.register(
     async (scoped) => {
       scoped.addHook('onRequest', authenticate);
