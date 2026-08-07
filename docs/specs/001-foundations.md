@@ -86,6 +86,13 @@ Later-milestone tables are **not** created now. An empty table is an invitation 
 
 Step-3 notes: `stage_templates` had no DDL in any doc — built minimally as an ordered `stages jsonb` array copied into `job_stages` at job creation (ARCHITECTURE §5 needs updating). `users` adds `tokens_valid_after timestamptz` (nullable) so token-embedded claims can be invalidated before expiry; the auth chain (step 4) rejects tokens whose `iat` predates it. `users.email` is globally unique (open question 1), deviating from ARCHITECTURE's `unique(tenant_id, email)`.
 
+Further divergences from ARCHITECTURE §5, all introduced by the step-3 review and needing to be reflected there:
+- `applications.comp_expectation_currency char(3)`, with a check requiring it whenever either cents column is set. ARCHITECTURE §5 omits it — the same §4.9 bug in the canonical DDL.
+- `jobs.currency` carries **no** default. ARCHITECTURE §5 defaults it to `'USD'`; a default is an assumption wearing a constraint (§4.9).
+- **Composite foreign keys throughout** (§4.10): `(tenant_id, id)` on every tenant-scoped parent, plus `applications (job_id, current_stage_id) → job_stages (job_id, id)`, backed by `unique (job_stages.job_id, id)`. FK validation bypasses RLS, so single-column FKs let a write point across a tenant or a job boundary and Postgres accepts it. `applications (tenant_id, current_stage_id)` is deliberately omitted as transitively implied; `audit_log` is deliberately unconstrained (nullable `tenant_id` makes a MATCH SIMPLE composite vacuous, and an audit row must outlive its entity).
+- `candidates unique (tenant_id, email)` — per-tenant, nulls distinct, so anonymized candidates are unaffected and two tenants may hold the same person.
+- Money columns are Drizzle `mode: 'bigint'` (§4.9). **Step 4 must decide serialization before a repository first returns one** — `JSON.stringify` throws on a BigInt; string-encoded cents in the contract is the expected answer.
+
 ### 5.2 Conventions
 
 - UUIDv7 for ids (time-ordered — better index locality than v4).
@@ -112,11 +119,21 @@ Migrations run as a migration role that bypasses RLS; the app connects as a role
 
 Reproduces the reference screens exactly: tenant, five users (Maya Reyes recruiting lead, Sam Altmann HM, Lin Chen, David Osei, Tom Iwu), six jobs matching the jobs list (ENG-204, ENG-209, ENG-198, DES-114, PPL-031, SAL-076) with their statuses and counts, and the nine ENG-204 candidates at their pictured stages.
 
-**The seed writes history, not state.** For every application it inserts backdated `stage_transitions` such that the derived values match the screenshots — Ana Petrova reads "3d in Onsite", Elena Ruiz reads "Stalled 8d in stage", Screen shows "median 4d" and "42% pass". Seeding a current stage only will produce a board that does not resemble the reference, and every later metric test will be built on sand.
+**The seed writes history, not state.** For every application it inserts backdated `stage_transitions` such that the derived values match the screenshots — Ana Petrova reads "3d in Onsite", Elena Ruiz reads "Stalled 8d in stage", the four column medians read 2d/4d/6d/3d. Seeding a current stage only will produce a board that does not resemble the reference, and every later metric test will be built on sand.
 
 A second tenant with its own jobs and candidates is seeded for isolation testing.
 
 **No filler candidates** (resolves open question 5, 2026-08-07). The board is the truth: ENG-204 gets exactly the nine pictured candidates and nothing else, and the other five jobs get exactly the candidate counts shown on the jobs list. Padding a job to make a funnel percentage come out right produces candidates no screen shows, which then appear in every later list, count, and export. Where a screen-derived percentage cannot be reproduced from the pictured population, the seed reports the real derived value and the discrepancy is recorded here — never closed by inventing rows.
+
+**Recorded deltas for ENG-204** (the screens contradict each other; see open question 5):
+
+| Reads | Screen shows | Nine pictured candidates yield |
+|---|---|---|
+| Funnel Applied → Screen → Onsite → Offer | 100 / 42 / 21 / 8 % | 100 / 56 / 33 / 22 % (9 / 5 / 3 / 2 ever-reached) |
+| Jobs list "active" | 38 | 9 |
+| Jobs list "in process" | 18 | 8 |
+
+The screen's percentages are exactly the ratios of a 38-application population (16/38 = 42%, 8/38 = 21%, 3/38 = 8%), matching the jobs list's "38 active" — so the kanban's funnel bar agrees with the jobs list and disagrees with the nine cards drawn beside it on the same screen. The four column medians reproduce exactly from the nine, which confirms the panel is ENG-204-scoped rather than tenant-wide. Step 5's reference-screen comparison will differ in these three cells and only these; that is expected, not a regression.
 
 **Acceptance:**
 1. `pnpm db:migrate && pnpm db:seed` from empty produces a database whose derived metrics match the reference screens.
