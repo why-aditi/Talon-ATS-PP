@@ -61,6 +61,20 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     });
   }
 
+  // Before a single route is registered: an allow-list that names a tenant which
+  // does not exist must stop the process, not surface as a 401 at somebody's
+  // first sign-in (the exact failure the feature was turned on to remove). A
+  // no-op — no query, no transaction — when TALON_JIT_PROVISION is unset, which
+  // is the default.
+  for (const entry of await container.cradle.identityService.assertJitPolicy()) {
+    app.log.warn(
+      { jit: entry },
+      `just-in-time provisioning is ON for @${entry.domain}: anyone the identity ` +
+        `provider authenticates with an address at that domain becomes a ` +
+        `${entry.role} in "${entry.tenantName}"`,
+    );
+  }
+
   const allRoutes: RouteRecord[] = [];
   const protectedRoutes: RouteRecord[] = [];
   app.decorate('allRoutes', allRoutes);

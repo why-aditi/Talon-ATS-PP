@@ -18,6 +18,13 @@ import { isRole, type Role } from '@talon/domain';
 import type postgres from 'postgres';
 import type { TenantTransaction } from '../../request-context.js';
 
+/*
+ * `insertProvisionedUser` and `recordUserProvisioned` are the module's first
+ * WRITES. They are here, in the one file allowed to touch the database, and they
+ * are handed a transaction rather than opening one — `service.ts` decides when a
+ * transaction begins (CLAUDE.md §3), including for provisioning.
+ */
+
 export interface UserRecord {
   id: string;
   tenantId: string;
@@ -128,6 +135,109 @@ export class IdentityRepository {
       ${input.requestId}::text)`;
   }
 
+  // ── just-in-time provisioning (all three writes run inside the tenant tx) ──
+
+  /**
+   * Creates the `users` row for an allow-listed identity the IdP just proved.
+   *
+   * `on conflict do nothing`, with NO conflict target, and that is the whole
+   * race-safety story. Two concurrent first requests from the same person —
+   * two browser tabs finishing the hosted-UI round trip together, or a client
+   * that retries — must not produce two rows, and a check-then-act
+   * (`select … if not found insert`) cannot prevent that: both transactions
+   * read "absent" before either writes. Here the database arbitrates on
+   * constraints it already has (`users.email` is globally unique since 0001,
+   * `users.external_id` since 0004), the loser inserts nothing, and the caller
+   * re-reads. Targetless because BOTH constraints matter and either may be the
+   * one that fires.
+   *
+   * Returns the row it created, or null when something conflicted — the caller
+   * decides what a conflict means, because "someone else created this same
+   * person" and "this address already belongs to a different identity" are the
+   * same SQL outcome and very different answers.
+   *
+   * RLS: the insert satisfies `users`' `with check (tenant_id = app.tenant_id)`
+   * because `tx` was opened with `SET LOCAL app.tenant_id` set to exactly the
+   * tenant being written. No policy is widened and no `security definer` writer
+   * exists for this — the app role's own 0001 `insert on users` grant is enough.
+   */
+  async insertProvisionedUser(
+    tx: TenantTransaction,
+    input: { id: string; email: string; name: string; role: Role; externalId: string },
+  ): Promise<UserRecord | null> {
+    const rows = await tx.sql<UserRow[]>`
+      insert into users (id, tenant_id, email, name, role, external_id)
+      values (${input.id}::uuid, ${tx.tenantId}::uuid, ${input.email}, ${input.name},
+              ${input.role}, ${input.externalId})
+      on conflict do nothing
+      returning id, tenant_id, email, name, role, timezone, mfa_enabled, tokens_valid_after`;
+    return toUser(rows[0]);
+  }
+
+  /**
+   * Re-reads by subject after a conflict, inside the tenant transaction.
+   *
+   * Not `auth_user_by_sub`: that is the pre-tenant bootstrap reader, and using it
+   * here would answer from outside the transaction that just raced. This read is
+   * RLS-scoped to the tenant the allow-list named, which is the only tenant a
+   * just-in-time row can be in, so a subject that resolves to some *other*
+   * tenant's row correctly returns nothing rather than quietly signing someone
+   * into a tenant the allow-list never mentioned.
+   */
+  async findUserByExternalId(tx: TenantTransaction, externalId: string): Promise<UserRecord | null> {
+    const rows = await tx.sql<UserRow[]>`
+      select id, tenant_id, email, name, role, timezone, mfa_enabled, tokens_valid_after
+      from users where external_id = ${externalId}`;
+    return toUser(rows[0]);
+  }
+
+  /**
+   * The audit row for a person appearing in a tenant (CLAUDE.md §4).
+   *
+   * A plain insert, not `audit_sign_in`: that `security definer` writer exists
+   * only because sign-in has no tenant context to ride on, and this write does —
+   * it is in the same transaction as the `users` row it describes, so it commits
+   * or vanishes with it. `talon_app`'s 0001 `insert on audit_log` grant and the
+   * ordinary tenant policy cover it, exactly as the applications module's
+   * business mutations are covered.
+   *
+   * `actor_id` is the new user themselves. Nobody else caused this: they
+   * authenticated, and the allow-list said yes. Attributing it to a system actor
+   * would lose the one identity the row is about.
+   */
+  async recordUserProvisioned(
+    tx: TenantTransaction,
+    input: {
+      userId: string;
+      after: Record<string, unknown>;
+      ip: string | null;
+      requestId: string | null;
+    },
+  ): Promise<void> {
+    await tx.sql`
+      insert into audit_log (tenant_id, actor_id, action, entity_type, entity_id, before, after, ip, request_id)
+      values (${tx.tenantId}::uuid, ${input.userId}::uuid, 'user.provisioned.jit', 'user',
+              ${input.userId}::uuid,
+              -- No before-state: the entity did not exist a statement ago.
+              null, ${tx.sql.json(input.after as never)}, ${input.ip}, ${input.requestId})`;
+  }
+
+  /**
+   * Confirms a configured tenant exists, at boot.
+   *
+   * A SELF-read: `tenants`' policy is `id = app.tenant_id`, so pinning the
+   * transaction to the configured uuid and then selecting that same uuid is the
+   * one tenant lookup the app role is permitted to make. It is also why the
+   * allow-list carries a uuid rather than a name — see `JitGrant.tenantId`.
+   * Zero rows means either "no such tenant" or "a tenant the app role cannot
+   * see", which for a uuid under this policy are the same fact.
+   */
+  async findTenantSelf(tx: TenantTransaction): Promise<{ id: string; name: string } | null> {
+    const rows = await tx.sql<{ id: string; name: string }[]>`
+      select id, name from tenants where id = ${tx.tenantId}::uuid`;
+    return rows[0] ?? null;
+  }
+
   // ── the request transaction (spec 001 §6.3) ───────────────────────────────
 
   /**
@@ -138,7 +248,17 @@ export class IdentityRepository {
    * the next request inherits this tenant — packages/db/test/leak.test.ts
    * demonstrates exactly that failure with a max-1 pool.
    */
-  async beginTenantTransaction(tenantId: string, userId: string): Promise<TenantTransaction> {
+  async beginTenantTransaction(
+    tenantId: string,
+    /**
+     * Null only where there is genuinely no principal yet: the boot-time
+     * tenant check. Every request path has one. `set_config` needs a text
+     * value, and '' is what `nullif(current_setting(…), '')` in every policy
+     * already treats as absent — so a null principal cannot accidentally read
+     * as a real one.
+     */
+    userId: string | null,
+  ): Promise<TenantTransaction> {
     const reserved = await this.#sql.reserve();
     let settled = false;
     const finish = async (verb: 'commit' | 'rollback'): Promise<void> => {
@@ -158,7 +278,7 @@ export class IdentityRepository {
       await this.#auditConnectionRole(reserved);
       await reserved.unsafe('begin');
       await reserved`select set_config('app.tenant_id', ${tenantId}, true)`;
-      await reserved`select set_config('app.user_id', ${userId}, true)`;
+      await reserved`select set_config('app.user_id', ${userId ?? ''}, true)`;
     } catch (err) {
       await finish('rollback');
       throw err;
@@ -166,7 +286,7 @@ export class IdentityRepository {
 
     return {
       tenantId,
-      userId,
+      userId: userId ?? '',
       sql: reserved,
       commit: () => finish('commit'),
       rollback: () => finish('rollback'),
