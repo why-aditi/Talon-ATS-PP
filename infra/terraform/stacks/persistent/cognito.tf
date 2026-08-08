@@ -3,18 +3,39 @@
 #
 # READ THIS BEFORE CHANGING ANY ATTRIBUTE BELOW.
 #
-# Cognito schema attributes are immutable after pool creation, and
-# `aws_cognito_user_pool` FORCES REPLACEMENT on a schema diff. A replacement
-# destroys every user in the pool — not a migration, not a warning, a silent
-# `-/+` in a plan nobody read closely. CLAUDE.md §4 and ARCHITECTURE §9.4.
+# Cognito schema attributes are immutable after pool creation. CLAUDE.md §4 and
+# ARCHITECTURE §9.4 both describe the consequence as a forced REPLACEMENT of the
+# pool, which destroys every user in it.
+#
+# WHAT THE PROVIDER ACTUALLY DOES, MEASURED ON 5.100.0 — because this comment
+# used to assert something a reader could disprove in five minutes, and a comment
+# that fails its own test gets deleted along with the line it protects:
+#
+#   - `schema` is Optional and is NOT ForceNew, and there is no CustomizeDiff on
+#     it. The read path filters what AWS returns down to what the configuration
+#     declares, so a pool under management with NO schema block shows no schema
+#     diff at all. Verified against the live pool with `ignore_changes = []`:
+#     `2 to import, 0 to add, 1 to change, 0 to destroy`, and the only changes
+#     were deletion_protection and tags. There is no "permanent replacement".
+#   - ADDING an attribute plans an in-place update (`1 to change, 0 to destroy`)
+#     and applies as AddCustomAttributes.
+#   - REMOVING or MODIFYING one is neither a diff nor a replacement: the provider
+#     refuses at APPLY time with "cannot modify or remove schema items". That
+#     string is in the 5.100.0 binary this stack is pinned to.
+#
+# So on this provider version the failure mode is a failed apply, not a silent
+# user-destroying `-/+`. That is a narrower hazard than the one CLAUDE.md
+# describes, and it is not a reason to drop the guard — recorded as a finding for
+# a human in spec 002 §4a.2 rather than acted on here.
 #
 # Three defences, and they are deliberately not the obvious one:
 #
-#   1. `ignore_changes = [schema]` below. The provider populates `schema` from
-#      the twenty-odd standard OIDC attributes AWS creates automatically, so a
-#      pool imported or refreshed without this shows a permanent schema diff and
-#      therefore a permanent replacement. This is the single most important line
-#      in this file.
+#   1. `ignore_changes = [schema]` below. It keeps the attribute out of the diff
+#      entirely, whatever the provider decides to do with it — including across a
+#      major-version bump, where ForceNew on this attribute would be a one-line
+#      change upstream and would arrive as a `-/+` in a plan nobody re-read. Its
+#      concrete value today is for a pool THIS configuration created, whose
+#      schema is in state as configured; see the `lifecycle` block below.
 #
 #   2. NO CUSTOM ATTRIBUTES, ever. tenant_id, roles and job membership live in
 #      the `users` table keyed by `sub`; the pre-token-generation Lambda injects
@@ -107,9 +128,11 @@ resource "aws_cognito_user_pool" "main" {
   }
 
   lifecycle {
-    # THE LINE. See the header comment. Never remove this, and never add a
-    # `schema` block to this resource — the two together are a plan that
-    # destroys every user.
+    # THE LINE. See the header comment for what the provider measurably does.
+    # Never remove this, and never add a `schema` block to this resource: with
+    # both, an attribute that is later edited or dropped from that block is an
+    # apply that fails on this provider version and a plan that could replace the
+    # pool on another. Neither is a thing to discover on a Friday.
     ignore_changes = [schema]
   }
 }

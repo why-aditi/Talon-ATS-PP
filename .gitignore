@@ -14,9 +14,16 @@ tfplan.binary
 plan.json
 *.tfstate
 *.tfstate.*
-# simulate.py writes its request here because ReadOnlyAccess is too long to pass
-# as a command-line flag on Windows. Removed on a clean run, left behind on a crash.
-infra/terraform/stacks/iam/simulate/.request.json
+tf.plan
+plan.txt
+# Variable files are per-operator and never checked in. The one value that would
+# go in one — `adopt_user_pool` — is decided against (stacks/persistent/import.tf),
+# and a checked-in tfvars would make adoption the silent default for CI too: the
+# day it drifts, Terraform computes name = "talon-dev" against a state entry named
+# "talon-throwaway-spec002" and plans to destroy a pool with users in it. Supply
+# it as -var on a human-run plan or not at all.
+*.tfvars
+*.tfvars.json
 
 # Backend configuration is per-operator and opt-in: the checked-in default is
 # local state, so `terraform init` works on a clean clone before the state bucket

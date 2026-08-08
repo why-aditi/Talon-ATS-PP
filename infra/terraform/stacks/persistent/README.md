@@ -46,10 +46,15 @@ defences, in order of how much they actually do:
    as claims. If you think you need a custom attribute, you need a database
    column. With no custom attributes there is no legitimate reason for the schema
    to change at all.
-2. **`lifecycle { ignore_changes = [schema] }`** on the pool. The provider
-   populates `schema` from the twenty-odd standard OIDC attributes AWS creates
-   automatically, so without this line an imported pool shows a permanent schema
-   diff — and therefore a permanent replacement.
+2. **`lifecycle { ignore_changes = [schema] }`** on the pool. Note what this does
+   *not* do, measured on provider 5.100.0: an imported pool with
+   `ignore_changes = []` shows **no schema diff at all** (the provider filters
+   what AWS returns down to what the configuration declares), adding an attribute
+   plans `1 to change, 0 to destroy`, and removing or modifying one fails at
+   *apply* with `cannot modify or remove schema items`. There is no "permanent
+   replacement" to prevent on this version. The line keeps the attribute out of
+   the diff regardless of what a future provider does with it — see the header
+   comment in `cognito.tf` and spec 002 §4a.2.
 3. **The CI gate** in `.github/workflows/terraform.yml`, which runs
    `infra/terraform/scripts/check-plan.py` over `terraform show -json` and fails
    any plan replacing the pool. Defences 1 and 2 are properties of this file;
@@ -87,10 +92,26 @@ Per-tenant SAML IdPs are created at **runtime through the API** (§9.4) and must
 never appear in `supported_identity_providers` — managing them as infrastructure
 would make customer onboarding a deploy.
 
-## Adopting a pool that already exists
+## Adopting a pool that already exists — **decided against**
 
-A user pool was created by hand with the AWS CLI before this stack existed. It
-holds real sign-ins, so it is adopted rather than replaced:
+**The decision is: create fresh, do not adopt.** A pool named
+`talon-throwaway-spec002` was created by hand with the AWS CLI before this stack
+existed; adopting it would pin that name forever, because Cognito pool names are
+immutable. Its six users are seeded demo users whose creation is already a
+scripted stage of `up.sh` (ARCHITECTURE §9.5a, stage 7). So the default path —
+no variables, a fresh `talon-dev` pool — is the path that is taken, and it is
+the one §9.5a's from-zero acceptance test exercises.
+
+The mechanism below stays because it is proven and gated, and because "adopt a
+pool that already exists" will be the right answer some day for a pool that has
+real users. It is not the answer today.
+
+**`terraform.tfvars` is gitignored** (`*.tfvars` in `/.gitignore`), and this
+README used to tell you to check one in. Do not. A checked-in tfvars would make
+adoption the default for CI as well as for you, and CI would then compute
+`name = "talon-dev"` against a state entry named `talon-throwaway-spec002` the
+moment the file drifted — a plan proposing to destroy a pool with users in it.
+Adoption is a command-line flag on a human-run plan, reviewed each time:
 
 ```bash
 terraform -chdir=infra/terraform/stacks/persistent plan \
@@ -116,11 +137,13 @@ Two things reduce that risk and neither eliminates it:
   its default — which plans a replacement — is unrepresentable.
 - The CI gate catches the resulting plan. Verified: with a deliberately
   mismatched name the check fails with
-  `REPLACE aws_cognito_user_pool.main ... forced by: name`.
+  `REPLACE aws_cognito_user_pool.main ... forced by: name`. That gate now
+  actually runs on the PR path — until this PR it did not, because the plan job
+  passed `-var github_repo=…` to this stack, which does not declare it.
 
-**Put the value in `terraform.tfvars`, not on the command line.** A value that
-must be remembered on every invocation is a value that will be forgotten once,
-and once is enough.
+The residual risk is that the variable is not supplied on a later run. That is
+the reason the decision above is "create fresh": with no adoption there is no
+value to forget, and CI's plan of this stack is unconditionally the create path.
 
 ## Checking a plan by hand
 

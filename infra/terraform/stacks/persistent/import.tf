@@ -1,10 +1,26 @@
 # ---------------------------------------------------------------------------
 # Adopting a pool that was created outside Terraform.
 #
-# WHY THIS EXISTS. A user pool was created by hand with the AWS CLI before this
-# stack was written. It holds real sign-ins, so it cannot simply be replaced by
-# the pool this stack would create — but while Terraform does not know about it,
-# none of the protections CLAUDE.md §4 requires apply to it: no
+# THE DECISION IS: CREATE FRESH. DO NOT ADOPT. This path is not taken.
+#
+# `var.adopt_user_pool` defaults to null, so these blocks do not exist, and the
+# only path CI or `up.sh` can reach is a fresh `talon-dev` pool. The pool that
+# prompted this file — `talon-throwaway-spec002` — holds six seeded demo users
+# that `up.sh` stage 7 recreates, and adopting it would pin that name forever
+# because Cognito pool names are immutable. Spec 002 §4a.6.
+#
+# The mechanism stays because it is proven, gated and cheap to keep, and because
+# a pool with REAL users will eventually need it. Two rules for that day:
+# supply the value as a `-var` on a human-run plan, and never from a checked-in
+# `terraform.tfvars` (`*.tfvars` is gitignored for exactly this reason). A tfvars
+# file makes adoption the silent default for every invocation including CI's, and
+# the day it drifts or is deleted, Terraform computes `name = "talon-dev"`
+# against a state entry named `talon-throwaway-spec002` and plans to destroy a
+# pool with users in it.
+#
+# WHY THIS EXISTS AT ALL. A user pool was created by hand with the AWS CLI before
+# this stack was written — while Terraform does not know about a pool, none of
+# the protections CLAUDE.md §4 requires apply to it: no
 # `ignore_changes = [schema]`, no deletion protection, and nothing for the CI
 # plan check to check.
 #
@@ -18,11 +34,11 @@
 # pool's name FOREVER. The name is immutable in Cognito and ForceNew in the
 # provider, so the day someone runs a plan without `var.adopt_user_pool` set,
 # Terraform proposes to destroy that pool and every user in it. That is why the
-# variable is a single object rather than four scalars — the id cannot be
-# supplied without the name — and why README.md says to put the value in a
-# checked-in `terraform.tfvars` rather than on the command line. A value that
-# has to be remembered on every invocation is a value that will be forgotten
-# once, and once is enough.
+# variable is a single object rather than four scalars: the id cannot be supplied
+# without the name, so the specific mistake that plans a replacement is
+# unrepresentable. The remaining hazard — forgetting the flag entirely — is not
+# solved by writing the value into a file, only moved; it is caught by
+# check-plan.py, which fails the plan and names `forced by: name`.
 #
 # `terraform import` was NOT used, deliberately. `import` blocks are visible in
 # `terraform plan` before anything is written, so the "no replacement" claim can

@@ -650,6 +650,24 @@ stacks/persistent/   Cognito, S3, ECR, KMS, state  → apply once, torn down onl
 stacks/ephemeral/    VPC, NAT, RDS, Redis, ECS, ALB → destroy between sessions
 ```
 
+**Two naming contracts `stacks/ephemeral` inherits from `stacks/iam`**, recorded
+here because that is where whoever writes it will look, and an `AccessDenied`
+mid-apply looks nothing like a naming problem:
+
+- **The NAT instance's role must be named `talon-<env>-ec2-*`** (e.g.
+  `talon-dev-ec2-nat`). The dev profile's `t4g.nano` NAT instance needs an
+  instance profile, so `ec2.amazonaws.com` is on the deploy role's `PassRole`
+  allow-list — which on its own would also let the **ECS task role** be passed to
+  an EC2 instance, i.e. every application secret in a shell. The destination role
+  is therefore pinned as well as the destination service, on the deploy role and
+  in the permissions boundary. Any other name fails at apply on `PassRole`.
+- **The EventBridge bus must carry the `talon-<env>-` prefix** (e.g.
+  `talon-dev-events`), not a bare `talon-dev`. The task role can write only to
+  `event-bus/talon-<env>-*`, and the symptom of getting it wrong is an
+  `AccessDenied` inside the outbox relay at runtime, not at plan time.
+
+Both are stated in full in spec 002 §4.5a and §4.7b.
+
 `scripts/down.sh` (ephemeral only, the default) between work sessions takes the bill to near zero without losing users, images, or uploaded files. `scripts/up.sh` brings it back in one command. The split is what makes routine teardown safe — and it's why nothing here uses `prevent_destroy`, which would fight the teardown it's meant to protect (§9.5a).
 
 RDS keeps `skip_final_snapshot = false` in the ephemeral stack, so a teardown snapshots rather than discards; `pnpm db:seed` reproduces the reference data anyway, which is what makes routine teardown safe.

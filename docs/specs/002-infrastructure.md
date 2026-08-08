@@ -1,6 +1,6 @@
 # Spec 002 — Infrastructure (M0b)
 
-**Status:** in progress — the IAM stack is built (§4), the persistent stack holds Cognito (§4a), the CI workflow is wired (§4b); `ephemeral`, `global/state` and the provisioning scripts are not started
+**Status:** in progress — the IAM stack is built (§4), the persistent stack holds Cognito (§4a), the CI workflow is wired and its two dead gates are fixed (§4b, §4b.1); `ephemeral`, `global/state` and the provisioning scripts are not started
 **Milestone:** M0b (AWS). Spec 001 is M0a and runs entirely locally.
 **Depends on:** spec 001
 **Blocks:** any deploy
@@ -228,6 +228,8 @@ The first of those is the one that matters most. §4.3 says the `sub` condition 
 
 Hand-copying was the bug. A shared local is not a style preference here — it is the only shape in which "the boundary mirrors the guardrails" is a property of the code rather than a claim in a comment. Adding a service to `pass_role_services` now lands in both documents or in neither.
 
+**One guardrail is deliberately not mirrored, and "all six are mirrored" above should be read with this exception.** `DenyAttachingAdministratorAccess` exists only on the deploy role. It conditions on `iam:PolicyARN`, a key that exists only for *managed* policies, and under the boundary the escalation it gestures at is an inline `*:*` — which has no ARN and which the ceiling already caps. Mirroring it would deny a child attaching `AdministratorAccess` to a role whose effective permissions are the intersection with this boundary anyway, and `RequireThisBoundaryOnRolesAndPolicies` already denies the attach outright unless the target carries the boundary. It buys nothing, so it has no `child` row either; that is the one place the file's "every guardrail gets a child row" rule is knowingly not applied.
+
 Two shapes are deliberately *not* identical between the copies:
 
 - **PassRole.** On the deploy role the scoping is a *condition on an Allow*, so an unmatched pass is an **implicit** deny. A child role's own `*:*` overrides an implicit deny trivially, and under a boundary there is no such thing as "no Allow" — the ceiling is `*` by construction. The boundary therefore needs an explicit `Deny` with `StringNotEquals`. A side effect, recorded because §5.1 asserts on it: `iam:PassRole → glue.amazonaws.com` on the deploy role moves from `implicitDeny` to `explicitDeny`, since the deploy role also carries the boundary. Strictly stronger.
@@ -325,10 +327,29 @@ Three defences against the replacement hazard, in order of how much they do:
    to change at all. `tenant_id`, roles and job membership live in `users` keyed
    by `sub`, injected as claims by the pre-token Lambda. Confirmed against the
    live pool: 21 schema attributes, all standard OIDC, zero `custom:`.
-2. **`lifecycle { ignore_changes = [schema] }`.** Not optional even with rule 1:
-   the provider populates `schema` from the standard attributes AWS creates
-   automatically, so an imported pool without this line shows a permanent schema
-   diff and therefore a permanent replacement.
+2. **`lifecycle { ignore_changes = [schema] }`.** Kept — but the justification
+   written here was wrong and is corrected, because a defence justified by a
+   claim a reader can disprove is a defence a reader deletes. Measured on
+   provider **5.100.0**, the version this stack is pinned to:
+
+   | Configuration | Plan against the live pool |
+   |---|---|
+   | `ignore_changes = []`, no `schema` block | `2 to import, 0 to add, **1 to change, 0 to destroy**` — and no schema diff at all |
+   | `ignore_changes = []`, plus a `schema` block adding `tenant_id` | `**1 to change, 0 to destroy**`, applied as `AddCustomAttributes` |
+
+   `schema` is `Optional` and **not `ForceNew`**, and there is no `CustomizeDiff`
+   on it; the read path filters what AWS returns down to what the configuration
+   declares, which is why an absent block produces no diff. Removing or modifying
+   an entry is not a replacement either — the provider refuses at **apply** with
+   `cannot modify or remove schema items` (string verified present in the pinned
+   5.100.0 binary).
+
+   **So on this provider version the hazard is a failed apply, not a silent
+   user-destroying `-/+`.** That is narrower than what CLAUDE.md §4 and
+   ARCHITECTURE §9.4/§9.7 assert. Recorded as open question 10 rather than acted
+   on: correcting project memory is a human's call. The line stays regardless —
+   it costs nothing, and `ForceNew: true` on that attribute is a one-line change
+   upstream that would arrive as a `-/+` in a plan nobody re-read.
 3. **The CI gate**, §4b. Rules 1 and 2 are properties of `cognito.tf`; the gate
    is what catches someone editing `cognito.tf`.
 
@@ -426,9 +447,16 @@ Mitigation is documentation — put it in `terraform.tfvars`, not on the command
 line — plus the §4b gate. A value that must be remembered on every invocation is
 a value that will be forgotten once, and once is enough.
 
-### 4a.6 Open decision: the adopted pool is named `talon-throwaway-spec002`
+### 4a.6 DECIDED: create fresh. The pool is not adopted.
 
-**This needs a human and is deliberately not decided here.** The live pool is
+**Decision (Aditi, third-pass review of #6): create fresh, do not adopt.** The
+six users are seeded demo users that `up.sh` stage 7 recreates, and adopting
+would pin `talon-throwaway-spec002` as the pool name permanently. The code
+already defaulted to this path; what changes is that the documentation no longer
+reads as though adoption is pending, `terraform.tfvars` is gitignored so adoption
+can never become a silent default, and `import.tf` says at the top that the path
+is not taken. The trade-off that produced the decision, for the record. The live
+pool is
 named `talon-throwaway-spec002` and tagged `Environment=throwaway`,
 `ManagedBy=manual-cli`. Adopting it makes that name permanent — Cognito pool
 names cannot be changed, so the only way to a `talon-dev` pool is a new pool.
@@ -446,9 +474,14 @@ default path requires something to already exist fails it. Adoption is one
 variable away and is proven clean above.
 
 The argument for creating fresh is that the 6 users are seeded demo users whose
-creation is already a scripted stage of `up.sh`; the argument for adopting is
-that they are real sign-ins today and losing them is a self-inflicted outage.
-Owner: Aditi.
+creation is already a scripted stage of `up.sh`; the argument for adopting was
+that they are real sign-ins today. Decided in favour of creating fresh.
+
+**What that costs, stated:** the six users in `talon-throwaway-spec002` are lost
+when the fresh pool becomes the one the API points at, and `.env`'s
+`COGNITO_USER_POOL_ID=us-east-1_08d7fh6x5` has to move with it. The old pool is
+not deleted by this decision — it is simply no longer managed, and deleting it is
+a separate, deliberate act.
 
 ## 4b The protected-resource plan check
 
@@ -457,6 +490,44 @@ Owner: Aditi.
 apply-on-merge path. CLAUDE.md §4 and ARCHITECTURE §9.5 both require it; spec
 §5 previously listed it as "not wired", and until it existed the Cognito rule
 was advisory.
+
+#### 4b.1 It ran on neither path as first shipped — two bugs, both fixed
+
+This section claimed "both paths" before either worked. What the review found:
+
+1. **The PR path.** The plan job passed `-var 'github_repo=…'` to *every* leg of
+   its matrix, and `stacks/persistent` declares no such variable. Terraform
+   treats that as a hard error (`Value for undeclared variable`), so the
+   persistent plan failed, the gate step had no `if: always()` and was skipped,
+   and no comment carried a diff. `aws_cognito_user_pool` exists **only** in
+   `stacks/persistent` — the gate was dead on the PR path for the one resource
+   it protects. Fixed by supplying the value as `TF_VAR_github_repo` at job
+   level: Terraform ignores a `TF_VAR_` entry no root module declares (verified
+   against both stacks at 1.15.8), so one entry is correct for every stack in the
+   matrix and for the next one added. The gate step gains `if: always()`.
+2. **The apply path.** Both `terraform init` calls ran with **no
+   `-backend-config`**, and no stack checks in a `backend` block (`backend.tf` is
+   gitignored so a clean clone can init before the state bucket exists, §9.5a
+   stage 1). CI therefore could never have remote state: every merge initialised
+   empty **local** state, planned `stacks/persistent` from nothing, applied, and
+   discarded the state file — a new Cognito pool and app client per merge, with
+   `.env` still pointing at the old one. `check-plan.py` passed every time,
+   correctly, because a plan from empty state contains only `create`. Fixed by
+   copying `backend.tf.example` in and supplying the partial configuration the
+   READMEs already document, plus `infra/terraform/scripts/check-backend.py`,
+   which asserts the backend Terraform *actually selected* from
+   `.terraform/terraform.tfstate` — the file is **absent** when the local backend
+   is used, which is exactly the shipped shape — and asserts the state key, since
+   two stacks sharing a key means each apply proposes destroying the other's
+   resources.
+
+**`check-plan.py` also failed open twice**, and both shapes are plausible rather
+than contrived: `{}` (the plan step died before writing) and
+`{"format_version":…,"planned_values":{…}}` (`terraform show -json` run against
+*state* instead of a plan file — that shape has no `resource_changes`, so the
+loop ran zero times and the check printed its success line). It now requires the
+`resource_changes` key, which is present on every real plan including an empty
+one.
 
 It reads `terraform show -json` and fails on any `delete` action against
 `aws_cognito_user_pool`, `aws_rds_cluster`, `aws_db_instance`, `aws_kms_key`,
@@ -485,6 +556,23 @@ has not been applied, so those roles do not exist; a job that is always red is a
 job people learn to ignore. `static` (fmt, tflint, checkov, validate) needs no
 credentials and runs on every PR immediately.
 
+**That skip is also why neither bug above was caught by CI**: on PR #6 the GitHub
+UI showed `terraform / plan` and `terraform / apply` as *Skipped* and only
+`static` ran. Failing safe is right, and it means the configured path is
+unexercised until the day it is switched on — so both fixes are verified by
+reproduction and by local equivalents rather than by a green run. Reproduced:
+`terraform -chdir=infra/terraform/stacks/persistent plan -var 'github_repo=x/y'`
+→ `Error: Value for undeclared variable`; with `TF_VAR_github_repo` set instead
+→ a clean plan on both stacks.
+
+**Ordering note for whoever sets those variables.** The backend now points at
+`talon-tfstate-<account>` / `talon-tfstate-lock`, and neither exists — `global/state`
+is not built. Until §9.5a stage 1 runs, `terraform init` fails with `S3 bucket
+"talon-tfstate-…" does not exist`. That is loud and correct: setting
+`AWS_PLAN_ROLE_ARN` before bootstrapping state turns the job red rather than
+quietly local. Names are overridable with `vars.TF_STATE_BUCKET` /
+`vars.TF_STATE_LOCK_TABLE`, which is edge case 6's coupling made settable.
+
 **`stacks/iam` is not in the apply matrix and cannot be** — the deploy role is
 explicitly denied writing `role/talon-<env>-github-*`, so a CI apply of it fails
 on its first IAM write. That is §4.8's deliberate consequence, not an oversight.
@@ -498,10 +586,12 @@ on its first IAM write. That is §4.8's deliberate consequence, not an oversight
 | `terraform plan`, create path | 18 to add, 0 to change, 0 to destroy on an empty account | passing |
 | `terraform plan`, reuse path | `-var github_oidc_provider_arn=…`; same 18 minus the provider, trust policies fully rendered | passing |
 | Variable validation | six wildcard/foreign-repo/`pull_request` claim shapes rejected at plan time, exit 1 | passing |
-| `aws iam simulate-custom-policy` | 83 assertions over the rendered documents, across **four** simulated principals — see §5.1. Runnable: `python infra/terraform/stacks/iam/simulate/simulate.py plan.json` | passing |
+| `aws iam simulate-custom-policy` | **104** assertions over the rendered documents, across **four** simulated principals — see §5.1. **Wired**: the `iam` leg of the `plan` job runs it (the plan role's `ReadOnlyAccess` covers `iam:SimulateCustomPolicy`). Also runnable by hand: `python infra/terraform/stacks/iam/simulate/simulate.py plan.json` | passing |
 | `terraform plan`, persistent from zero | `2 to add, 0 to change, 0 to destroy`; `3 to add` with a domain | passing |
 | `terraform plan`, persistent adoption | `2 to import, 0 to add, 1 to change, 0 to destroy` — **no replacement**; §4a.4 | passing |
-| Protected-resource plan check | fails any plan replacing `aws_cognito_user_pool`, `aws_rds_cluster`, a KMS key or a state bucket; manual override needs a written reason (ARCHITECTURE §9.5, CLAUDE.md §4) | **wired** — `infra/terraform/scripts/check-plan.py`, run on the plan and apply paths of `.github/workflows/terraform.yml`. Verified in both directions against real plans, §4b |
+| Protected-resource plan check | fails any plan replacing `aws_cognito_user_pool`, `aws_rds_cluster`, a KMS key or a state bucket; manual override needs a written reason (ARCHITECTURE §9.5, CLAUDE.md §4) | **wired, and now actually reached on both paths** — §4b.1. Verified against a real clean plan (pass), a replacing plan (fails, `forced by: name`), `{}` and state-shaped JSON (both now fail closed) |
+| Remote-state assertion | CI can never apply a stateful stack against throwaway local state | **wired** — `infra/terraform/scripts/check-backend.py` after every `init`. Verified against a real no-`-backend-config` init (fails: the file is absent), a well-formed s3 backend (passes), a `local` backend and a mismatched state key (both fail) |
+| Boundary-mirror regression | deleting a mirrored guardrail from `permissions_boundary.tf` must fail | **passing** — measured on a scratch copy: removing `ProtectTerraformState` → 4 failures, additionally removing `DenyAccountAndOrganizationChanges` → 6. Both were 0 before the `child` rows were added (§5.1) |
 | `tflint`, `checkov` | ARCHITECTURE §9.5 requires both on every PR | **wired, hard-failing, and proven** — `static` job in `.github/workflows/terraform.yml`, no credentials, runs on every PR. checkov: **158 passed, 0 failed, 3 skipped**, `soft_fail: false`. tflint: 0 errors on both stacks (3 pre-existing `terraform_unused_declarations` warnings in `persistent`, below the `--minimum-failure-severity=error` bar). Reproduced locally in the CI container — commands and the four original failures in §5.2 |
 | Plan posted as a PR comment | ARCHITECTURE §9.5 | **wired, unproven** — needs `vars.AWS_PLAN_ROLE_ARN`, which needs `stacks/iam` applied |
 | Trust-policy assertion | `sub` is pinned to `var.github_repo`; no `repo:*` reaches an apply | **not written** — see open question 3, re-scoped by §4.3a |
@@ -515,7 +605,7 @@ The assertions are **checked in** at `infra/terraform/stacks/iam/simulate/simula
 ```bash
 terraform -chdir=infra/terraform/stacks/iam plan -var 'github_repo=OWNER/REPO' -out=tf.plan
 terraform -chdir=infra/terraform/stacks/iam show -json tf.plan > plan.json
-python infra/terraform/stacks/iam/simulate/simulate.py plan.json    # 83 assertions, 0 failures
+python infra/terraform/stacks/iam/simulate/simulate.py plan.json    # 104 assertions, 0 failures
 ```
 
 **Four simulated principals**, and the fourth is the fix for the blind spot that let BL-1 ship:
@@ -549,6 +639,45 @@ E9 is not a miss. The ECS task role carries the same right and the boundary bind
 
 E6 required more than the review asked for: `ec2.amazonaws.com` is *on* the `PassedToService` allow-list for §9.6's NAT instance, so mirroring the service scoping alone left it `allowed`. See §4.7b.
 
+#### Every mirrored guardrail, as a `child` — the rows that were missing
+
+The `child` rows above cover the BL-1 escalation. They did **not** cover the two
+guardrails that were mirrored correctly all along, and that gap was measurable:
+with `ProtectTerraformState` deleted from `permissions_boundary.tf`, this file
+stayed **green**. Every assertion about it ran against the `deploy` principal,
+whose own identity policy denies it either way — the same blind spot that let
+BL-1 ship, one level down. The file's rule ("add a guardrail, add a `child`
+row") had never been applied to the guardrails that already existed.
+
+| # | Action | Resource / context | Result | Fails if this is deleted |
+|---|---|---|---|---|
+| M1 | `s3:DeleteBucket` | the state bucket | explicitDeny | `ProtectTerraformState` |
+| M2 | `s3:PutBucketVersioning` | the state bucket | explicitDeny | `ProtectTerraformState` |
+| M3 | `s3:PutLifecycleConfiguration` | the state bucket | explicitDeny | `ProtectTerraformState` |
+| M4 | `s3:PutBucketPolicy` | the state bucket | explicitDeny | `ProtectTerraformState` |
+| M5 | `organizations:CreateAccount` | — | explicitDeny | `DenyAccountAndOrganizationChanges` |
+| M6 | `account:CloseAccount` | — | explicitDeny | `DenyAccountAndOrganizationChanges` |
+| M7 | `iam:PassRole` | `role/talon-dev-ecs-task` → `glue` | explicitDeny | `DenyPassRoleOutsideProjectServices` |
+| M8 | `cognito-idp:DeleteUserPoolClient` | any pool | explicitDeny | `DenyDestroyingStatefulResources` |
+| M9 | `cognito-idp:DeleteUserPoolDomain` | any pool | explicitDeny | `DenyDestroyingStatefulResources` |
+
+Measured, on a scratch copy of the stack: delete `ProtectTerraformState` → **4
+failures** (M1–M4); additionally delete `DenyAccountAndOrganizationChanges` →
+**6** (M1–M6). Every `deploy` row for those same actions passed in both runs.
+
+**M3 and M4 are new denies, not just new assertions.** `local.state_bucket_protection_actions`
+said versioning *is* the state recovery path while `s3:PutLifecycleConfiguration`
+and `s3:PutBucketPolicy` were `allowed` on that bucket for both principals: a
+lifecycle rule expiring noncurrent versions destroys the recovery path on S3's
+schedule with versioning still reading `Enabled`, and a bucket policy `Deny` is
+evaluated before any identity policy. **M8 and M9 likewise** — `check-plan.py`
+already fails a *plan* that replaces the app client, because a new client id
+breaks every running API instance; the CLI route to the same outage was open.
+`cognito-idp:AdminDeleteUser` is deliberately **not** denied: the ECS task role
+needs it for offboarding and the boundary binds that role too. Asserted
+`allowed` for `child` and `deploy`, and `DeleteUserPool*` asserted `allowed` for
+`admin`, so `down.sh --all` still works.
+
 #### Must keep holding for a `child` (unchanged by the fix)
 
 | # | Action | Resource / context | Before | After |
@@ -573,9 +702,9 @@ E6 required more than the review asked for: `ec2.amazonaws.com` is *on* the `Pas
 | G8 | `iam:PassRole` | `role/talon-dev-ecs-task` → `glue` | implicitDeny | **explicitDeny** |
 | G9 | `cognito-idp:DeleteUserPool` | any pool | explicitDeny | explicitDeny |
 | G10 | `rds:DeleteDBCluster` | `cluster:talon-dev-pg` | explicitDeny | explicitDeny |
-| G11 | `iam:UpdateRole` | `role/talon-dev-github-deploy` | allowed | **explicitDeny** (SF-2) |
-| G12 | `iam:TagRole` | `role/talon-dev-github-plan` | allowed | **explicitDeny** (SF-2) |
-| G13 | `iam:CreateRole` | `role/talon-dev-github-evil`, with boundary | allowed | **explicitDeny** (SF-3) |
+| G11 | `iam:UpdateRole` | `role/talon-dev-github-deploy` | allowed | **explicitDeny** — `UpdateRole` sets `MaxSessionDuration`, so without it a CI run raises its own session lifetime (§4.8) |
+| G12 | `iam:TagRole` | `role/talon-dev-github-plan` | allowed | **explicitDeny** — inert today, load-bearing the moment any policy conditions on a tag (§4.8) |
+| G13 | `iam:CreateRole` | `role/talon-dev-github-evil`, with boundary | allowed | **explicitDeny** — reserves the `-github-` namespace rather than only making a squatted name unusable (§4.8) |
 | G14 | `iam:PassRole` | `role/talon-dev-ecs-task` → `ec2` | allowed | **explicitDeny** (§4.7b) |
 | G15 | `ec2:RunInstances` | `ap-south-1` | explicitDeny | explicitDeny |
 | G16 | `dynamodb:DeleteTable` | `table/talon-tfstate-lock` | explicitDeny | explicitDeny |
@@ -589,8 +718,8 @@ G8 moves from implicit to explicit because the deploy role now also inherits the
 | S1 | `s3:GetObject` | `talon-dev-quarantine/resumes/x.pdf` | explicitDeny | explicitDeny |
 | S2 | `s3:GetObject` | `talon-dev-uploads/resumes/x.pdf` | explicitDeny | explicitDeny |
 | S3 | `s3:GetObject` | `talon-dev-some-future-bucket/o` | explicitDeny | explicitDeny |
-| S4 | `s3:ListBucket` | `talon-dev-quarantine` | allowed | **explicitDeny** (SF-4) |
-| S5 | `s3:ListBucket` | `talon-dev-uploads` | allowed | **explicitDeny** (SF-4) |
+| S4 | `s3:ListBucket` | `talon-dev-quarantine` | allowed | **explicitDeny** — object *names* are most of the disclosure for candidate files (§4.10a) |
+| S5 | `s3:ListBucket` | `talon-dev-uploads` | allowed | **explicitDeny** — same inversion (§4.10a) |
 
 #### A guardrail that blocks the deploy is not a fix
 
@@ -654,7 +783,7 @@ R1 is the row that mattered: `iam:GetRolePolicy` on `*` let a CI run print the i
 
 ## 5.2 checkov is wired and hard-failing — and three suppressions are load-bearing
 
-`.github/workflows/terraform.yml`'s `static` job runs `bridgecrewio/checkov-action` over `infra/terraform` with `soft_fail: false`, so a finding is a red build. Reproduce the exact check locally:
+`.github/workflows/terraform.yml`'s `static` job runs `bridgecrewio/checkov-action` over `infra/terraform` with `soft_fail: false`, so a finding is a red build. **Pinned to a commit SHA** (`9b70310`, v12.3115.0) rather than `@master`: checkov's policy set changes daily, and on a floating ref a new check turns the build red with no commit of ours — indistinguishable from a real finding at the moment someone is trying to merge. Bumping the pin is a PR that re-runs the scan and records the new numbers here. Reproduce the exact check locally:
 
 ```bash
 docker run --rm -v "$PWD":/tf ghcr.io/bridgecrewio/checkov:3.3.9 \
@@ -730,13 +859,15 @@ docker run --rm -v "$PWD":/tf ghcr.io/bridgecrewio/checkov:3.3.9 \
 3. **How is the `sub` condition regression-tested?** Re-scoped by §4.3a. The trust policy renders in full on the reuse path and on every plan after the first apply, so a `terraform plan -json` assertion **does** have something to assert on and should be written: fail the build if any `token.actions.githubusercontent.com:sub` value contains `*` or does not start with `repo:${var.github_repo}:`. The variable validations now catch the tfvars route; this catches the code route. Lands with the CI workflow (§5). Owner: Aditi.
 4. **Does the company account already have a GitHub OIDC provider?** Unverified. If it does, `terraform apply` fails on first run and `var.github_oidc_provider_arn` is the fix. Note that the reuse path is *better* for review than the create path — §4.3a — so this is worth checking before the first apply rather than after it. Owner: Aditi.
 5. **Does Lambda populate `aws:SourceArn` when assuming an execution role?** §4.6. The comment claiming a dependency cycle was false and is corrected; the condition is still absent because the behaviour is undocumented and cannot be tested without an apply, and a wrong guess breaks sign-in rather than failing a plan. Verify at the first apply of `stacks/persistent`, then add `ArnLike aws:SourceArn = arn:aws:lambda:<region>:<acct>:function:talon-<env>-*`. Owner: Aditi.
-6. **Is the residual escalation surface on the deploy role acceptable?** Previously acknowledged only in a code comment. The `CreateRole` + `PutRolePolicy` + `AssumeRole` path is closed by §4.7's boundary, but the honest remaining statement is: **the deploy role is still `PowerUserAccess` on a shared company account.** It can read every Secrets Manager secret and every S3 object in the account outside the state bucket, it can delete another team's resources, and the boundary does not narrow any of that — the boundary closes *privilege escalation*, not *blast radius*. Two follow-ups worth deciding on: whether to add a `aws:ResourceTag/Project = talon` condition to the non-IAM surface, and whether the account should carry an SCP-equivalent at all given §9.5 rules out joining an Organization. Related to open question 1, which asks the narrower version of this. Owner: Aditi.
+6. **Is the residual escalation surface on the deploy role acceptable?** Previously acknowledged only in a code comment. The `CreateRole` + `PutRolePolicy` + `AssumeRole` path is closed by §4.7's boundary, but the honest remaining statement is: **the deploy role is still `PowerUserAccess` on a shared company account.** It can read every Secrets Manager secret and every S3 object in the account outside the state bucket, it can delete another team's resources, and the boundary does not narrow any of that — the boundary closes *privilege escalation*, not *blast radius*. **And one case the boundary leaves open that outlives the credential.** A child role can call `iam:CreateOpenIDConnectProvider` — the addendum scopes the deploy role's OIDC writes to the one GitHub issuer ARN, but the boundary does not deny the action, and a *new* provider has a *new* ARN outside every prefix in this stack. It can also `iam:UpdateAssumeRolePolicy` on any `talon-dev-*` role that is not `talon-dev-github-*` (`DenyWritingCiRoles` covers only the CI roles). Together those mint a durable foothold: register an issuer you control, point the ECS task role's trust policy at it, and the access survives revoking the CI credential, rotating the OIDC thumbprint and re-running this stack. It is not fixable inside `stacks/iam` without denying the OIDC provider lifecycle the stack itself performs, so it is named rather than closed. Two follow-ups worth deciding on: whether to add a `aws:ResourceTag/Project = talon` condition to the non-IAM surface, and whether the account should carry an SCP-equivalent at all given §9.5 rules out joining an Organization. Related to open question 1, which asks the narrower version of this. Owner: Aditi.
 7. **CLAUDE.md §4 is internally inconsistent and two of its claims are stale.** Not fixed here — a sub-agent editing project memory on its own initiative is exactly the change that should not be made silently. Recorded so it is decided rather than absorbed:
    - The list is **duplicated**: items 15-19 reappear as 20, 15, 16, 17. So "non-negotiable #16" is ambiguous — it is both *"Never change the Cognito pool schema"* and *"Every outbox consumer is idempotent"*, and this spec and the code comments cite it by number.
    - Item 16 (the Cognito one) says the pool "carries `prevent_destroy`". ARCHITECTURE §9.4 and §9.5a both supersede that: §9.5a states plainly that `prevent_destroy` cannot be parameterized, blocks `scripts/down.sh`, and is used **nowhere** in this project. `ignore_changes = [schema]` stays; `prevent_destroy` does not.
    Owner: Aditi.
-8. **Is the adopted pool's name acceptable, or should a `talon-dev` pool be created instead?** §4a.6, with the trade-off table. The code defaults to creating fresh; adoption is one variable and is proven not to replace anything. This is the only decision in this spec that is irreversible in the wrong direction — a Cognito pool name cannot be changed, so a pool adopted today is named `talon-throwaway-spec002` for as long as it has users. Owner: Aditi.
+8. ~~**Is the adopted pool's name acceptable, or should a `talon-dev` pool be created instead?**~~ **ANSWERED: create fresh, do not adopt.** §4a.6. `*.tfvars` is now gitignored and `import.tf` states the path is not taken, so adoption cannot become a silent default. The six users in `talon-throwaway-spec002` are lost when the API points at the fresh pool; `up.sh` stage 7 recreates them.
 9. **A pool created by an agent running the AWS CLI is how this started.** It predates the Terraform that now manages it, and the only reason that was recoverable is that Cognito pools can be imported and this one's configuration happened to be reproducible. Worth deciding whether "no AWS resource is created outside Terraform" becomes an explicit rule — noting it cannot be absolute, because §9.5a deliberately puts image build/push, in-VPC migration and demo-user creation outside Terraform's graph. The rule needs a stated boundary, not a slogan. Owner: Aditi.
+
+10. **CLAUDE.md §4, ARCHITECTURE §9.4 and §9.7 all state that a Cognito schema diff force-replaces the pool and destroys every user. Measured on the pinned provider 5.100.0, that is not what happens** — §4a.2. `schema` is not `ForceNew`, an absent block produces no diff, adding an attribute is an in-place `AddCustomAttributes`, and removing or modifying one fails at apply with `cannot modify or remove schema items`. The guard stays either way and nothing in the code changes; what needs deciding is whether three documents keep asserting a mechanism that a reader who tests it will find false — a reader who disproves the reason for `ignore_changes = [schema]` is a reader who deletes it. Not edited here: correcting project memory unprompted is exactly the change a sub-agent should not make silently (same reason as open question 7). Owner: Aditi.
 
 ## 8. Definition of done — the IAM stack, the persistent stack, and CI
 
@@ -750,9 +881,11 @@ docker run --rm -v "$PWD":/tf ghcr.io/bridgecrewio/checkov:3.3.9 \
 - [x] No `aws_iam_role` anywhere else in the repo — including `stacks/persistent`, which takes role ARNs as input variables
 - [x] `tflint` + `checkov` wired into CI and **passing, hard-failing** — checkov 158 passed / 0 failed / 3 skipped with `soft_fail: false`, tflint 0 errors on both stacks. Reproduced in the CI container, not asserted (§5.2)
 - [x] The CI role can no longer read another team's IAM on this shared account — `ReadIamForRefresh` split four ways, and `terraform plan`'s seventeen refresh reads proven still `allowed` by simulation (§5.1, §5.2)
-- [x] Protected-resource plan check wired into CI (§4b), verified in both directions against real plans
+- [x] Protected-resource plan check wired into CI **and actually reached on both paths** (§4b.1) — it was skipped on the PR path for `stacks/persistent`, the only stack containing `aws_cognito_user_pool`
+- [x] CI cannot apply a stateful stack against throwaway local state — `-backend-config` on both `init` calls plus `check-backend.py`, which fails when the backend is not `s3` or the state key is wrong (§4b.1)
+- [x] Deleting a mirrored guardrail from the boundary now fails `simulate.py` — measured, 0 failures before and 4/6 after (§5.1)
 - [x] Cognito user pool under Terraform with `ignore_changes = [schema]`, deletion protection, and an adoption path proven not to replace it (§4a)
 - [x] A hosted auth domain is one variable away, with every OAuth setting defaulted off so it changes nothing for today's password flow (§4a.3)
-- [ ] The `talon-throwaway-spec002` naming decision (§4a.6) — **needs a human**
+- [x] The `talon-throwaway-spec002` naming decision (§4a.6) — **decided: create fresh, do not adopt**
 - [ ] `terraform apply` run against the account — **not done; needs a human (CLAUDE.md §4)**
-- [ ] Open questions 1–7 answered
+- [ ] Open questions 1–7, 9 and 10 answered
