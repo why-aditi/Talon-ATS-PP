@@ -1,6 +1,11 @@
 /**
- * Shared harness: an app wired to the test database, seeded people who can
- * actually sign in, and the ids the isolation suite needs.
+ * Shared harness: an app wired to the test database and to a fake Cognito, seeded
+ * people who can actually sign in, and the ids the isolation suite needs.
+ *
+ * Since `LocalIdentityProvider` was removed (spec 002 open question 1) every
+ * signed-in test in this suite authenticates against `CognitoStub` — the network
+ * stub is the only path to a token, so it is started here rather than in each
+ * file that happens to need one.
  */
 import { asValue, type AwilixContainer } from 'awilix';
 import type { FastifyInstance } from 'fastify';
@@ -9,18 +14,44 @@ import { buildApp } from '../src/app.js';
 import { loadConfig, type ApiConfig } from '../src/config.js';
 import { buildContainer } from '../src/container.js';
 import type { Cradle } from '../src/context.js';
+import { CognitoStub } from './cognito-stub.js';
 import { APP_URL, OWNER_URL } from './urls.js';
 
 /** Long enough for NewPasswordSchema; identical for everyone in the suite. */
 export const TEST_PASSWORD = 'correct-horse-battery-staple';
 
+/**
+ * One fake pool per worker, reference-counted.
+ *
+ * `CognitoStub.start()` mutates process env and `globalThis.fetch`, and restores
+ * what it found on `stop()`. Two overlapping stubs would restore each other's
+ * values in the wrong order, so files that build several apps (route-manifest
+ * builds three) share this one and the last `close()` tears it down.
+ */
+const stub = new CognitoStub();
+let stubUsers = 0;
+
+async function acquireStub(): Promise<CognitoStub> {
+  if (stubUsers === 0) await stub.start();
+  stubUsers += 1;
+  return stub;
+}
+
+async function releaseStub(): Promise<void> {
+  stubUsers -= 1;
+  if (stubUsers === 0) await stub.stop();
+}
+
 export function testConfig(overrides: { poolMax?: number } = {}): ApiConfig {
   return loadConfig({
     API_DATABASE_URL: APP_URL,
     API_DB_POOL_MAX: String(overrides.poolMax ?? 5),
-    // Not the published default: the suite should fail if the fallback is ever
-    // load-bearing in a way a real deployment would not tolerate.
+    // Not the published constant: `loadConfig` refuses that one outright, and
+    // the suite should be signing tokens with a key a real deployment could use.
     TALON_JWT_SECRET: 'test-signing-key-not-the-published-default',
+    COGNITO_REGION: stub.region,
+    COGNITO_USER_POOL_ID: stub.userPoolId,
+    COGNITO_CLIENT_ID: stub.clientId,
   });
 }
 
@@ -40,6 +71,7 @@ export interface StartAppOptions {
 }
 
 export async function startApp(overrides: StartAppOptions = {}): Promise<TestApp> {
+  await acquireStub();
   const config = testConfig(overrides);
   const container = buildContainer(config);
   const { onQuery } = overrides;
@@ -64,6 +96,7 @@ export async function startApp(overrides: StartAppOptions = {}): Promise<TestApp
     async close() {
       await app.close();
       await container.cradle.sql.end();
+      await releaseStub();
     },
   };
 }
@@ -115,26 +148,41 @@ export async function loadFixtures(): Promise<Fixtures> {
 }
 
 /**
- * Gives a seeded person a local credential. The seed writes `users` rows only —
- * credentials live in the identity provider's own store, which in AWS is not
- * this database at all.
+ * Provisions a seeded person the way `scripts/seed-identities.ts` does: create
+ * the credential at the identity provider, then point `users.external_id` at the
+ * subject it allocated.
+ *
+ * Both halves matter. Without the second, Cognito authenticates the person and
+ * `auth_user_by_sub` resolves nobody — sign-in succeeds and the very next
+ * request 401s. Returns the subject, because it is what the token's `sub` is and
+ * therefore what a hand-minted token has to carry.
  */
-export async function provision(test: TestApp, person: Person): Promise<void> {
-  await test.container.cradle.identityService.provisionCredential({
-    sub: person.id,
+export async function provision(test: TestApp, person: Person): Promise<string> {
+  const { sub } = await test.container.cradle.identityService.provisionCredential({
     email: person.email,
     password: TEST_PASSWORD,
   });
+  // The owner connection, because the api role cannot write `users` outside a
+  // tenant transaction and must not be able to write this column at all.
+  const sql = postgres(OWNER_URL, { max: 1, onnotice: () => {} });
+  try {
+    await sql`update users set external_id = ${sub} where id = ${person.id}::uuid`;
+  } finally {
+    await sql.end();
+  }
+  return sub;
 }
 
 export interface Session {
   accessToken: string;
   refreshToken: string;
+  /** The identity provider's subject — the value in the access token's `sub`. */
+  sub: string;
 }
 
 /** Provisions if needed, then signs in over HTTP — the real public route. */
 export async function signIn(test: TestApp, person: Person): Promise<Session> {
-  await provision(test, person);
+  const sub = await provision(test, person);
   const response = await test.app.inject({
     method: 'POST',
     url: '/v1/auth/sign-in',
@@ -143,8 +191,8 @@ export async function signIn(test: TestApp, person: Person): Promise<Session> {
   if (response.statusCode !== 200) {
     throw new Error(`sign-in for ${person.email} failed: ${response.statusCode} ${response.body}`);
   }
-  const body = response.json<Session>();
-  return { accessToken: body.accessToken, refreshToken: body.refreshToken };
+  const body = response.json<{ accessToken: string; refreshToken: string }>();
+  return { accessToken: body.accessToken, refreshToken: body.refreshToken, sub };
 }
 
 export const bearer = (session: Session): Record<string, string> => ({

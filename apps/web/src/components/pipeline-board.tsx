@@ -19,7 +19,7 @@ import { TOKENS } from '@talon/tokens';
 import { MoveFailure, useBoard, useMoveStage, useReorder, type MoveInput } from '../lib/board-query';
 import { boardCoordinateGetter, locate, neighboursFor, prefersReducedMotion } from '../lib/board-state';
 import { CardBody } from './pipeline-card';
-import { SOURCE_LABELS, SourceSchema, type ApplicationCard, type Board, type BoardColumn } from '../mocks/pipeline-contract';
+import { SOURCE_LABELS, SourceSchema, type ApplicationCard, type Board, type BoardColumn } from '../lib/pipeline-contract';
 import { ChevronDownIcon, SearchIcon } from './icons';
 import { PipelineColumn } from './pipeline-column';
 import { Button, StatusPill, buttonClass, cx } from './ui';

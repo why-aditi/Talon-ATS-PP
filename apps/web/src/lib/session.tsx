@@ -1,6 +1,7 @@
 'use client';
 
 import { ERROR_TYPES, type SessionUser } from '@talon/contracts';
+import { useRouter } from 'next/navigation';
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 
 /**
@@ -49,6 +50,15 @@ async function post(path: string, body?: unknown): Promise<unknown> {
 
 type SessionValue = {
   session: Session | null;
+  /**
+   * False until the cookie has been offered to `/api/auth/refresh` and answered.
+   *
+   * Without this, `session` is indistinguishable between "no session" and "not
+   * asked yet", and every authenticated query fires token-less on mount, 401s,
+   * and — with `retry: false` — renders an error before the session arrives. The
+   * jobs list showed "Jobs didn't load." on every reload for exactly that reason.
+   */
+  ready: boolean;
   signIn: (email: string, password: string) => Promise<SessionUser>;
   refresh: () => Promise<SessionUser>;
   signOut: () => Promise<void>;
@@ -67,6 +77,7 @@ function toSession(payload: unknown): Session {
 
 export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
+  const [ready, setReady] = useState(false);
 
   // Restore on mount. Without this the httpOnly cookie is written and never
   // redeemed — the refresh route would be dead code and the "survives a reload"
@@ -77,7 +88,13 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       .then((payload) => {
         if (!cancelled) setSession(toSession(payload));
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      // `finally`, so a refused cookie marks the session resolved just as a
+      // redeemed one does. Only the failure path leaving `ready` false would
+      // hang every dependent query forever.
+      .finally(() => {
+        if (!cancelled) setReady(true);
+      });
     return () => {
       cancelled = true;
     };
@@ -100,8 +117,38 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     setSession(null);
   }, []);
 
-  const value = useMemo(() => ({ session, signIn, refresh, signOut }), [session, signIn, refresh, signOut]);
+  const value = useMemo(
+    () => ({ session, ready, signIn, refresh, signOut }),
+    [session, ready, signIn, refresh, signOut],
+  );
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
+}
+
+/**
+ * Gate for everything behind the shell: no session, no page.
+ *
+ * This is client-side on purpose, and the reason is worth writing down because the
+ * obvious alternative looks better and does not work. Next middleware cannot do
+ * this: the refresh cookie is scoped to `path=/api/auth` (lib/auth-cookie.ts) so
+ * the browser never attaches it to a request for `/jobs`, and middleware would
+ * read every visitor as signed out. Widening the cookie's path to fix that would
+ * send the refresh token along with every page, image and font request — a worse
+ * trade than the one this makes.
+ *
+ * Nothing renders until `ready`, so the shell never paints for a signed-out
+ * visitor and then vanishes. The API stays the real authority regardless: this
+ * hides the chrome, and every query behind it still carries a bearer token the
+ * server checks (§4.1 — hiding a screen is not access control).
+ */
+export function RequireSession({ children }: { children: React.ReactNode }) {
+  const { session, ready } = useSession();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (ready && !session) router.replace('/sign-in');
+  }, [ready, session, router]);
+
+  return ready && session ? <>{children}</> : null;
 }
 
 export function useSession(): SessionValue {

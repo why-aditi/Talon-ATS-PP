@@ -246,17 +246,38 @@ export async function seed(databaseUrl = process.env['DATABASE_URL'] ?? DEFAULT_
   const talon = uuidv7();
   tenantRows.push({ id: talon, name: 'Talon Inc.', slug: 'talon', createdAt: ago(365) });
 
-  // external_id is left null on every seeded user, here and for Acme below. These
-  // are local-provider people: their credentials live in local_identities and
-  // their token subject IS users.id, which is the branch auth_user_by_sub() takes
-  // for a null external_id (migration 0004). A seeded Cognito sub would be a
-  // fiction — Cognito allocates it at provisioning time — and would make every
-  // seeded user unresolvable by the local provider.
-  const maya = uuidv7();
-  const sam = uuidv7();
-  const lin = uuidv7();
-  const davidO = uuidv7();
-  const tom = uuidv7();
+  // external_id is left null on every seeded user, here and for Acme below, and
+  // that means NOBODY SEEDED HERE CAN SIGN IN until `pnpm --filter api
+  // seed:identities` has run. That is not an omission: Cognito is the only
+  // identity provider (spec 002 open question 1) and it allocates the subject at
+  // provisioning time, so a seeded value would be a fiction that resolves to no
+  // Cognito account. auth_user_by_sub() falls back to users.id only where
+  // external_id is null (migration 0004), which is the state this leaves.
+  //
+  /*
+    Pinned, not uuidv7(): DESIGN_SYSTEM §3 derives an avatar fill by hashing the
+    user id, so a random id per seed run produces a random avatar colour per seed
+    run. That breaks the promise in CLAUDE.md §7 that the seed reproduces the
+    reference screens — Maya cannot be the brown of screen 02 if her id is minted
+    fresh every time, and the colours differ between two developers' machines for
+    reasons neither can see.
+
+    These are the values apps/web's fixtures already use, so the mock path and the
+    real API agree: Maya #B4640F, Tom #2569C2, Sam #6F4FC4.
+
+    Safe to pin: the seed truncates users before inserting, so re-running does not
+    collide on the primary key. Pinning the id does NOT pin the Cognito subject —
+    external_id is still allocated per provisioning run.
+
+    ponytail: only users are pinned, because only user ids are hashed today.
+    Candidate avatars on the pipeline screens will need the same treatment — pin
+    them when that screen lands rather than making the whole seed deterministic now.
+  */
+  const maya = '0198f3a1-0007-7000-8000-000000000001';
+  const sam = '0198f3a1-0006-7000-8000-000000000001';
+  const lin = '0198f3a1-0002-7000-8000-000000000001';
+  const davidO = '0198f3a1-0003-7000-8000-000000000001';
+  const tom = '0198f3a1-0001-7000-8000-000000000001';
   userRows.push(
     { id: maya, tenantId: talon, email: 'maya@taloninc.com', name: 'Maya Reyes', role: 'recruiter', timezone: 'America/Los_Angeles' },
     { id: sam, tenantId: talon, email: 'sam@taloninc.com', name: 'Sam Altmann', role: 'hiring_manager', timezone: 'Europe/London' },

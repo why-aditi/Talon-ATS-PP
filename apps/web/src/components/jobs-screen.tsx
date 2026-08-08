@@ -3,9 +3,24 @@
 import { JobStatusSchema, type Job } from '@talon/contracts';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { useJobs } from '../lib/jobs-query';
-import { ChevronDownIcon } from './icons';
-import { Avatar, Button, DistributionBar, Eyebrow, StatusPill, buttonClass, cx } from './ui';
+import { isOpenJob, useJobs } from '../lib/jobs-query';
+import { useJobTemplate } from './app-shell';
+import { Avatar, Button, DistributionBar, Eyebrow, Select, StatusPill, buttonClass, cx } from './ui';
+
+/**
+ * Not a JobStatus — a stand-in for "no filter" inside the control, because Radix
+ * treats "" as "nothing selected" and refuses it as an item value. Kept out of the
+ * URL and out of the query by the conversion at the call site.
+ */
+const ALL_STATUSES = 'all';
+
+const STATUS_OPTIONS = [
+  { value: ALL_STATUSES, label: 'All' },
+  ...JobStatusSchema.options.map((value) => ({
+    value,
+    label: value === 'on_hold' ? 'On hold' : value.charAt(0).toUpperCase() + value.slice(1),
+  })),
+];
 
 /**
  * Column tracks live in design-tokens.json under `layout.jobRow`, where the measurement
@@ -19,32 +34,38 @@ const ROW_GRID = [
 ].join(' ');
 const ROW_HEIGHT = 'h-[var(--layout-row-height)]';
 
-/** A job counts toward "N open" unless it has been closed out. */
-const isOpen = (job: Job) => job.status !== 'closed';
-
-/** URL `?state=` → the mock scenario that produces it. Filtered-empty needs no entry. */
-const STATE_SCENARIOS: Record<string, string> = {
-  loading: 'slow',
-  empty: 'empty',
-  error: 'error',
-  forbidden: 'forbidden',
-};
 
 /* ── Row ───────────────────────────────────────────────────────────────────── */
 
 function JobRow({ job }: { job: Job }) {
   return (
-    // ponytail: not a link yet — the job detail screen is M1, and a row that focuses
-    // but goes nowhere is worse than one that does not focus. Becomes an <a> then.
     <li
       className={cx(
         ROW_GRID,
         ROW_HEIGHT,
-        'transition-colors duration-[var(--duration-instant)] ease-standard hover:bg-bg-surface-hover',
+        // `relative` anchors the stretched hit area below.
+        'relative transition-colors duration-[var(--duration-instant)] ease-standard hover:bg-bg-surface-hover',
       )}
     >
       <div className="min-w-0">
-        <p className="truncate text-card-title text-text-primary">{job.title}</p>
+        {/*
+          One link, on the title, stretched over the whole row with `after:inset-0`.
+
+          The row could have been made clickable with an onClick on the <li>, and
+          that is the version that is wrong: it gives the keyboard nothing to land
+          on and a screen reader nothing to announce. This way there is exactly one
+          tab stop per row, its accessible name is the job title, and middle-click
+          and "open in new tab" work because it is a real anchor.
+
+          The job detail screen (M1) does not exist; its board does, and it is what
+          someone opening a req actually wants.
+        */}
+        <Link
+          href={`/jobs/${job.id}/pipeline`}
+          className="after:absolute after:inset-0 after:content-[''] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-border-focus"
+        >
+          <p className="truncate text-card-title text-text-primary">{job.title}</p>
+        </Link>
         {/* The reference renders req code and location as one monospace line;
             DESIGN_SYSTEM §4 describes it as `code`/`meta`. Following the screen. */}
         <p className="truncate font-mono text-code text-text-tertiary">
@@ -129,6 +150,7 @@ export function JobsScreen() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const openJobTemplate = useJobTemplate();
 
   // The URL is user input. `ListJobsQuery` is `.strict()` and `status` is an enum, so
   // forwarding `?status=bogus` verbatim 400s the real endpoint while the mock merely
@@ -137,17 +159,15 @@ export function JobsScreen() {
   const rawStatus = searchParams.get('status') ?? '';
   const status = JobStatusSchema.safeParse(rawStatus).success ? rawStatus : '';
   const department = (searchParams.get('department') ?? '').trim();
-  const state = searchParams.get('state') ?? '';
   const isFiltered = Boolean(status || department);
 
   const query = useJobs({
     status: status || undefined,
     department: department || undefined,
-    scenario: STATE_SCENARIOS[state],
   });
 
   const jobs = query.data?.data ?? [];
-  const openCount = jobs.filter(isOpen).length;
+  const openCount = jobs.filter(isOpenJob).length;
 
   // A failed *refetch* is not a failed load. React Query keeps the last good `data`
   // across a failure, so rendering the error card unconditionally would stack it on
@@ -179,32 +199,26 @@ export function JobsScreen() {
         <h1 className="font-display text-page-title text-text-primary">Jobs</h1>
         <p className="flex-1 text-meta tabular-nums text-text-tertiary">{hasData ? `${openCount} open` : ''}</p>
 
+        <Select
+          prefix="Status:"
+          ariaLabel="Filter jobs by status"
+          // Radix reserves "" to mean "nothing selected", so "All" travels as a
+          // sentinel and is converted back here. The URL contract is untouched:
+          // "All" is still the absence of `?status=`, not `?status=all`.
+          value={status || ALL_STATUSES}
+          onValueChange={(next) => setStatus(next === ALL_STATUSES ? '' : next)}
+          options={STATUS_OPTIONS}
+        />
+
         {/*
-          The height belongs on the select, not the wrapper: a wrapper-sized control
-          leaves the real hit target at the select's ~20px line box, under the 24×24
-          minimum. The chevron overlays the select's own right padding and is
-          pointer-events-none, so the arrow is part of the target rather than a hole
-          in it. Neither failure is visible to axe — both need a human or a ruler.
+          Screen 02 carries "+ New job" twice — dashed in the sidebar, primary here.
+          Both now open the job template modal through the same context callback, which
+          is what #5 requires: two entry points, one code path. Spec 003 records that
+          this is a stopgap until the wizard on screen 09 exists.
         */}
-        <div className="flex h-[var(--control-height-md)] items-center gap-1 rounded-md border border-border-default bg-bg-surface pl-3 pr-2 text-body">
-          <span className="pointer-events-none text-text-secondary">Status:</span>
-          <span className="relative flex h-full items-center">
-            <select
-              aria-label="Filter jobs by status"
-              value={status}
-              onChange={(event) => setStatus(event.target.value)}
-              className="h-full appearance-none bg-transparent pr-5 text-text-primary"
-            >
-              <option value="">All</option>
-              {JobStatusSchema.options.map((value) => (
-                <option key={value} value={value}>
-                  {value === 'on_hold' ? 'On hold' : value.charAt(0).toUpperCase() + value.slice(1)}
-                </option>
-              ))}
-            </select>
-            <ChevronDownIcon className="pointer-events-none absolute right-0 text-text-secondary" />
-          </span>
-        </div>
+        <button type="button" onClick={openJobTemplate} className={buttonClass('primary')}>
+          + New job
+        </button>
       </div>
 
       {query.isPending ? <LoadingSkeleton /> : null}
@@ -251,10 +265,11 @@ export function JobsScreen() {
       ) : null}
 
       {/*
-        No action and no pointer to one. "+ New job" is deferred with the wizard
-        (§7.4); the sidebar link lands on the not-built page until it exists, so
-        naming it in the copy would send someone into a dead end instead of a
-        button that does nothing — not an improvement.
+        The placeholder itself carries no action: the header and the sidebar both
+        already offer "+ New job", so a third copy of it here would be the same dead
+        end stated three times. The copy still does not name them, because /jobs/new
+        is a 404 until the wizard lands (§7.4) and pointing at a dead end in prose is
+        worse than letting the button be the thing that discovers it.
       */}
       {hasData && jobs.length === 0 && !isFiltered ? (
         <Placeholder
@@ -266,7 +281,7 @@ export function JobsScreen() {
       {groups.map((group) => (
         <section key={group.department} className="mt-6 first:mt-0">
           <Eyebrow className="pb-2">
-            {group.department} · {group.jobs.filter(isOpen).length} open
+            {group.department} · {group.jobs.filter(isOpenJob).length} open
           </Eyebrow>
           <div className="overflow-hidden rounded-lg border border-border-default bg-bg-surface">
             <ul className="divide-y divide-border-subtle">
