@@ -72,6 +72,12 @@ export const ERROR_TYPES = {
   STAGE_VERSION_CONFLICT: 'urn:talon:error:stage-version-conflict',
   /** PATCH /v1/jobs/:id against a version somebody else has moved on from. */
   JOB_VERSION_CONFLICT: 'urn:talon:error:job-version-conflict',
+  /**
+   * This person already has an application on this job. `applications` is unique
+   * on (tenant_id, candidate_id, job_id) — one person applies to one req once —
+   * so this is a real answer about the world, not an internal failure.
+   */
+  ALREADY_APPLIED: 'urn:talon:error:already-applied',
   /** Answered regardless of version — re-applying a stage change over someone else's
    *  move corrupts the append-only transition log. */
   STAGE_MOVED: 'urn:talon:error:stage-moved',

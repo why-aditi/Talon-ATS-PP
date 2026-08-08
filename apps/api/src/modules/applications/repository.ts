@@ -7,6 +7,7 @@
  * top of it, the same belt-and-braces the jobs repository uses.
  */
 import type { CanonicalStage, Source, ApplicationStatus, JobStatus } from '@talon/contracts';
+import { newId } from '@talon/db';
 import type { TenantTransaction } from '../../request-context.js';
 
 /**
@@ -419,7 +420,16 @@ export class ApplicationsRepository {
   /** Append-only. There is no update or delete grant on this table for the app role. */
   async appendTransition(
     tx: TenantTransaction,
-    args: { applicationId: string; fromStageId: string; toStageId: string; actorId: string; reason?: string | undefined },
+    args: {
+      applicationId: string;
+      /** Null on the FIRST entry — an application arriving from nowhere. The
+       *  column has always been nullable; this signature was not, which is why
+       *  intake could not use it. */
+      fromStageId: string | null;
+      toStageId: string;
+      actorId: string;
+      reason?: string | undefined;
+    },
   ): Promise<void> {
     await tx.sql`
       insert into stage_transitions (tenant_id, application_id, from_stage_id, to_stage_id, actor_id, reason)
@@ -482,5 +492,118 @@ export class ApplicationsRepository {
     await tx.sql`
       insert into outbox (tenant_id, aggregate, aggregate_id, event_type, payload)
       values (${tx.tenantId}, 'application', ${args.aggregateId}, ${args.eventType}, ${tx.sql.json(args.payload)})`;
+  }
+
+  /* ── Intake — spec 005 §4.5 ────────────────────────────────────────────── */
+
+  /** The job's first stage by position: where an application lands by default. */
+  async firstStageOfJob(tx: TenantTransaction, jobId: string): Promise<{ id: string } | null> {
+    const [row] = await tx.sql<{ id: string }[]>`
+      select id from job_stages
+      where tenant_id = ${tx.tenantId}::uuid and job_id = ${jobId}::uuid
+      order by position
+      limit 1`;
+    return row ?? null;
+  }
+
+  /**
+   * A stage, but only if it belongs to THIS job.
+   *
+   * `job_stages` carries a composite FK on `(job_id, id)` so the database would
+   * refuse a cross-job stage anyway (#10) — this exists so the answer is a 404
+   * rather than a constraint violation surfacing as a 500.
+   */
+  async findStageInJob(tx: TenantTransaction, jobId: string, stageId: string): Promise<{ id: string } | null> {
+    const [row] = await tx.sql<{ id: string }[]>`
+      select id from job_stages
+      where tenant_id = ${tx.tenantId}::uuid and job_id = ${jobId}::uuid and id = ${stageId}::uuid`;
+    return row ?? null;
+  }
+
+  /**
+   * The top two ranks in a column.
+   *
+   * Two, not one, because prepending is not always possible: `between` refuses
+   * to produce a key above one that ends in the lowest digit, and repeated
+   * intakes into the same column reach that. The second rank is what lets the
+   * caller land just below the top instead of failing.
+   */
+  async topTwoRanks(tx: TenantTransaction, stageId: string): Promise<string[]> {
+    const rows = await tx.sql<{ board_rank: string }[]>`
+      select board_rank from applications
+      where current_stage_id = ${stageId}::uuid and tenant_id = ${tx.tenantId}::uuid
+      order by board_rank collate "C", id
+      limit 2`;
+    return rows.map((r) => r.board_rank);
+  }
+
+  async candidateExists(tx: TenantTransaction, candidateId: string): Promise<boolean> {
+    const rows = await tx.sql`
+      select 1 from candidates
+      where tenant_id = ${tx.tenantId}::uuid and id = ${candidateId}::uuid`;
+    return rows.length === 1;
+  }
+
+  async insertCandidate(
+    tx: TenantTransaction,
+    c: {
+      name: string;
+      email: string | null;
+      phone: string | null;
+      location: string | null;
+      currentTitle: string | null;
+      currentCompany: string | null;
+      links: Record<string, string>;
+    },
+  ): Promise<string> {
+    // Generated here: `id` has no database default and is UUIDv7 because board
+    // rank ties break on it (see newId in @talon/db).
+    const id = newId();
+    await tx.sql`
+      insert into candidates (id, tenant_id, name, email, phone, location, current_title, current_company, links)
+      values (${id}::uuid, ${tx.tenantId}::uuid, ${c.name}, ${c.email}, ${c.phone}, ${c.location},
+              ${c.currentTitle}, ${c.currentCompany}, ${tx.sql.json(c.links)})`;
+    return id;
+  }
+
+  async insertApplication(
+    tx: TenantTransaction,
+    a: {
+      candidateId: string;
+      jobId: string;
+      stageId: string;
+      boardRank: string;
+      source: string;
+      referredById: string | null;
+      compExpectationMinCents: string | null;
+      compExpectationMaxCents: string | null;
+      compExpectationCurrency: string | null;
+      noticePeriodDays: number | null;
+    },
+  ): Promise<string> {
+    const id = newId();
+    await tx.sql`
+      insert into applications (
+        id, tenant_id, candidate_id, job_id, current_stage_id, stage_entered_at, board_rank,
+        source, referred_by_id, comp_expectation_min_cents, comp_expectation_max_cents,
+        comp_expectation_currency, notice_period_days
+      ) values (
+        ${id}::uuid, ${tx.tenantId}::uuid, ${a.candidateId}::uuid, ${a.jobId}::uuid, ${a.stageId}::uuid,
+        -- now(), not a client timestamp: "days in stage" is derived from this and a
+        -- clock the caller controls would let them fake a stall.
+        now(), ${a.boardRank}, ${a.source}, ${a.referredById}::uuid,
+        ${a.compExpectationMinCents}::bigint, ${a.compExpectationMaxCents}::bigint,
+        ${a.compExpectationCurrency}, ${a.noticePeriodDays}
+      )`;
+    return id;
+  }
+
+  /** For the duplicate warning in §10.9 — a hint, never a refusal. */
+  async findCandidateByEmail(tx: TenantTransaction, email: string): Promise<{ id: string; name: string } | null> {
+    const [row] = await tx.sql<{ id: string; name: string }[]>`
+      select id, name from candidates
+      where tenant_id = ${tx.tenantId}::uuid and email = ${email}
+      limit 1`;
+    return row ?? null;
   }
 }

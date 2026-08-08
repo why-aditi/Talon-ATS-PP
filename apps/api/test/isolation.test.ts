@@ -14,6 +14,7 @@ import { afterAll, beforeAll, expect, it } from 'vitest';
 import { ERROR_TYPES } from '@talon/contracts';
 import {
   bearer,
+  deleteApplications,
   deleteJobs,
   loadFixtures,
   signIn,
@@ -144,6 +145,24 @@ const HOSTILE_REQUESTS: Record<string, HostileCase> = {
     }),
     victimStatus: 409,
   },
+  /*
+    Tenant A's job, with a body that VALIDATES so the refusal is about tenancy
+    and not about the schema. The owner really does create a candidate here —
+    there is no stale-version trick available on a create — so the row is removed
+    in afterAll alongside the jobs.
+  */
+  'POST /v1/applications': {
+    request: (f) => ({
+      method: 'POST',
+      url: '/v1/applications',
+      payload: {
+        jobId: f.talon.jobId,
+        candidate: { name: 'Isolation Probe' },
+        source: 'outbound',
+      },
+    }),
+    victimStatus: 201,
+  },
   'PATCH /v1/applications/:id/rank': {
     request: (f) => ({
       method: 'PATCH',
@@ -172,8 +191,11 @@ beforeAll(async () => {
   leftover row makes which file fails depend on vitest's run order.
 */
 const createdJobs: string[] = [];
+/** Same reasoning as `createdJobs`: the POST case really does create one. */
+const createdApplications: string[] = [];
 
 afterAll(async () => {
+  await deleteApplications(createdApplications);
   await deleteJobs(createdJobs);
   await test.close();
 });
@@ -196,6 +218,9 @@ it('the same requests succeed for the tenant that owns the resource', async () =
     // Any row this created is this file's to remove — see `createdJobs`.
     if (res.statusCode === 201 && url === '/v1/jobs') {
       createdJobs.push((res.json() as { id: string }).id);
+    }
+    if (res.statusCode === 201 && url === '/v1/applications') {
+      createdApplications.push((res.json() as { application: { id: string } }).application.id);
     }
     // Anything but 404: the owner can see their own resource. 200 unless the case says
     // otherwise — see `victimStatus`.

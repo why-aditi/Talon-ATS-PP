@@ -181,3 +181,81 @@ export const StageConflictSchema = z.object({
   currentStageName: z.string(),
 });
 export type StageConflict = z.infer<typeof StageConflictSchema>;
+
+// ---------------------------------------------------------------------------
+// POST /v1/applications — spec 005 §4.5
+// ---------------------------------------------------------------------------
+
+/** A person. `email` is optional because `candidates.email` is: sourcing a name
+ *  before an address is ordinary. */
+export const CreateCandidateSchema = z
+  .object({
+    name: z.string().trim().min(1).max(200),
+    email: z.string().email().max(320).optional(),
+    phone: z.string().trim().max(50).optional(),
+    location: z.string().trim().max(100).optional(),
+    currentTitle: z.string().trim().max(200).optional(),
+    currentCompany: z.string().trim().max(200).optional(),
+    /** Values are parsed as URLs so a `javascript:` string cannot be stored and
+     *  later rendered as an anchor. */
+    links: z.record(z.string().url()).default({}),
+  })
+  .strict();
+export type CreateCandidate = z.infer<typeof CreateCandidateSchema>;
+
+const ExpectationCentsSchema = z
+  .string()
+  .regex(/^[1-9][0-9]*$/, 'Cents must be a positive integer, as a string');
+
+export const CreateApplicationBodySchema = z
+  .object({
+    jobId: z.string().uuid(),
+
+    /** Exactly one: attach an existing person, or create one inline. */
+    candidateId: z.string().uuid().optional(),
+    candidate: CreateCandidateSchema.optional(),
+
+    /** Omitted means the job's first stage by position. */
+    stageId: z.string().uuid().optional(),
+    source: SourceSchema,
+    referredById: z.string().uuid().nullable().optional(),
+
+    /** Scope-gated exactly as a job's band is (#2). */
+    compExpectationMinCents: ExpectationCentsSchema.optional(),
+    compExpectationMaxCents: ExpectationCentsSchema.optional(),
+    compExpectationCurrency: z.string().regex(/^[A-Z]{3}$/).optional(),
+    noticePeriodDays: z.number().int().min(0).max(365).optional(),
+  })
+  .strict()
+  // An exclusive or: both provided is as wrong as neither.
+  .refine((v) => (v.candidateId === undefined) !== (v.candidate === undefined), {
+    message: 'Provide either candidateId or candidate, not both',
+    path: ['candidate'],
+  })
+  .refine(
+    (v) => (v.compExpectationMinCents === undefined) === (v.compExpectationMaxCents === undefined),
+    { message: 'A comp expectation needs both a minimum and a maximum', path: ['compExpectationMaxCents'] },
+  )
+  .refine((v) => v.compExpectationMinCents === undefined || v.compExpectationCurrency !== undefined, {
+    message: 'A currency is required when a comp expectation is set',
+    path: ['compExpectationCurrency'],
+  })
+  .refine(
+    (v) =>
+      v.compExpectationMinCents === undefined ||
+      v.compExpectationMaxCents === undefined ||
+      BigInt(v.compExpectationMaxCents) >= BigInt(v.compExpectationMinCents),
+    { message: 'Maximum must be at least the minimum', path: ['compExpectationMaxCents'] },
+  );
+export type CreateApplicationBody = z.infer<typeof CreateApplicationBodySchema>;
+
+/**
+ * The created card, in the shape the board already renders, plus where it went.
+ * The client can then insert it without refetching the whole board — and
+ * `stageId` is what says which column, which the card itself does not carry.
+ */
+export const CreateApplicationResponseSchema = z.object({
+  application: ApplicationCardSchema,
+  stageId: z.string().uuid(),
+});
+export type CreateApplicationResponse = z.infer<typeof CreateApplicationResponseSchema>;

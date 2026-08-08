@@ -262,3 +262,39 @@ export async function deleteJobs(ids: readonly string[]): Promise<void> {
     await sql.end();
   }
 }
+
+/**
+ * Removes applications a test created, with the rows that hang off them.
+ *
+ * `stage_transitions` is append-only for the APP role — there is no delete grant
+ * — but this runs on the owner connection, which is the point: test data is
+ * removed by the operator, not by the application, exactly as it would be in
+ * production. Without it, `board.test.ts` counts an extra card on ENG-204 and
+ * which file fails depends on vitest's run order.
+ *
+ * Candidates go too when nothing else references them: an orphan person left
+ * behind would show up in any future candidate-list assertion.
+ */
+export async function deleteApplications(ids: readonly string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const sql = postgres(OWNER_URL, { max: 1, onnotice: () => {} });
+  try {
+    const list = ids as string[];
+    const candidates = await sql<{ candidate_id: string }[]>`
+      select candidate_id from applications where id = any(${list}::uuid[])`;
+    await sql`delete from stage_transitions where application_id = any(${list}::uuid[])`;
+    await sql`delete from activities where application_id = any(${list}::uuid[])`;
+    await sql`delete from audit_log where entity_type = 'application' and entity_id = any(${list}::uuid[])`;
+    await sql`delete from outbox where aggregate = 'application' and aggregate_id = any(${list}::uuid[])`;
+    await sql`delete from applications where id = any(${list}::uuid[])`;
+    const orphans = candidates.map((c) => c.candidate_id);
+    if (orphans.length > 0) {
+      await sql`
+        delete from candidates c
+        where c.id = any(${orphans}::uuid[])
+          and not exists (select 1 from applications a where a.candidate_id = c.id)`;
+    }
+  } finally {
+    await sql.end();
+  }
+}
