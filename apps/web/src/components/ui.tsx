@@ -60,17 +60,28 @@ export function Button({ variant = 'secondary', size = 'md', className, ...props
 */
 export function Select({
   prefix,
+  placeholder,
   ariaLabel,
   value,
   onValueChange,
   options,
+  className,
+  invalid,
 }: {
   /** Visible lead-in, e.g. "Status:". Distinct from the accessible name. */
-  prefix: string;
+  prefix?: string;
+  /**
+   * Shown while `value` is empty. A filter always has a value ("All"), so it
+   * needs none; a required field with no default — the wizard's currency, which
+   * #9 forbids guessing — has nothing to show until someone chooses.
+   */
+  placeholder?: string;
   ariaLabel: string;
   value: string;
   onValueChange: (value: string) => void;
   options: readonly { value: string; label: string }[];
+  className?: string;
+  invalid?: boolean;
 }) {
   return (
     <SelectPrimitive.Root value={value} onValueChange={onValueChange}>
@@ -82,10 +93,17 @@ export function Select({
       */}
       <SelectPrimitive.Trigger
         aria-label={ariaLabel}
-        className="inline-flex h-[var(--control-height-md)] items-center gap-1 rounded-md border border-border-default bg-bg-surface pl-3 pr-2 text-body text-text-primary hover:bg-bg-surface-hover"
+        {...(invalid ? { 'aria-invalid': true } : {})}
+        className={cx(
+          'inline-flex h-[var(--control-height-md)] items-center gap-1 rounded-md border bg-bg-surface pl-3 pr-2 text-body text-text-primary hover:bg-bg-surface-hover',
+          invalid ? 'border-border-danger' : 'border-border-default',
+          className,
+        )}
       >
-        <span className="text-text-secondary">{prefix}</span>
-        <SelectPrimitive.Value />
+        {prefix ? <span className="text-text-secondary">{prefix}</span> : null}
+        {/* Radix renders `placeholder` only while the value is empty, which is
+            exactly the distinction between "not chosen" and "chose the default". */}
+        <SelectPrimitive.Value placeholder={placeholder} />
         <SelectPrimitive.Icon asChild>
           <ChevronDownIcon className="text-text-secondary" />
         </SelectPrimitive.Icon>
