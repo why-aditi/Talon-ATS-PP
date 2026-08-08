@@ -60,7 +60,7 @@ export function OffersScreen() {
               <li key={offer.id} className="border-b border-border-subtle last:border-0">
                 <Link
                   href={`/offers/${offer.id}`}
-                  className="grid h-[var(--layout-row-height)] grid-cols-[minmax(0,1fr)_8rem_10rem_8rem] items-center gap-4 px-4 hover:bg-action-ghost-bg-hover"
+                  className="grid h-[var(--layout-row-height)] grid-cols-[minmax(0,1fr)_auto_auto_auto] items-center gap-4 px-4 hover:bg-action-ghost-bg-hover"
                 >
                   <span className="flex min-w-0 items-center gap-3">
                     <Avatar id={offer.candidateId} name={offer.candidateName} size={24} />
@@ -86,7 +86,7 @@ export function OffersScreen() {
 function Term({ label, value, badge }: { label: string; value: string; badge?: string }) {
   return (
     <div className="flex items-center gap-4 border-b border-border-subtle py-4 last:border-0">
-      <dt className="w-40 shrink-0 text-body text-text-secondary">{label}</dt>
+      <dt className="w-20 shrink-0 text-body text-text-secondary">{label}</dt>
       <dd className="flex min-w-0 flex-1 items-center justify-between gap-3">
         <span className="text-body-strong text-text-primary">{value}</span>
         {badge ? (
@@ -149,8 +149,8 @@ export function OfferDetail({ offerId }: { offerId: string }) {
   if (query.isPending) {
     return (
       <div className="flex flex-1 gap-4 p-[var(--layout-page-gutter)]">
-        <div className="h-96 flex-1 animate-pulse rounded-lg bg-bg-surface-sunken" />
-        <div className="h-96 flex-1 animate-pulse rounded-lg bg-bg-surface-sunken" />
+        <div className="h-20 flex-1 animate-pulse rounded-lg bg-bg-surface-sunken" />
+        <div className="h-20 flex-1 animate-pulse rounded-lg bg-bg-surface-sunken" />
       </div>
     );
   }

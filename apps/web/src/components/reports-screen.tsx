@@ -9,10 +9,11 @@
  *
  * ACCESSIBILITY NOTE, and it is the reason this file is shaped the way it is.
  * `color.semantic.stage.*` and `color.semantic.source.*` were run through the palette
- * validator and both FAIL adjacent-pair CVD separation on the same pair: `screen`
- * (#2569C2) against `onsite` (#6F4FC4) measures ΔE 0.6 for deuteranopes — visually
- * identical — and ΔE 10.1 even with normal colour vision, under the readability floor.
- * The two are adjacent in pipeline order, which is the worst arrangement for it.
+ * validator and both FAIL adjacent-pair CVD separation on the same pair: `stage.screen`
+ * against `stage.onsite` measures ΔE 0.6 for deuteranopes — visually identical — and
+ * ΔE 10.1 even with normal colour vision, under the readability floor. The two are
+ * adjacent in pipeline order, which is the worst arrangement for it. The measured
+ * figures live in spec 007 OQ-8; naming the hex here would itself breach §4.8.
  *
  * The tokens are measured from the reference and are authoritative (CLAUDE.md), so
  * they are not "corrected" here. What makes this screen legal instead is the secondary
@@ -89,16 +90,16 @@ function Conversion({ rows }: { rows: ReportsOverview['conversion'] }) {
     <Panel title="Pipeline conversion">
       <ul className="flex flex-col gap-3" role="img" aria-label={rows.map((r) => `${r.label} ${r.count}`).join(', ')}>
         {rows.map((row) => (
-          <li key={row.stage} className="grid grid-cols-[5rem_minmax(0,1fr)_3rem] items-center gap-3">
+          <li key={row.stage} className="grid grid-cols-[minmax(0,auto)_minmax(0,1fr)_minmax(0,auto)] items-center gap-3">
             {/* The label is the identity carrier. The fill reinforces it. */}
-            <span className="text-body text-text-primary">{row.label}</span>
+            <span className="w-20 text-body text-text-primary">{row.label}</span>
             <span className="h-4 overflow-hidden rounded-full bg-bg-surface-sunken">
               <span
                 className={cx('block h-full rounded-full', STAGE_FILL[row.stage])}
                 style={{ width: max === 0 ? '0%' : `${(row.count / max) * 100}%` }}
               />
             </span>
-            <span className="text-right text-body text-text-primary tabular-nums">{row.count}</span>
+            <span className="w-10 text-right text-body text-text-primary tabular-nums">{row.count}</span>
           </li>
         ))}
       </ul>
@@ -130,23 +131,30 @@ function Trend({ points }: { points: ReportsOverview['interviewsPerWeek'] }) {
   return (
     <Panel title="Interviews per week" aside={`${points.length} week trend`}>
       <div
-        className="flex h-48 items-end gap-3"
+        className="flex items-end gap-3"
         role="img"
         aria-label={points.map((p) => `${p.label} ${p.count}`).join(', ')}
       >
         {points.map((point, i) => (
           <div key={point.label} className="flex min-w-0 flex-1 flex-col items-center gap-2">
             <span className="text-caption text-text-secondary tabular-nums">{point.count}</span>
-            <span
-              // Only the last column is the current week, and it is the only saturated
-              // one — the design's own emphasis, carried by a token measured off the
-              // reference rather than an opacity guess.
-              className={cx(
-                'w-full rounded-t-sm',
-                i === points.length - 1 ? 'bg-chart-bar-current' : 'bg-chart-bar-idle',
-              )}
-              style={{ height: max === 0 ? '0%' : `${(point.count / max) * 100}%` }}
-            />
+            {/*
+              The plot area is a token measured off the reference: all eight bars share
+              a baseline and the tallest rises 70px above it. The height lives on this
+              track rather than the row, so the bars scale against the measurement and
+              not against whatever the labels happen to occupy.
+            */}
+            <span className="flex h-[var(--layout-reports-trend-height)] w-full items-end">
+              {/* Only the last column is the current week, and the only saturated one —
+                  the design's own emphasis, from a measured token, not an opacity guess. */}
+              <span
+                className={cx(
+                  'w-full rounded-t-sm',
+                  i === points.length - 1 ? 'bg-chart-bar-current' : 'bg-chart-bar-idle',
+                )}
+                style={{ height: max === 0 ? '0%' : `${(point.count / max) * 100}%` }}
+              />
+            </span>
             <span className="text-caption text-text-tertiary">{point.label}</span>
           </div>
         ))}
@@ -157,8 +165,8 @@ function Trend({ points }: { points: ReportsOverview['interviewsPerWeek'] }) {
 }
 
 function TileSkeleton() {
-  // Final height, so the page does not reflow when the data lands.
-  return <div className="h-28 animate-pulse rounded-lg bg-bg-surface-sunken" />;
+  // Approximates the final height so the page settles rather than jumping.
+  return <div className="h-20 animate-pulse rounded-lg bg-bg-surface-sunken" />;
 }
 
 export function ReportsScreen() {
@@ -183,8 +191,8 @@ export function ReportsScreen() {
             ))}
           </div>
           <div className="grid grid-cols-2 gap-4">
-            <div className="h-56 animate-pulse rounded-lg bg-bg-surface-sunken" />
-            <div className="h-56 animate-pulse rounded-lg bg-bg-surface-sunken" />
+            <div className="h-20 animate-pulse rounded-lg bg-bg-surface-sunken" />
+            <div className="h-20 animate-pulse rounded-lg bg-bg-surface-sunken" />
           </div>
         </>
       ) : (
