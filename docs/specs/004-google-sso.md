@@ -1,8 +1,8 @@
 # Spec 004 — Google SSO
 
-**Status:** web and api halves built. **Infra is not started, and nothing works without it** —
-there is no Cognito domain and no Google IdP, so no hosted-UI flow can be started at all.
-The §10 work order is the remaining piece.
+**Status:** web, api and the AWS side of infra are done. **One blocker remains and it is
+not in this repo:** Google refuses the callback with `redirect_uri_mismatch` until
+Cognito's `/oauth2/idpresponse` URL is added to the Google Cloud OAuth client. See §10.5.
 **Milestone:** M0b. Follows `002-identity.md`, which named SSO as the thing it blocks.
 **Depends on:** spec 002 (`CognitoIdentityProvider`, the JWKS verifier, `users.external_id`)
 **Blocks:** SAML SSO, and PRD §5.1's SSO-discovery-by-email-domain
@@ -706,3 +706,44 @@ The api half is done and tested; **Google sign-in still does not work end to end
 `ssoConfig()` returns null without `COGNITO_DOMAIN`, so both web routes 404 and the button stays disabled. **That off state is correct and deliberate** — turning the flag on before §10 lands produces a round trip that fails at its first step rather than its last.
 
 Local verification is against the Cognito stub, which substitutes the network and not the class: the JWKS fetch, the RS256 signature check, the `aud`/`iss`/`token_use` checks and the `external_id` join all run for real. What the stub cannot cover is the hosted-UI round trip itself, and no amount of test infrastructure can — it needs a real pool and a real Google client.
+
+---
+
+## 10.5 What was applied on 2026-08-08, and the one thing left
+
+Applied against the spec-002 throwaway pool `us-east-1_08d7fh6x5`, and captured in `infra/terraform/stacks/persistent/cognito_sso.tf`:
+
+| Change | State |
+|---|---|
+| `aws_cognito_user_pool_domain` — `talon-dev-762079300828` | **created** |
+| Google identity provider, credentials read from `talon-dev/sso/google` | **created**, mapping `email`→`email`, `username`→`sub` |
+| App client OAuth: `code` flow, `openid email profile`, callback + logout URLs, `COGNITO`+`Google` | **enabled** |
+
+**Verified live, not reasoned about.** `GET /oauth2/authorize?identity_provider=Google` returns `302` to `accounts.google.com` carrying the right client id, so the flow starts correctly.
+
+### The blocker
+
+Following that redirect, **Google answers `Error 400: redirect_uri_mismatch`.**
+
+Cognito sends Google its own callback, and that URL is not on the Google OAuth client's allow-list:
+
+```
+https://talon-dev-762079300828.auth.us-east-1.amazoncognito.com/oauth2/idpresponse
+```
+
+It has to be added under **Authorized redirect URIs** on the OAuth client `559468296486-…apps.googleusercontent.com` in the Google Cloud console. That is a Google project setting — no AWS credential reaches it, and no Terraform provider in this repo manages it. The client id and secret in Secrets Manager grant use of the client, not administration of it.
+
+Once that line exists the flow completes end to end with no further code change.
+
+### Then, to run it locally
+
+`apps/web` needs both, or `ssoConfig()` returns null and the routes 404 by design:
+
+```
+COGNITO_DOMAIN=https://talon-dev-762079300828.auth.us-east-1.amazoncognito.com
+APP_ORIGIN=http://localhost:3000
+```
+
+### Recorded drift
+
+§10.1 says do not build on the throwaway pool, and this did — because it is the pool the dev app and every seeded `users.external_id` already point at, and standing up the permanent pool means re-provisioning all of them before anyone can sign in at all. The Terraform is written so the move is a one-variable change: the three resources take `user_pool_id` as input. §10.1 still holds — the throwaway must not become the permanent identity store.
