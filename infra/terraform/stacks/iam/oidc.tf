@@ -30,6 +30,17 @@ resource "aws_iam_openid_connect_provider" "github" {
   thumbprint_list = var.github_oidc_thumbprints
 }
 
+# The reuse path. Reading it rather than constructing the ARN means a missing
+# provider is a plan-time error naming the thing that is missing, instead of a
+# well-formed ARN that IAM rejects with MalformedPolicyDocument three resources
+# later. `iam:GetOpenIDConnectProvider` is in ReadOnlyAccess, so the plan role
+# can do this without a grant.
+data "aws_iam_openid_connect_provider" "github" {
+  count = var.github_oidc_provider_arn == "" && !var.create_github_oidc_provider ? 1 : 0
+
+  url = "https://${local.oidc_host}"
+}
+
 # ---------------------------------------------------------------------------
 # Trust policies.
 #

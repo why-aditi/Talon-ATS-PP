@@ -92,7 +92,7 @@ variable "github_oidc_provider_arn" {
 }
 
 variable "create_github_oidc_provider" {
-  description = "Create the GitHub OIDC provider instead of reusing the account's. False because the provider is account-global — one per issuer URL — and 762079300828 is shared, so it already exists (see the ARCHITECTURE §9.6 note on the shared account). Set true when standing this up in a fresh account that has never run a GitHub Actions workflow; leaving it false there fails the apply with MalformedPolicyDocument on the first trust policy, which is the loud failure, not a silent one."
+  description = "Create the GitHub OIDC provider instead of reusing the account's. False because the provider is account-global — one per issuer URL — and 762079300828 is shared, so it already exists. Set true when standing this up in a fresh account that has never run a GitHub Actions workflow; leaving it false there fails the PLAN with 'no matching OpenID Connect Provider found', which names the fix."
   type        = bool
   default     = false
 }

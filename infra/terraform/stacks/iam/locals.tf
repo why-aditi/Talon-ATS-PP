@@ -26,14 +26,16 @@ locals {
   permissions_boundary_name = "${local.name}-permissions-boundary"
   permissions_boundary_arn  = "arn:${local.partition}:iam::${local.account_id}:policy/${local.name}-permissions-boundary"
 
-  # Constructed rather than read from the resource for the same reason as
-  # permissions_boundary_arn above: the URL is fixed and the name is
-  # deterministic, so the ARN is exact, and it renders as a literal in the plan
-  # instead of "(known after apply)" — which is what let the missing provider go
-  # unnoticed in the first place. Only the create path needs the resource.
+  # Three sources, in order: an ARN handed in, the provider this stack created,
+  # or the one already in the account. The last is the normal case and is READ
+  # rather than constructed — the ARN is derivable (fixed URL, so
+  # `oidc-provider/${local.oidc_host}` under this account), but a constructed
+  # ARN for a provider that does not exist is accepted by Terraform and rejected
+  # by IAM later, while the data source says "no matching provider" at plan time.
   oidc_provider_arn = coalesce(
     var.github_oidc_provider_arn,
-    var.create_github_oidc_provider ? one(aws_iam_openid_connect_provider.github[*].arn) : "arn:${local.partition}:iam::${local.account_id}:oidc-provider/${local.oidc_host}",
+    one(aws_iam_openid_connect_provider.github[*].arn),
+    one(data.aws_iam_openid_connect_provider.github[*].arn),
   )
 
   # The OIDC issuer host, used verbatim as the condition-key namespace. AWS
