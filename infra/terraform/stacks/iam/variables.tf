@@ -86,9 +86,15 @@ variable "github_default_branch" {
 }
 
 variable "github_oidc_provider_arn" {
-  description = "ARN of an existing GitHub OIDC provider. The provider is account-global and there can only be one per account; set this when a company account already has it and this stack should reuse rather than create it. Empty means create it here."
+  description = "ARN of an existing GitHub OIDC provider, when it lives in a different account or under a non-default URL. Empty is normal: the ARN for this account is then constructed in locals.tf, because the issuer URL is fixed and the ARN is therefore deterministic. See create_github_oidc_provider for the create-it-here case."
   type        = string
   default     = ""
+}
+
+variable "create_github_oidc_provider" {
+  description = "Create the GitHub OIDC provider instead of reusing the account's. False because the provider is account-global — one per issuer URL — and 762079300828 is shared, so it already exists (see the ARCHITECTURE §9.6 note on the shared account). Set true when standing this up in a fresh account that has never run a GitHub Actions workflow; leaving it false there fails the apply with MalformedPolicyDocument on the first trust policy, which is the loud failure, not a silent one."
+  type        = bool
+  default     = false
 }
 
 variable "github_oidc_thumbprints" {

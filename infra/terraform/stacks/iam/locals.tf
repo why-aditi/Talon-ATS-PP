@@ -26,7 +26,15 @@ locals {
   permissions_boundary_name = "${local.name}-permissions-boundary"
   permissions_boundary_arn  = "arn:${local.partition}:iam::${local.account_id}:policy/${local.name}-permissions-boundary"
 
-  oidc_provider_arn = var.github_oidc_provider_arn != "" ? var.github_oidc_provider_arn : aws_iam_openid_connect_provider.github[0].arn
+  # Constructed rather than read from the resource for the same reason as
+  # permissions_boundary_arn above: the URL is fixed and the name is
+  # deterministic, so the ARN is exact, and it renders as a literal in the plan
+  # instead of "(known after apply)" — which is what let the missing provider go
+  # unnoticed in the first place. Only the create path needs the resource.
+  oidc_provider_arn = coalesce(
+    var.github_oidc_provider_arn,
+    var.create_github_oidc_provider ? one(aws_iam_openid_connect_provider.github[*].arn) : "arn:${local.partition}:iam::${local.account_id}:oidc-provider/${local.oidc_host}",
+  )
 
   # The OIDC issuer host, used verbatim as the condition-key namespace. AWS
   # derives the condition key prefix from the provider URL, so this string is
