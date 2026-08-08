@@ -1,11 +1,119 @@
 /**
  * Process configuration. Read once at boot; nothing below reads process.env.
  */
+import { isRole, ROLES, type Role } from '@talon/domain';
 
 export interface CognitoConfig {
   region: string;
   userPoolId: string;
   clientId: string;
+}
+
+/** What an allow-listed email domain buys: a tenant to land in and a role to land as. */
+export interface JitGrant {
+  /**
+   * A tenant UUID, NOT a name or a slug, and that is forced rather than chosen.
+   *
+   * `tenants` carries `force row level security` with the policy
+   * `id = current_setting('app.tenant_id')` — 0001 says so in as many words:
+   * "Cross-tenant lookup (e.g. slug → tenant at sign-in) is the owner's job, not
+   * the app role's." The api connects as `talon_app` and
+   * `beginTenantTransaction` refuses to serve a request on any role that can
+   * bypass RLS, so `select id from tenants where slug = ?` returns zero rows
+   * here no matter how it is spelled. Resolving a name would need a new
+   * `security definer` reader — a migration, which this change does not own and
+   * was explicitly told not to add.
+   *
+   * A UUID needs no lookup: `SET LOCAL app.tenant_id = <uuid>` and then
+   * `select … from tenants where id = <uuid>` is a *self*-read the policy
+   * already permits, which is exactly how the boot check confirms the tenant
+   * exists (and reads its name back, so an operator can eyeball the log line).
+   */
+  tenantId: string;
+  role: Role;
+}
+
+/**
+ * Email domain (lowercased, no `@`) → what a new person from it gets.
+ *
+ * EMPTY MEANS OFF, and empty is the default. Auto-provisioning any authenticated
+ * identity is an open door: the pool's Google IdP will authenticate *any* Google
+ * account, and the pool's own `allow_admin_create_user_only = false` means anyone
+ * who can receive mail at an address can sign themselves up. With this map empty
+ * the auth paths behave byte-identically to before this feature existed, 401
+ * `user-not-provisioned` included.
+ */
+export type JitPolicy = ReadonlyMap<string, JitGrant>;
+
+/**
+ * Domain labels, conservatively. No wildcard, no leading dot, no `@`, at least
+ * one dot — `TALON_JIT_PROVISION="com=…"` or `"*=…"` is a typo that would widen
+ * the door to most of the internet, so it stops the process instead.
+ */
+const DOMAIN_PATTERN = /^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/;
+
+/** Canonical 8-4-4-4-12 only, matching `auth_user_by_sub`'s guard in migration 0004. */
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const JIT_SYNTAX =
+  'TALON_JIT_PROVISION is a comma-separated list of ' +
+  '`<email-domain>=<tenant-uuid>:<role>`, e.g. ' +
+  '"taloninc.com=018f2c31-0000-7000-8000-000000000001:recruiter". ' +
+  `Roles: ${ROLES.join(', ')}. Unset or empty disables just-in-time provisioning.`;
+
+function jitError(entry: string, why: string): Error {
+  // The offending entry is echoed because this is operator configuration read
+  // from the process environment, not caller input — a boot failure that does
+  // not say which entry is wrong is a boot failure someone works around by
+  // deleting the whole variable.
+  return new Error(`TALON_JIT_PROVISION: ${why} in "${entry}". ${JIT_SYNTAX}`);
+}
+
+/**
+ * Parses the allow-list, and refuses anything it cannot read exactly.
+ *
+ * Deliberately unforgiving. The two failure modes that must not happen are
+ * "a typo silently disabled the feature" (an operator then believes people are
+ * being provisioned when they are not) and "a typo silently widened it" (a
+ * mistyped domain or a role that fell back to a default). Both become a process
+ * that will not start, which is the only outcome that cannot be missed.
+ *
+ * Exported for the config tests: this is the whole security boundary of the
+ * feature, so it is tested as a pure function rather than only end to end.
+ */
+export function parseJitPolicy(raw: string | undefined): JitPolicy {
+  const value = raw?.trim() ?? '';
+  if (value === '') return new Map();
+
+  const policy = new Map<string, JitGrant>();
+  // A trailing or doubled comma is a typo that cannot widen or narrow anything,
+  // so it is skipped rather than fatal. Everything else is fatal.
+  const entries = value.split(',').map((entry) => entry.trim()).filter((entry) => entry !== '');
+  if (entries.length === 0) throw new Error(`TALON_JIT_PROVISION has no entries. ${JIT_SYNTAX}`);
+
+  for (const entry of entries) {
+    const parts = entry.split('=');
+    if (parts.length !== 2) throw jitError(entry, 'expected exactly one "="');
+    const [rawDomain = '', grant = ''] = parts;
+    const target = grant.split(':');
+    if (target.length !== 2) throw jitError(entry, 'expected exactly one ":" after the "="');
+    const [tenantId = '', role = ''] = target.map((part) => part.trim());
+
+    const domain = rawDomain.trim().toLowerCase();
+    if (!DOMAIN_PATTERN.test(domain)) throw jitError(entry, `"${domain}" is not an email domain`);
+    if (policy.has(domain)) throw jitError(entry, `"${domain}" is listed twice`);
+    if (!UUID_PATTERN.test(tenantId)) {
+      throw jitError(entry, `"${tenantId}" is not a tenant UUID (a name or slug will not resolve)`);
+    }
+    if (!isRole(role)) throw jitError(entry, `"${role}" is not a role`);
+
+    // Lowercased so the map key matches the lookup, which lowercases the domain
+    // off the verified email. `users.email` is citext and DNS is case-insensitive;
+    // a case-sensitive allow-list would refuse @TalonInc.com and nobody would
+    // guess why.
+    policy.set(domain, { tenantId: tenantId.toLowerCase(), role });
+  }
+  return policy;
 }
 
 export interface AuthConfig {
@@ -30,6 +138,11 @@ export interface AuthConfig {
   accessTtlSeconds: number;
   /** Spec 001 §9 edge case 9: 60s of leeway on `exp`, none on a future `iat`. */
   expLeewaySeconds: number;
+  /**
+   * Just-in-time user provisioning, keyed by email domain. Empty = off, and off
+   * is the default and the only safe default. See `JitPolicy`.
+   */
+  jit: JitPolicy;
 }
 
 export interface ApiConfig {
@@ -144,6 +257,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
       audience: 'talon-api',
       accessTtlSeconds: 60 * 60,
       expLeewaySeconds: 60,
+      jit: parseJitPolicy(env['TALON_JIT_PROVISION']),
     },
   };
 }
