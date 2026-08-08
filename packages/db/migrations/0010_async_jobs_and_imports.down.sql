@@ -1,4 +1,4 @@
--- Reverses 0009. Order matters: import_rows references jobs_async compositely.
+-- Reverses 0010. Order matters: import_rows references jobs_async compositely.
 --
 -- pg_trgm is NOT dropped. It was created by 0001 and `candidates_name_trgm_idx` still
 -- depends on it; dropping an extension this migration did not create would take that

@@ -29,8 +29,8 @@ it('up → down → up (run in global setup) left a fully migrated, seeded datab
     const [tables] = await sql`
       select count(*)::int as n from information_schema.tables
       where table_schema = 'public' and table_name <> '_migrations'`;
-    // 10 from 0001, plus local_identities, outbox, five scheduling tables,
-    // and jobs_async + import_rows.
+    // 10 from 0001, plus local_identities from 0003, outbox from 0006, 0009's five
+    // scheduling tables, and 0010's jobs_async + import_rows.
     expect(tables?.['n']).toBe(19);
     // The security definer surface must survive down → up as well, and its size
     // is the thing to watch: 0003's two readers are the only way sign-in can

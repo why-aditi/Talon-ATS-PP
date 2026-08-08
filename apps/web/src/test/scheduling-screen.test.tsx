@@ -316,6 +316,50 @@ describe('a calendar whose read never came back', () => {
     expect(screen.getByRole('button', { name: /^Send invites/ })).toBeDisabled();
     expect(screen.getByText("Maya Reyes's availability didn't load.")).toBeInTheDocument();
   });
+
+  /*
+    The same day, in the other view. The week array carries its own copy of the loop's day,
+    so a grid built from that copy answered the opposite question about Thursday from the
+    one the Day view and the send blocker were answering — 11:00 and 2:30 offered as "All
+    free" under a callout saying the availability never loaded. One accessor, both views.
+  */
+  it("reads the loop's own day the same way in the week view", async () => {
+    renderScreen('unreadable');
+    expect(await screen.findByText('Thursday, Aug 6')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('radio', { name: 'Week' }));
+    expect(grid()).toHaveAccessibleName(/week of Aug 3/);
+
+    // Not one free cell on Thursday, in either the label or the description a screen
+    // reader gets — starting with the two rows the Day view used to disagree with most.
+    expect(within(grid()).queryByLabelText(/^Thu 6 at .*, all four panelists free$/)).not.toBeInTheDocument();
+    expect(within(grid()).getByLabelText('Thu 6 at 11:00, Maya Reyes busy')).toBeInTheDocument();
+    expect(within(grid()).getByLabelText('Thu 6 at 2:30, Maya Reyes busy')).toBeInTheDocument();
+    // All seven rows of that column, because an absent key is busy for the whole day.
+    expect(within(grid()).getAllByLabelText(/^Thu 6 at .*Maya Reyes/)).toHaveLength(7);
+
+    // The other four days are untouched by the scenario and still offer their free rows,
+    // so this is the accessor doing the work and not the week grid going dark everywhere.
+    expect(within(grid()).getAllByLabelText(/all four panelists free$/).length).toBeGreaterThan(0);
+
+    // And the send stays refused, with the same sentence as in the Day view.
+    expect(screen.getByRole('button', { name: /^Send invites/ })).toBeDisabled();
+    expect(screen.getByText("Maya Reyes's availability didn't load.")).toBeInTheDocument();
+  });
+
+  /*
+    §12.1's other half. `disconnected` has the identical shape — it edits `loop.busy` and
+    leaves the week's copy of Thursday alone — so it gets the same guard rather than a
+    comment saying it would probably be fine.
+  */
+  it('reads a disconnected calendar as busy in the week view too', async () => {
+    renderScreen('disconnected');
+    expect(await screen.findByText('Thursday, Aug 6')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('radio', { name: 'Week' }));
+
+    expect(within(grid()).queryByLabelText(/^Thu 6 at .*, all four panelists free$/)).not.toBeInTheDocument();
+    expect(within(grid()).getAllByLabelText(/^Thu 6 at .*Maya Reyes/)).toHaveLength(7);
+    expect(screen.getByRole('button', { name: /^Send invites/ })).toBeDisabled();
+  });
 });
 
 describe('a hold someone else owns', () => {
