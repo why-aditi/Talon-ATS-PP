@@ -1,28 +1,9 @@
 'use client';
 
 import * as SelectPrimitive from '@radix-ui/react-select';
-import type { CanonicalStage, JobStatus, StageDistribution } from '@talon/contracts';
-import type { ButtonHTMLAttributes, ReactNode } from 'react';
 import { useState } from 'react';
-import { avatarToken, initials } from '../lib/avatar';
-import { buttonClass } from './button-styles';
 import { CheckIcon, ChevronDownIcon } from './icons';
-
-export { buttonClass } from './button-styles';
-
-const cx = (...parts: (string | false | undefined)[]) => parts.filter(Boolean).join(' ');
-
-/* ── Button (DESIGN_SYSTEM §3) ─────────────────────────────────────────────── */
-
-type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: 'primary' | 'secondary' | 'ghost';
-  /** `lg` is the form-scale control — inputs and the primary CTA beside them. */
-  size?: 'md' | 'lg';
-};
-
-export function Button({ variant = 'secondary', size = 'md', className, ...props }: ButtonProps) {
-  return <button type="button" className={buttonClass(variant, className, size)} {...props} />;
-}
+import { cx } from './ui';
 
 /* ── Select (DESIGN_SYSTEM §3) ─────────────────────────────────────────────── */
 
@@ -153,82 +134,3 @@ export function Select({
     </SelectPrimitive.Root>
   );
 }
-
-/* ── Status pill ───────────────────────────────────────────────────────────── */
-
-// `closed` has no token pair of its own; it reuses the neutral draft pair, which is
-// the only status in design-tokens.json that reads as "not in play".
-const STATUS_PILLS: Record<JobStatus, { label: string; className: string }> = {
-  active: { label: 'Active', className: 'bg-status-active-bg text-status-active-text' },
-  on_hold: { label: 'On hold', className: 'bg-status-on-hold-bg text-status-on-hold-text' },
-  closing: { label: 'Closing', className: 'bg-status-closing-bg text-status-closing-text' },
-  draft: { label: 'Draft', className: 'bg-status-draft-bg text-status-draft-text' },
-  closed: { label: 'Closed', className: 'bg-status-draft-bg text-status-draft-text' },
-};
-
-export function StatusPill({ status }: { status: JobStatus }) {
-  const { label, className } = STATUS_PILLS[status];
-  // The label is always rendered — status is never carried by color alone.
-  return <span className={cx('inline-flex items-center rounded-sm px-2 py-px text-caption', className)}>{label}</span>;
-}
-
-/* ── Avatar ────────────────────────────────────────────────────────────────── */
-
-export function Avatar({ id, name, size = 24 }: { id: string; name: string; size?: 20 | 24 | 32 | 44 }) {
-  return (
-    <span
-      // A var() reference, not a color literal — the value stays inside packages/tokens.
-      style={{ backgroundColor: `var(${avatarToken(id)})`, width: size, height: size }}
-      // No font-bold: `text-caption` already carries its own weight (500), and a
-      // Tailwind weight utility on top silently overrides the token — which is how
-      // these initials ended up at 700 while the reference renders them at 500.
-      className="inline-flex shrink-0 items-center justify-center rounded-full text-caption text-text-on-primary"
-      aria-hidden="true"
-    >
-      {initials(name)}
-    </span>
-  );
-}
-
-/* ── Distribution bar (DESIGN_SYSTEM §3, "progress rule") ──────────────────── */
-
-/** Non-terminal stages only — the bar shows the live pipeline, not its history. */
-const IN_PROCESS_STAGES = ['applied', 'screen', 'onsite', 'offer'] as const satisfies readonly CanonicalStage[];
-
-const STAGE_FILLS: Record<(typeof IN_PROCESS_STAGES)[number], string> = {
-  applied: 'bg-stage-applied',
-  screen: 'bg-stage-screen',
-  onsite: 'bg-stage-onsite',
-  offer: 'bg-stage-offer',
-};
-
-export function DistributionBar({ distribution, inProcessCount }: { distribution: StageDistribution; inProcessCount: number }) {
-  const segments = IN_PROCESS_STAGES.map((stage) => ({ stage, count: distribution[stage] })).filter((s) => s.count > 0);
-  const total = segments.reduce((sum, s) => sum + s.count, 0);
-
-  // Spec 001 §9.4: a job with no applications renders a zero-width fill, never NaN.
-  const label =
-    total === 0
-      ? 'No applications in process'
-      : `${inProcessCount} in process: ${segments.map((s) => `${s.count} ${s.stage}`).join(', ')}`;
-
-  return (
-    <div
-      className="flex h-[var(--layout-progress-rule-height)] w-[var(--layout-job-row-distribution-bar-width)] overflow-hidden rounded-full bg-border-subtle"
-      role="img"
-      aria-label={label}
-    >
-      {segments.map(({ stage, count }) => (
-        <span key={stage} className={STAGE_FILLS[stage]} style={{ width: `${(count / total) * 100}%` }} />
-      ))}
-    </div>
-  );
-}
-
-/* ── Eyebrow ───────────────────────────────────────────────────────────────── */
-
-export function Eyebrow({ children, className }: { children: ReactNode; className?: string }) {
-  return <p className={cx('text-eyebrow uppercase text-text-tertiary', className)}>{children}</p>;
-}
-
-export { cx };

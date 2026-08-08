@@ -43,6 +43,12 @@ variable "tags" {
   default     = {}
 }
 
+variable "create_service_linked_roles" {
+  description = "Create the ECS, RDS, and ElastiCache account-level service-linked roles. True for a clean account; false when a shared account already owns them."
+  type        = bool
+  default     = false
+}
+
 # ---------------------------------------------------------------------------
 # GitHub OIDC
 # ---------------------------------------------------------------------------
