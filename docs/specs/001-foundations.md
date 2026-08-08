@@ -568,8 +568,41 @@ spawned api cannot reach it — into a standalone server the api is pointed at w
 
 **Decision:** wire the gate against the real dev pool now (cheap, and it catches
 regressions today), and keep the stub extraction as the thing that removes the
-AWS coupling later. Until `ci.yml` carries the three additions above, this row
-says "not wired" and does not pretend otherwise.
+AWS coupling later.
+
+### The `e2e` job — wired, inert until configured
+
+`ci.yml` now carries an `e2e` job: its own runner, chromium, a Postgres service,
+`pnpm db:migrate && pnpm db:seed` (which chains `seed:identities`), and
+`pnpm e2e`. Separate from `ci` because installing a browser and talking to AWS do
+not belong in the job every PR waits on.
+
+It is guarded by `if: vars.AWS_E2E_ROLE_ARN != '' && vars.COGNITO_USER_POOL_ID != ''`
+and **skips** until those exist. That is deliberate and it is the honest half of
+this row: **do not mark `e2e` a required check while it skips.** A required check
+that never runs is a green tick that means nothing — worse than an absent gate,
+because it looks like coverage.
+
+Serialised with `concurrency: e2e-cognito-pool`, `cancel-in-progress: false`. The
+database is per-job, but the pool is shared and sign-in throttling is pool-wide,
+so two runs can throttle each other into a failure unrelated to either change.
+Queueing costs latency; a flaky shared-pool gate costs trust in the gate.
+
+**Blocked on infra: the role does not exist.** Neither existing role fits.
+`github_plan` is read-only and cannot provision a pool user; `github_deploy` can
+run `terraform apply` — far too much for a test job, and unassumable from a PR
+anyway because its trust policy pins the default branch. What is needed is a
+third, narrow role trusted on `pull_request` and the default branch, allowing
+only `AdminCreateUser`, `AdminSetUserPassword`, `AdminGetUser` and
+`AdminInitiateAuth`, scoped to the dev pool's ARN alone.
+
+| Setting | Kind | Why |
+|---|---|---|
+| `AWS_E2E_ROLE_ARN` | variable | The role above. Owner: infra |
+| `COGNITO_USER_POOL_ID` | variable | An identifier, not a secret |
+| `COGNITO_CLIENT_ID` | variable | An identifier, not a secret |
+| `COGNITO_REGION` | variable | Optional, defaults to `us-east-1` |
+| `TALON_JWT_SECRET` | **secret** | The only real secret. Boot refuses the published local constant |
 
 ## 11. Open questions
 
