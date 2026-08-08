@@ -1,0 +1,215 @@
+name: terraform
+
+on:
+  pull_request:
+    paths:
+      - 'infra/terraform/**'
+      - '.github/workflows/terraform.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'infra/terraform/**'
+      - '.github/workflows/terraform.yml'
+
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # fmt, tflint and checkov need no AWS credentials and no state, so they run on
+  # every PR including from forks. ARCHITECTURE §9.5 requires all three.
+  static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive infra/terraform
+
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: v0.53.0
+
+      - name: tflint
+        run: |
+          set -euo pipefail
+          for stack in infra/terraform/stacks/*/; do
+            echo "::group::tflint $stack"
+            tflint --chdir="$stack" --init
+            tflint --chdir="$stack" --minimum-failure-severity=error
+            echo "::endgroup::"
+          done
+
+      - uses: bridgecrewio/checkov-action@master
+        with:
+          directory: infra/terraform
+          framework: terraform
+          quiet: true
+          soft_fail: false
+
+      # terraform validate needs `init`, and init with no backend block is
+      # offline, so this still needs no credentials.
+      - name: terraform validate
+        run: |
+          set -euo pipefail
+          for stack in infra/terraform/stacks/*/; do
+            echo "::group::validate $stack"
+            terraform -chdir="$stack" init -input=false -backend=false
+            terraform -chdir="$stack" validate -no-color
+            echo "::endgroup::"
+          done
+
+  # The plan job needs AWS, so it assumes the read-only plan role from
+  # stacks/iam via OIDC. That role is trusted on `repo:OWNER/REPO:pull_request`
+  # and the default branch only — see stacks/iam/oidc.tf.
+  #
+  # NOTE: stacks/iam has not been applied yet, so `vars.AWS_PLAN_ROLE_ARN` does
+  # not exist and this job is skipped rather than failing red on every PR. It
+  # starts running the moment the variable is set. A job that is always red is a
+  # job people learn to ignore.
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: static
+    if: vars.AWS_PLAN_ROLE_ARN != ''
+    permissions:
+      contents: read
+      id-token: write        # required to mint the OIDC token
+      pull-requests: write   # required to post the plan comment
+    strategy:
+      fail-fast: false
+      matrix:
+        stack: [iam, persistent]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: us-east-1
+          role-session-name: gha-plan-${{ github.run_id }}
+
+      - name: terraform init
+        run: terraform -chdir=infra/terraform/stacks/${{ matrix.stack }} init -input=false
+
+      - name: terraform plan
+        id: plan
+        run: |
+          set -euo pipefail
+          terraform -chdir=infra/terraform/stacks/${{ matrix.stack }} plan \
+            -input=false -lock=false -no-color \
+            -var 'github_repo=${{ github.repository }}' \
+            -out=tf.plan | tee plan.txt
+          terraform -chdir=infra/terraform/stacks/${{ matrix.stack }} \
+            show -json tf.plan > plan.json
+
+      # THE GATE. CLAUDE.md §4 and ARCHITECTURE §9.5: a plan that would replace
+      # aws_cognito_user_pool, aws_rds_cluster, a KMS key or a state bucket fails
+      # the check and needs a manual override with a written reason.
+      #
+      # A replacement of the user pool destroys every user in it, and the plan
+      # line that does it is a single `-/+` among sixty. This is the only thing
+      # that makes CLAUDE.md's rule enforceable rather than advisory — and it
+      # runs BEFORE the comment step, so a red gate is not buried under a diff
+      # nobody scrolls.
+      - name: no stateful resource is replaced
+        run: python3 infra/terraform/scripts/check-plan.py plan.json
+
+      - name: post the plan as a comment
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const stack = '${{ matrix.stack }}';
+            let body = '';
+            try {
+              body = fs.readFileSync('plan.txt', 'utf8');
+            } catch {
+              body = '(plan did not produce output — see the job log)';
+            }
+            const LIMIT = 60000;
+            const truncated = body.length > LIMIT
+              ? body.slice(0, LIMIT) + '\n\n... truncated, see the job log'
+              : body;
+            const marker = `<!-- tf-plan:${stack} -->`;
+            const comment =
+              `${marker}\n### \`terraform plan\` — \`stacks/${stack}\`\n\n` +
+              '```terraform\n' + truncated + '\n```';
+            const { data: existing } = await github.rest.issues.listComments({
+              ...context.repo, issue_number: context.issue.number,
+            });
+            const mine = existing.find(c => c.body.includes(marker));
+            if (mine) {
+              await github.rest.issues.updateComment({
+                ...context.repo, comment_id: mine.id, body: comment,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                ...context.repo, issue_number: context.issue.number, body: comment,
+              });
+            }
+
+  # Apply on merge. Note stacks/iam is NOT in this matrix and cannot be: the
+  # deploy role is explicitly denied writing role/talon-<env>-github-*, so a CI
+  # apply of that stack fails on its first IAM write. That is deliberate — spec
+  # 002 §4.8. stacks/iam is applied by a human, by scripts/up.sh stage 2.
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: static
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AWS_DEPLOY_ROLE_ARN != ''
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: true
+      matrix:
+        stack: [persistent]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+          role-session-name: gha-apply-${{ github.run_id }}
+
+      - name: terraform init
+        run: terraform -chdir=infra/terraform/stacks/${{ matrix.stack }} init -input=false
+
+      - name: terraform plan
+        run: |
+          set -euo pipefail
+          terraform -chdir=infra/terraform/stacks/${{ matrix.stack }} plan \
+            -input=false -no-color -out=tf.plan
+          terraform -chdir=infra/terraform/stacks/${{ matrix.stack }} \
+            show -json tf.plan > plan.json
+
+      # The same gate again, on the apply path. It is not redundant: the plan
+      # that gets applied is a different plan from the one the PR reviewed, made
+      # against state that may have moved since.
+      - name: no stateful resource is replaced
+        run: python3 infra/terraform/scripts/check-plan.py plan.json
+
+      - name: terraform apply
+        run: terraform -chdir=infra/terraform/stacks/${{ matrix.stack }} apply -input=false tf.plan
