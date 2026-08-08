@@ -235,10 +235,7 @@ it('lets Cognito allocate the sub, which is never users.id', async () => {
   expect(stub.users.get(EMAIL)?.sub).toBe(sub);
   // Created, then given a permanent password — otherwise the account sits in
   // FORCE_CHANGE_PASSWORD and every sign-in returns a challenge no screen answers.
-  expect(stub.calls.map((call) => call.target)).toEqual([
-    'AdminCreateUser',
-    'AdminSetUserPassword',
-  ]);
+  expect(stub.calls.map((call) => call.target)).toEqual(['AdminCreateUser', 'AdminSetUserPassword']);
   expect(stub.calls[1]?.body['Permanent']).toBe(true);
 });
 
@@ -547,16 +544,16 @@ it('does not reveal whether an account exists', async () => {
   expect(wrongPassword.code).toBe('invalid_credentials');
 });
 
-it.each([['UserNotConfirmedException'], ['PasswordResetRequiredException']])(
-  'maps %s to invalid_credentials rather than leaking account state',
-  async (error) => {
-    await provision();
-    stub.authError = error;
-    await expect(
-      cognito.cradle.identityProvider.initiatePasswordAuth(EMAIL, PASSWORD),
-    ).rejects.toMatchObject({ code: 'invalid_credentials' });
-  },
-);
+it.each([
+  ['UserNotConfirmedException'],
+  ['PasswordResetRequiredException'],
+])('maps %s to invalid_credentials rather than leaking account state', async (error) => {
+  await provision();
+  stub.authError = error;
+  await expect(
+    cognito.cradle.identityProvider.initiatePasswordAuth(EMAIL, PASSWORD),
+  ).rejects.toMatchObject({ code: 'invalid_credentials' });
+});
 
 it.each(['TooManyRequestsException', 'ThrottlingException'])(
   'maps a sustained %s to rate_limited, after the SDK has retried',
@@ -889,12 +886,9 @@ const TOTP_GAPS: [string, () => Promise<unknown>][] = [
   ['verifyTotp', () => cognito.cradle.identityProvider.verifyTotp('any-sub', '000000')],
 ];
 
-it.each(TOTP_GAPS)(
-  '%s reports an operator fact, not an authentication failure',
-  async (_l, call) => {
-    // 501 via service.ts. Cognito's TOTP enrolment is session-scoped and the §6.1
-    // signature carries a bare `sub` — a genuine gap in the interface, reported
-    // rather than papered over.
-    expect((await failureOf(call())).code).toBe('not_implemented');
-  },
-);
+it.each(TOTP_GAPS)('%s reports an operator fact, not an authentication failure', async (_l, call) => {
+  // 501 via service.ts. Cognito's TOTP enrolment is session-scoped and the §6.1
+  // signature carries a bare `sub` — a genuine gap in the interface, reported
+  // rather than papered over.
+  expect((await failureOf(call())).code).toBe('not_implemented');
+});

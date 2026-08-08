@@ -31,13 +31,7 @@ function keypair(kid: string): Keypair {
 }
 
 function jwkFor(key: Keypair, extra: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    ...key.publicKey.export({ format: 'jwk' }),
-    kid: key.kid,
-    alg: 'RS256',
-    use: 'sig',
-    ...extra,
-  };
+  return { ...key.publicKey.export({ format: 'jwk' }), kid: key.kid, alg: 'RS256', use: 'sig', ...extra };
 }
 
 function sign(
@@ -181,11 +175,7 @@ it('refuses a tampered payload', async () => {
 });
 
 it.each([
-  [
-    'a foreign issuer',
-    { iss: 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_other' },
-    'wrong_issuer',
-  ],
+  ['a foreign issuer', { iss: 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_other' }, 'wrong_issuer'],
   ['a foreign audience', { aud: 'someone-elses-client' }, 'wrong_audience'],
   ['an array audience', { aud: [AUDIENCE] }, 'wrong_audience'],
   ['an access token where an id token is expected', { token_use: 'access' }, 'wrong_audience'],

@@ -44,23 +44,18 @@ const asTenant = async <T>(
 };
 
 it('with the tenant predicate removed, tenant B still cannot read tenant A’s job', async () => {
-  const rows = await asTenant(
-    fixtures.acme.tenantId,
-    fixtures.acme.admin.id,
-    (tx) =>
-      // No `and tenant_id = …`. The only thing standing between this query and
-      // another tenant's row is the RLS policy.
-      tx.sql<{ id: string }[]>`select id from jobs where id = ${fixtures.talon.jobId}::uuid`,
+  const rows = await asTenant(fixtures.acme.tenantId, fixtures.acme.admin.id, (tx) =>
+    // No `and tenant_id = …`. The only thing standing between this query and
+    // another tenant's row is the RLS policy.
+    tx.sql<{ id: string }[]>`select id from jobs where id = ${fixtures.talon.jobId}::uuid`,
   );
   expect(rows).toHaveLength(0);
 });
 
 it('the same unfiltered query does return the row to its owner', async () => {
   // Otherwise the assertion above passes for the wrong reason.
-  const rows = await asTenant(
-    fixtures.talon.tenantId,
-    fixtures.talon.recruiter.id,
-    (tx) => tx.sql<{ id: string }[]>`select id from jobs where id = ${fixtures.talon.jobId}::uuid`,
+  const rows = await asTenant(fixtures.talon.tenantId, fixtures.talon.recruiter.id, (tx) =>
+    tx.sql<{ id: string }[]>`select id from jobs where id = ${fixtures.talon.jobId}::uuid`,
   );
   expect(rows).toHaveLength(1);
 });

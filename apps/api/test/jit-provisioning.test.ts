@@ -48,27 +48,12 @@ let test: TestApp;
 let off: TestApp;
 
 const jitUsers = () => owner<
-  {
-    id: string;
-    tenant_id: string;
-    email: string;
-    name: string;
-    role: string;
-    external_id: string;
-  }[]
+  { id: string; tenant_id: string; email: string; name: string; role: string; external_id: string }[]
 >`select id, tenant_id, email, name, role, external_id from users
   where email like ${'%@' + JIT_DOMAIN} order by id`;
 
 const auditRows = () => owner<
-  {
-    tenant_id: string;
-    actor_id: string;
-    entity_id: string;
-    before: unknown;
-    after: Record<string, string>;
-    ip: string;
-    request_id: string;
-  }[]
+  { tenant_id: string; actor_id: string; entity_id: string; before: unknown; after: Record<string, string>; ip: string; request_id: string }[]
 >`select tenant_id, actor_id, entity_id, before, after, host(ip) as ip, request_id
   from audit_log where action = 'user.provisioned.jit' order by id`;
 
@@ -144,10 +129,7 @@ describe('unconfigured', () => {
 describe('an allow-listed domain', () => {
   it('creates the row and completes the federated sign-in', async () => {
     const who = newIdentity();
-    const res = await sso(
-      test,
-      test.stub.mintIdToken(who.sub, who.email, { name: 'Ada Lovelace' }),
-    );
+    const res = await sso(test, test.stub.mintIdToken(who.sub, who.email, { name: 'Ada Lovelace' }));
     expect(res.statusCode).toBe(200);
 
     const session = SignInResponseSchema.parse(res.json());
@@ -306,7 +288,9 @@ describe('refusals', () => {
     expect(refused.statusCode).toBe(unconfigured.statusCode);
     expect(shape(refused.json())).toEqual(shape(unconfigured.json()));
 
-    expect(await owner`select 1 from users where email = ${who.email}`).toHaveLength(0);
+    expect(
+      await owner`select 1 from users where email = ${who.email}`,
+    ).toHaveLength(0);
   });
 
   it('refuses an identity whose token carries no email at all', async () => {
@@ -361,9 +345,7 @@ describe('refusals', () => {
       (await sso(test, test.stub.mintIdToken(who.sub, who.email))).json(),
     );
     const bearer = { authorization: `Bearer ${session.accessToken}` };
-    expect(
-      (await test.app.inject({ method: 'GET', url: '/v1/jobs', headers: bearer })).statusCode,
-    ).toBe(200);
+    expect((await test.app.inject({ method: 'GET', url: '/v1/jobs', headers: bearer })).statusCode).toBe(200);
 
     await owner`delete from audit_log where actor_id = ${session.user.id}::uuid`;
     await owner`delete from users where id = ${session.user.id}::uuid`;

@@ -61,13 +61,12 @@ it('rejects alg: none and algorithm substitution', () => {
   expect(failure(() => verifyJwt(hs512, BASE))).toBe('unsupported_algorithm');
 });
 
-it.each([
-  ['two segments', 'a.b'],
-  ['four segments', 'a.b.c.d'],
-  ['empty', ''],
-])('rejects a malformed token (%s)', (_label, token) => {
-  expect(failure(() => verifyJwt(token, BASE))).toBe('malformed');
-});
+it.each([['two segments', 'a.b'], ['four segments', 'a.b.c.d'], ['empty', '']])(
+  'rejects a malformed token (%s)',
+  (_label, token) => {
+    expect(failure(() => verifyJwt(token, BASE))).toBe('malformed');
+  },
+);
 
 it('rejects the wrong issuer and the wrong audience', () => {
   const now = nowSeconds();
