@@ -138,7 +138,7 @@ export class ApplicationsService {
     if (destination.canonical === 'rejected' || destination.canonical === 'withdrawn') {
       throw new HttpProblem(
         422,
-        ERROR_TYPES.REASON_REQUIRED,
+        ERROR_TYPES.NOT_A_BOARD_MOVE,
         'Not a board move',
         `${destination.name} is reached by rejecting or withdrawing ${application.name}, not by moving the card.`,
       );
@@ -249,7 +249,10 @@ export class ApplicationsService {
     await this.#repository.appendAudit(tx, {
       action: 'application.reordered',
       entityId: applicationId,
-      before: { stageId: application.currentStageId },
+      // Symmetric: a reorder changes `board_rank` and nothing else, so a `before`
+      // without the old rank cannot answer where the card was — which is the whole
+      // question this row exists to answer.
+      before: { stageId: application.currentStageId, boardRank: application.boardRank },
       after: { stageId: application.currentStageId, boardRank: rank },
       actorId: user.id,
       ip: context.ip ?? null,
