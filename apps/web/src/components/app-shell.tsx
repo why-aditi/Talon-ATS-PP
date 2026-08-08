@@ -75,7 +75,7 @@ const SECTIONS: { label: string; items: NavItem[] }[] = [
  * ponytail: a literal set, not a filesystem scan. Grows by one line per screen shipped;
  * if it ever drifts, the route-existence E2E is the place to catch it.
  */
-const BUILT = new Set(['/jobs', '/review-inbox', '/candidates']);
+const BUILT = new Set(['/jobs', '/review-inbox', '/candidates', '/offers', '/reports']);
 
 function NavRow({ item, active, count }: { item: NavItem; active: boolean; count?: number | undefined }) {
   const Icon = item.icon;
