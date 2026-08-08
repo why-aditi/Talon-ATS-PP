@@ -6,7 +6,6 @@ import { useLoop } from '../lib/scheduling-query';
 import {
   LoopLoadError,
   isScenario,
-  validateArrangement,
   type InterviewStatus,
   type Panelist,
   type Placement,
@@ -21,7 +20,6 @@ import {
   busyForDay,
   commonStart,
   conflictAt,
-  disconnectedPanelists,
   freeFor,
   nameList,
   panelistById,
@@ -34,6 +32,14 @@ import {
   rowsForDay,
   solvedArrangement,
   statusLabel,
+  unreadableBlocker,
+  unreadableCalendar,
+  unreadableGroups,
+  unreadableNote,
+  unreadableSentence,
+  unreadableWhy,
+  validateArrangement,
+  type CalendarUnreadable,
 } from '../lib/scheduling-state';
 import {
   clockLabel,
@@ -105,6 +111,7 @@ function RoundCard({
   kind,
   durationMin,
   status,
+  unreadable,
   movedTo,
   placing,
   onPick,
@@ -113,6 +120,8 @@ function RoundCard({
   kind: string;
   durationMin: number;
   status: InterviewStatus;
+  /** Set when this person's availability could not be read at all — §12.1. */
+  unreadable: CalendarUnreadable | null;
   /** The time it now sits at, when that is not the loop's own start. */
   movedTo: string | null;
   placing: boolean;
@@ -123,14 +132,13 @@ function RoundCard({
     see the note in the PR. It is still label + colour, never colour alone, so the
     accessibility contract in DESIGN_SYSTEM §5 holds either way.
 
-    An unreadable calendar outranks the status word: "Confirmed" next to a person
-    whose availability we cannot read is a claim the screen is not entitled to make.
+    An unreadable calendar replaces it rather than sitting beside it: "Confirmed" next
+    to a person whose availability we cannot read is a claim the screen is not entitled
+    to make. It goes on its own line, not in the status slot — the left pane is 288px and
+    a phrase that long in a `shrink-0` slot squeezed the name down to "Maya R...".
+    Clipping whose interview it is, to fit a sentence about our own failure, is the wrong
+    thing to lose.
   */
-  const label = panelist.calendarConnected ? statusLabel(status) : 'Calendar not connected';
-  const statusClass = !panelist.calendarConnected
-    ? 'text-feedback-warning-fg'
-    : STATUS_CLASSES[status];
-
   return (
     <li>
       <button
@@ -152,8 +160,13 @@ function RoundCard({
           <span className="block truncate text-meta text-text-secondary">
             {kind}, {durationMin} min{movedTo ? ` · moved to ${movedTo}` : ''}
           </span>
+          {unreadable ? (
+            <span className="block truncate text-meta text-feedback-warning-fg">{unreadableNote(unreadable)}</span>
+          ) : null}
         </span>
-        <span className={cx('shrink-0 text-body', statusClass)}>{label}</span>
+        {unreadable ? null : (
+          <span className={cx('shrink-0 text-body', STATUS_CLASSES[status])}>{statusLabel(status)}</span>
+        )}
       </button>
     </li>
   );
@@ -239,7 +252,19 @@ const pickedKind = (loop: SchedulingLoop, roundId: string): string => {
 const pendingKind = (loop: SchedulingLoop, roundId: string): string =>
   `the ${pickedKind(loop, roundId)} round`;
 
-export function SchedulingScreen({ loopId }: { loopId: string }) {
+export function SchedulingScreen({
+  loopId,
+  now = Date.now,
+}: {
+  loopId: string;
+  /**
+   * The clock, injected — spec §9 step 2 puts the hold at `now() + 24h`, and that has to
+   * be testable without pinning it to something else. Same seam and same reason as
+   * `SolveOptions.now` in `packages/domain`: a test passes a fixed clock rather than the
+   * screen substituting a different quantity to make an assertion stable.
+   */
+  now?: () => number;
+}) {
   const searchParams = useSearchParams();
   const raw = searchParams.get('state') ?? '';
   const scenario: Scenario = isScenario(raw) ? raw : 'default';
@@ -334,7 +359,13 @@ export function SchedulingScreen({ loopId }: { loopId: string }) {
     manual ??
     (dayUtc === null && loop.selectedStartUtc ? solvedArrangement(loop, loop.selectedStartUtc) : {});
   const selected = arrangementStart(arrangement);
-  const disconnected = disconnectedPanelists(loop);
+  /*
+    Everyone whose column reads as fully busy for a reason that is ours, not theirs — a
+    calendar that is not connected, or one whose read never came back (§12.1). Both block
+    the send (§12.3) and both are named, because §11 requires a per-panelist indicator
+    saying *why* somebody shows fully busy.
+  */
+  const unreadable = unreadableGroups(loop, busy);
   const drift = driftCleared ? null : loop.drift;
 
   /*
@@ -352,12 +383,15 @@ export function SchedulingScreen({ loopId }: { loopId: string }) {
     .filter((round) => manualOverride(round.id) && arrangement[round.id] !== undefined)
     .map((round) => ({ id: round.id, blocker: acknowledgedBlockers[round.id] as SolveBlocker }));
 
-  const dayColumns: GridColumn[] = loop.panelists.map((p) => ({
-    id: p.id,
-    label: p.shortName,
-    avatar: { id: p.id, name: p.name },
-    ...(p.calendarConnected ? {} : { note: 'Calendar not connected' }),
-  }));
+  const dayColumns: GridColumn[] = loop.panelists.map((p) => {
+    const why = unreadableCalendar(loop, busy, p.id);
+    return {
+      id: p.id,
+      label: p.shortName,
+      avatar: { id: p.id, name: p.name },
+      ...(why ? { note: unreadableNote(why) } : {}),
+    };
+  });
 
   const dayRows: GridRow[] = spans.map(({ startUtc: start, endUtc: rowEnd }) => {
     const label = timeLabel(start, zone);
@@ -389,12 +423,16 @@ export function SchedulingScreen({ loopId }: { loopId: string }) {
             : busyHere.length === 0 && index === 0
               ? 'All free'
               : undefined;
+        // Why this cell looks the way it does. A person's own full day and a calendar we
+        // could not read are both "busy" in the grid and must never read the same in
+        // words — one is a fact about them, the other about us (§11, §12.1).
+        const cannotRead = unreadableCalendar(loop, busy, p.id);
         const why = panelistBusy
           ? override
             ? `${p.name} is busy at ${label}, and the loop slot was placed there anyway`
-            : p.calendarConnected
-              ? `${p.name} is busy at ${label}`
-              : `${p.name} reads as busy at ${label} — their calendar is not connected`
+            : cannotRead
+              ? `${p.name} reads as busy at ${label} — ${unreadableWhy(cannotRead)}`
+              : `${p.name} is busy at ${label}`
           : placed
             ? `${p.name} is holding the loop slot at ${label}`
             : `${p.name} is free at ${label}`;
@@ -527,10 +565,11 @@ export function SchedulingScreen({ loopId }: { loopId: string }) {
   if (loop.rounds.length === 0) sendBlockers.push('This loop has no rounds yet.');
   if (!selected) sendBlockers.push('Pick a row before sending.');
   if (pending) sendBlockers.push(`Say where ${pendingKind(loop, pending.roundId)} goes before sending.`);
-  if (disconnected.length > 0) {
-    sendBlockers.push(
-      `${nameList(disconnected.map((p) => p.name))} ${disconnected.length === 1 ? 'has' : 'have'} no calendar connected.`,
-    );
+  // §12.3, and the absent-key case with it: if we could not read a required panelist's
+  // calendar, we cannot claim the slot is clear, so the send is refused rather than
+  // attempted. Fully busy has to be as blocking as no calendar at all.
+  for (const group of unreadable) {
+    sendBlockers.push(unreadableBlocker(group.panelists.map((p) => p.name), group.reason));
   }
   if (loop.holdByOther) sendBlockers.push(`${loop.holdByOther.heldByName} is holding this slot.`);
   if (drift) sendBlockers.push('Availability moved — re-solve before sending.');
@@ -576,6 +615,7 @@ export function SchedulingScreen({ loopId }: { loopId: string }) {
                     kind={roundKindLabel(round.kind)}
                     durationMin={round.durationMin}
                     status={roundStatus(round)}
+                    unreadable={unreadableCalendar(loop, busy, panelist.id)}
                     movedTo={at !== undefined && at !== bulk ? timeLabel(at, zone) : null}
                     placing={placingRoundId === round.id}
                     onPick={() => pickRound(round.id)}
@@ -650,13 +690,11 @@ export function SchedulingScreen({ loopId }: { loopId: string }) {
             </Callout>
           ) : null}
 
-          {disconnected.length > 0 ? (
-            <Callout tone="warning">
-              {nameList(disconnected.map((p) => p.name))}{' '}
-              {disconnected.length === 1 ? "hasn't" : "haven't"} connected a calendar, so every row reads as busy.
-              Connect it, or drop {disconnected.length === 1 ? 'that round' : 'those rounds'} before sending.
+          {unreadable.map((group) => (
+            <Callout key={group.reason} tone="warning">
+              {unreadableSentence(group.panelists.map((p) => p.name), group.reason)}
             </Callout>
-          ) : null}
+          ))}
 
           {blocker ? <Callout tone="warning">{blockerSentence(blocker, zone)}</Callout> : null}
 
@@ -684,9 +722,12 @@ export function SchedulingScreen({ loopId }: { loopId: string }) {
           ) : null}
 
           <div className="mt-auto flex flex-col gap-2 pt-4">
+            {/* §9 step 2: the hold runs 24h from NOW, not 24h from the slot. The callout
+                below states the expiry to the recruiter, so a time measured from the wrong
+                quantity is a commitment the screen cannot keep. */}
             <Button
               disabled={!selected || loop.holdByOther !== null}
-              onClick={() => selected && setHeldUntil(new Date(new Date(selected).getTime() + 24 * 60 * 60 * 1000).toISOString())}
+              onClick={() => selected && setHeldUntil(new Date(now() + 24 * 60 * 60 * 1000).toISOString())}
             >
               Hold slot for 24h
             </Button>

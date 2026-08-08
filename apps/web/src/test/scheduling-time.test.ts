@@ -66,8 +66,17 @@ describe('reading busy intervals against grid rows', () => {
     expect(rowSpans(STARTS).every((s) => busyDuring(busy, 'maya', s.startUtc, s.endUtc))).toBe(true);
   });
 
-  it('treats a panelist with no entry as free, never as a crash', () => {
-    expect(busyDuring({}, 'nobody', STARTS[0] as string, STARTS[1] as string)).toBe(false);
+  /*
+    The rule this guards, spec §7: "'no intervals' and 'we never read it' must not be the
+    same value with opposite meanings." They arrive here as the same value — the key is
+    missing — so the direction that cannot double-book anybody has to win. An earlier
+    version of this test asserted the opposite and was the defect, not the guard: it
+    pinned "absent means free", which is the one reading non-negotiable #6 forbids.
+  */
+  it('reads a panelist absent from the busy map as busy, never as free', () => {
+    expect(busyDuring({}, 'nobody', STARTS[0] as string, STARTS[1] as string)).toBe(true);
+    // And an empty array is the value that does mean free, so the two stay distinct.
+    expect(busyDuring({ nobody: [] }, 'nobody', STARTS[0] as string, STARTS[1] as string)).toBe(false);
   });
 });
 

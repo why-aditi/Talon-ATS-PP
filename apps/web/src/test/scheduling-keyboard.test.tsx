@@ -14,12 +14,21 @@ import { SchedulingScreen } from '../components/scheduling-screen';
 import { REFERENCE_LOOP_ID } from '../lib/scheduling-fixtures';
 import { pathname } from './setup';
 
+/**
+ * The clock the hold is measured from — spec §9 step 2 is `now() + 24h`.
+ *
+ * Injected rather than read off the machine, for the same reason `solveLoop` takes a
+ * `now`: the assertion has to be stable, and the way to make it stable is to fix the
+ * clock, never to measure the hold from a different quantity.
+ */
+const FIXED_NOW = () => Date.parse('2026-08-05T18:00:00.000Z'); // 1:00 PM CT, Wed 5 Aug
+
 function renderScreen() {
   pathname.current = `/scheduling/${REFERENCE_LOOP_ID}`;
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <SchedulingScreen loopId={REFERENCE_LOOP_ID} />
+      <SchedulingScreen loopId={REFERENCE_LOOP_ID} now={FIXED_NOW} />
     </QueryClientProvider>,
   );
 }
@@ -109,16 +118,41 @@ describe('keyboard navigation', () => {
     await screen.findByText('Thursday, Aug 6');
 
     await tabTo(tabbableCell());
-    // 9:00 → 3:30, where Maya and Sam are both busy. Maya's round comes first.
+    // 9:00 → 12:00, where Lin and Sam are both busy. Lin's round is first in position
+    // order, so she is the one the blocker names.
+    await userEvent.keyboard('{ArrowDown}{ArrowDown}{ArrowDown}{ }');
+
+    expect(live()).toHaveTextContent(
+      '12:00 selected. Lin Chen is busy at 12:00. Pick a clear row or the loop needs a gap.',
+    );
+    expect(screen.getByText('Lin Chen is busy at 12:00. Pick a clear row or the loop needs a gap.')).toBeInTheDocument();
+    // Still sendable — the row is the loop's start, and the server re-validates before
+    // it writes anything (§10). The callout is the warning; it is not a lock.
+    expect(screen.getByRole('button', { name: 'Send invites, 12:00 PM Aug 6' })).toBeEnabled();
+  });
+
+  /*
+    Spec 004 §7a, and the reviewer's S4: the grid's rows are the day's hours, not a
+    pre-validated list of loop starts. The reference screen offers a 3:30 row AND states
+    the candidate window as 9 to 4, both measured from it — so a 60-minute round at 3:30
+    genuinely runs past the window, and the honest answer is the `outside_window` blocker
+    rather than a row that quietly reads as placeable. Neither fixture number is
+    "corrected" to make the check go away; the check is what tells the recruiter why.
+  */
+  it('refuses a row where the first round would run past the candidate window', async () => {
+    renderScreen();
+    await screen.findByText('Thursday, Aug 6');
+
+    await tabTo(tabbableCell());
+    // 9:00 → 3:30, the last row. Coding is 60 minutes and the window ends at 4:00.
     await userEvent.keyboard('{PageDown}{ }');
 
     expect(live()).toHaveTextContent(
-      '3:30 selected. Maya Reyes is busy at 3:30. Pick a clear row or the loop needs a gap.',
+      '3:30 selected. Coding at 3:30 falls outside the window the candidate gave. Pick a time inside it.',
     );
-    expect(screen.getByText('Maya Reyes is busy at 3:30. Pick a clear row or the loop needs a gap.')).toBeInTheDocument();
-    // Still sendable — the row is the loop's start, and the server re-validates before
-    // it writes anything (§10). The callout is the warning; it is not a lock.
-    expect(screen.getByRole('button', { name: 'Send invites, 3:30 PM Aug 6' })).toBeEnabled();
+    expect(
+      screen.getByText('Coding at 3:30 falls outside the window the candidate gave. Pick a time inside it.'),
+    ).toBeInTheDocument();
   });
 
   it('switches to the week and back into a day, by keyboard', async () => {
@@ -163,7 +197,14 @@ describe('keyboard navigation', () => {
 
     await tabTo(screen.getByRole('button', { name: 'Hold slot for 24h' }));
     await userEvent.keyboard('{Enter}');
-    expect(screen.getByText(/Slot held until 10:00 AM Aug 7/)).toBeInTheDocument();
+    /*
+      24h from the clock, not 24h from the slot — and the clock is deliberately a day
+      before the slot so the two answers differ: from `now` it is 1:00 PM Aug 6, from the
+      selected 10:00 AM Aug 6 slot it would be 10:00 AM Aug 7. §9 step 2 says the former,
+      and the callout states it to the recruiter, so it is a commitment rather than a
+      detail.
+    */
+    expect(screen.getByText(/Slot held until 1:00 PM Aug 6/)).toBeInTheDocument();
     // A hold is not a booking, and the copy says so rather than implying safety.
     expect(screen.getByText(/A hold is not a booking/)).toBeInTheDocument();
 

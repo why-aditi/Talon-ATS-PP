@@ -263,6 +263,61 @@ describe('a calendar that cannot be read', () => {
   });
 });
 
+/*
+  The case a `calendarConnected` flag cannot express, and the one the web layer used to
+  get backwards: the calendar is connected and the read still never came back, so the
+  busy map has no key for that person at all.
+
+  Spec §7: "'no intervals' and 'we never read it' must not be the same value with opposite
+  meanings." They arrive as the same value here, so the direction that cannot double-book
+  anybody wins — absent is fully busy, the row is not offered, and the send is refused
+  exactly as hard as a missing calendar.
+*/
+describe('a calendar whose read never came back', () => {
+  it('reads fully busy, says why per panelist, and blocks the send', async () => {
+    renderScreen('unreadable');
+    expect(await screen.findByText('Thursday, Aug 6')).toBeInTheDocument();
+
+    // Every row, not just the ones she had events in — because there are no events.
+    expect(
+      within(grid()).getAllByLabelText(/Maya Reyes reads as busy at .* Talon couldn't read their calendar/),
+    ).toHaveLength(7);
+    // §11's per-panelist indicator: the column says why, and it is not the same words as
+    // a calendar that was never connected.
+    expect(screen.getAllByText("Availability didn't load").length).toBeGreaterThan(0);
+    expect(screen.queryByText('Calendar not connected')).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Maya Reyes's availability didn't load, so every row reads as busy. Reload the schedule, or drop that round before sending.",
+      ),
+    ).toBeInTheDocument();
+    // Never the machinery (DESIGN_SYSTEM §6).
+    expect(screen.queryByText(/OAuth|token|provider|undefined/i)).not.toBeInTheDocument();
+
+    // The row is not offered: no "All free" anywhere she is unreadable, and the 11:00 row
+    // that the default loop treats as clear is now a busy row.
+    expect(within(rowFor('11:00')).queryByText('All free')).not.toBeInTheDocument();
+    expect(screen.queryByText(/^All free$/)).not.toBeInTheDocument();
+
+    // And the send is refused, with her named.
+    expect(screen.getByRole('button', { name: /^Send invites/ })).toBeDisabled();
+    expect(screen.getByText("Maya Reyes's availability didn't load.")).toBeInTheDocument();
+  });
+
+  it('still refuses the send after the recruiter picks a row that looks clear', async () => {
+    renderScreen('unreadable');
+    expect(await screen.findByText('Thursday, Aug 6')).toBeInTheDocument();
+
+    // 11:00 is the row every other panelist is free on. Maya's unreadable column must
+    // keep it from being a placement rather than merely annotating it.
+    await userEvent.click(within(rowFor('11:00')).getAllByRole('gridcell')[0] as HTMLElement);
+
+    expect(screen.getByText('Maya Reyes is busy at 11:00. Pick a clear row or the loop needs a gap.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Send invites/ })).toBeDisabled();
+    expect(screen.getByText("Maya Reyes's availability didn't load.")).toBeInTheDocument();
+  });
+});
+
 describe('a hold someone else owns', () => {
   it('names the holder and when it lapses, and disables the hold', async () => {
     renderScreen('hold-taken');
@@ -322,6 +377,7 @@ describe('accessibility', () => {
     'window-narrow',
     'declined',
     'disconnected',
+    'unreadable',
     'hold-taken',
     'drift',
     'empty',
@@ -331,7 +387,12 @@ describe('accessibility', () => {
     'has no axe violations in the %s state',
     async (state) => {
       const { container } = renderScreen(state);
-      if (state !== 'loading') await screen.findByText(/Thursday, Aug 6|didn't load|can't open/);
+      // Specific strings, not /didn't load/: the unreadable-calendar state says
+      // "Availability didn't load" in three places, and a loose pattern would match them
+      // and fail on multiplicity rather than on an axe violation.
+      if (state !== 'loading') {
+        await screen.findByText(/Thursday, Aug 6|The schedule didn't load|You can't open this loop/);
+      }
       const results = await axe.run(container, {
         rules: { 'color-contrast': { enabled: false } },
       });

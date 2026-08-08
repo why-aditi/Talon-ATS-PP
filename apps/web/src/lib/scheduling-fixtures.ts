@@ -17,8 +17,6 @@
  * an API.
  */
 
-import { overlaps, plusMinutes } from './scheduling-time';
-
 export type Scenario =
   | 'default'
   | 'loading'
@@ -28,6 +26,7 @@ export type Scenario =
   | 'declined'
   | 'partial'
   | 'disconnected'
+  | 'unreadable'
   | 'hold-taken'
   | 'drift'
   | 'error'
@@ -42,6 +41,7 @@ export const SCENARIOS: Scenario[] = [
   'declined',
   'partial',
   'disconnected',
+  'unreadable',
   'hold-taken',
   'drift',
   'error',
@@ -427,6 +427,19 @@ export function loopFor(scenario: Scenario): SchedulingLoop {
         busy: { ...loop.busy, [MAYA]: FULLY_BUSY },
       };
 
+    case 'unreadable': {
+      /*
+        §12.1, and the case a `calendarConnected` flag cannot express: the calendar IS
+        connected, and the read still did not come back. The busy key is simply absent,
+        which is the shape a provider error arrives in — and absence must read as fully
+        busy, never as a free day (§7). Deleted rather than set to `[]`, because `[]` is
+        the value that means "genuinely free" and the two must not be the same thing.
+      */
+      const busy = { ...loop.busy };
+      delete busy[MAYA];
+      return { ...loop, busy };
+    }
+
     case 'hold-taken':
       // §12.4 — the second recruiter is told who holds it and until when.
       return {
@@ -450,56 +463,6 @@ export function loopFor(scenario: Scenario): SchedulingLoop {
     default:
       return loop;
   }
-}
-
-/**
- * Stands in for `validateArrangement` in `packages/domain` — spec §7a.
- *
- * The real one is the predicate the solver already answers internally, extracted so
- * that solving and hand-placing ask the identical question and return the identical
- * structured blocker. It is the API stream's to write; this is the same signature over
- * the fixture's busy map so the screen can be built and tested against it. When the
- * domain function lands, this module is the only one that changes.
- *
- * Hard constraints only. Gaps, span and late finish were scoring inputs, never
- * blockers, so they place silently (§7a).
- */
-export function validateArrangement(
-  loop: SchedulingLoop,
-  busy: Record<string, BusyInterval[]>,
-  placement: Placement,
-): SolveBlocker | null {
-  for (const round of loop.rounds) {
-    const startUtc = placement[round.id];
-    if (startUtc === undefined) continue;
-    const endUtc = plusMinutes(startUtc, round.durationMin);
-
-    // Every REQUIRED panelist. An optional one is invited and never blocks (§7).
-    const clashing = round.panelists
-      .filter((p) => p.isRequired)
-      .map((p) => loop.panelists.find((panelist) => panelist.id === p.userId))
-      .filter((p): p is Panelist => p !== undefined)
-      .filter((p) => overlaps(busy[p.id] ?? [], startUtc, endUtc));
-
-    if (clashing.length > 0) {
-      return {
-        reason: 'panelist_busy',
-        roundId: round.id,
-        roundKind: round.kind,
-        atUtc: startUtc,
-        busyPanelists: clashing.map((p) => ({ id: p.id, name: p.name })),
-      };
-    }
-  }
-  /*
-    `outside_window` and `rounds_overlap` are not checked here. The real predicate does
-    both; this stub deliberately does not, because the fixture's own rows run to 3:30 and
-    a 60-minute round there ends past the candidate's 4:00 — the reference screen offers
-    that row, so inventing the rule locally would contradict the screen it reproduces.
-    §7a is explicit that the client check is for feedback speed and the server is the
-    authority, so a stub that under-reports is the safe direction to be wrong in.
-  */
-  return null;
 }
 
 /**

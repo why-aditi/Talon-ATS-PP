@@ -287,8 +287,12 @@ function Topbar() {
         {/* The reference reads "Ana Petrova / Schedule onsite loop". The shell cannot
             know the candidate — that is in the loop response, a component away — so the
             trail names the section and the candidate sits at the top of the left pane,
-            where the reference also puts her. Same trade as the job pipeline above. */}
-        {onLoop ? <Link href="/scheduling" className="hover:text-text-link">Scheduling</Link> : null}
+            where the reference also puts her. Same trade as the job pipeline above.
+
+            Text, not a link: there is no `/scheduling` index page yet, and a breadcrumb
+            that 404s is worse than one that only names where you are (#25). It becomes a
+            Link in the PR that adds the page, next to "Jobs" above, which has one. */}
+        {onLoop ? <span>Scheduling</span> : null}
         {onLoop ? ' / ' : null}
         <span className="text-body-strong text-text-primary">{title}</span>
       </p>
