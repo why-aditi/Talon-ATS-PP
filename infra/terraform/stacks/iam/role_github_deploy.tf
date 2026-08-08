@@ -160,29 +160,127 @@ data "aws_iam_policy_document" "github_deploy_iam_addendum" {
     resources = ["arn:${local.partition}:iam::${local.account_id}:oidc-provider/${local.oidc_host}"]
   }
 
+  # ---------------------------------------------------------------------------
+  # IAM reads for `terraform plan`'s refresh. FOUR statements, not one.
+  #
+  # This was a single `ReadIamForRefresh` on `resources = ["*"]`, justified by
+  # "plan refreshes attachments whose policy ARNs are AWS-managed and so can
+  # never match a project prefix". That is true of exactly two of the fifteen
+  # actions and false of the rest, and the difference is not cosmetic: §9.5 says
+  # this is a SHARED COMPANY ACCOUNT, so `iam:GetRolePolicy` on `*` let a CI run
+  # read the inline policies of every other team's roles — their bucket names,
+  # their secret ARNs, their conditions. That is information disclosure, not a
+  # lint nit, and unlike the boundary's `*` it is a genuine finding (CKV_AWS_356).
+  #
+  # The split line is IAM's own: an action either supports resource-level
+  # permissions or it does not. Everything that does is pinned below; the four
+  # that do not are isolated in their own statement so the `*` is visible and
+  # bounded rather than blanketing eleven other actions.
+  #
+  # No action was added or removed — the fifteen are the same fifteen. If a plan
+  # ever fails with AccessDenied on an IAM read, the fix is to widen the RESOURCE
+  # list of the matching statement (and say which resource and why), not to merge
+  # these back into one.
+  # ---------------------------------------------------------------------------
+
   statement {
-    sid    = "ReadIamForRefresh"
+    sid    = "ReadProjectRolesForRefresh"
     effect = "Allow"
     actions = [
       "iam:GetRole",
       "iam:GetRolePolicy",
-      "iam:GetPolicy",
-      "iam:GetPolicyVersion",
-      "iam:GetInstanceProfile",
-      "iam:GetOpenIDConnectProvider",
-      "iam:ListRoles",
       "iam:ListRolePolicies",
       "iam:ListAttachedRolePolicies",
-      "iam:ListInstanceProfiles",
-      "iam:ListInstanceProfilesForRole",
-      "iam:ListPolicies",
-      "iam:ListPolicyVersions",
-      "iam:ListOpenIDConnectProviders",
       "iam:ListRoleTags",
+      "iam:ListInstanceProfilesForRole",
     ]
-    # Read-only, and unscoped because `terraform plan` refreshes attachments
-    # whose policy ARNs are AWS-managed (arn:aws:iam::aws:policy/*) and so can
-    # never match a project prefix.
+    # All six are authorized against the ROLE, and every role this stack refreshes
+    # carries the project prefix. `iam:ListAttachedRolePolicies` is the call that
+    # actually reads a PowerUserAccess attachment — it is authorized against the
+    # role, not the attached policy, which is why the AWS-managed-ARN argument
+    # above never applied to it.
+    resources = ["arn:${local.partition}:iam::${local.account_id}:role/${local.name}-*"]
+  }
+
+  statement {
+    sid    = "ReadPoliciesForRefresh"
+    effect = "Allow"
+    actions = [
+      "iam:GetPolicy",
+      "iam:GetPolicyVersion",
+      "iam:ListPolicyVersions",
+    ]
+    # The one place the AWS-managed argument IS true — but it is true of a
+    # namespace, not of the whole account. `arn:aws:iam::aws:policy/*` is every
+    # AWS-managed policy and is readable by everyone anyway; the second entry is
+    # this project's own customer-managed policies, which is what refreshes
+    # aws_iam_policy.permissions_boundary. Another team's customer-managed policy
+    # matches neither.
+    resources = [
+      "arn:${local.partition}:iam::aws:policy/*",
+      "arn:${local.partition}:iam::${local.account_id}:policy/${local.name}-*",
+    ]
+  }
+
+  statement {
+    sid    = "ReadProjectInstanceProfilesAndOidcForRefresh"
+    effect = "Allow"
+    actions = [
+      "iam:GetInstanceProfile",
+      "iam:GetOpenIDConnectProvider",
+    ]
+    # Same two ARN shapes the write statements above already use, so the read and
+    # write surfaces cannot drift apart.
+    resources = [
+      "arn:${local.partition}:iam::${local.account_id}:instance-profile/${local.name}-*",
+      "arn:${local.partition}:iam::${local.account_id}:oidc-provider/${local.oidc_host}",
+    ]
+  }
+
+  # The residual `*`, and it is four actions rather than fifteen.
+  #
+  # These are collection-level operations: IAM does not support resource-level
+  # permissions for them AT ALL. `iam:ListRoles` etc. take a PathPrefix request
+  # parameter, not a resource ARN, so `Resource` can only be `*` — writing an ARN
+  # here does not narrow the call, it denies it outright. (PowerUserAccess already
+  # grants iam:ListRoles on `*` for the same reason; the other three are here
+  # because it does not.)
+  #
+  # What they disclose is names and paths, not policy bodies: every role name,
+  # policy name, instance-profile name and OIDC provider ARN in the account. That
+  # is the floor this cannot go below without breaking refresh, and it is a much
+  # smaller disclosure than the inline-policy read it replaces.
+  #
+  # THERE IS DELIBERATELY NO CHECKOV SUPPRESSION ON THIS BLOCK, and the omission
+  # is load-bearing twice over.
+  #
+  # First, checkov's inline skip binds to the whole `data` block, not to one
+  # statement — a suppression written for these four actions would switch
+  # CKV_AWS_356 off for every future statement in this identity policy, which is
+  # the one document in this stack where a `*` resource is a real finding.
+  #
+  # Second, it is not needed: CKV_AWS_356 is cloudsplaining's
+  # all_allowed_unrestricted_actions, and cloudsplaining classifies all four of
+  # these as having no resource-level constraint, so the check passes on its own
+  # merits. Measured: the split alone takes the scan to 0 failed.
+  #
+  # Adding a RESTRICTABLE action to this statement will therefore fail the build,
+  # which is the intended behaviour — pin it in one of the three statements above.
+  #
+  # (Do not write the suppression syntax in a comment here even to say it is not
+  # wanted. Checkov matches the directive by regex anywhere inside the block, so
+  # a sentence mentioning it registers as a real skip with no reason attached.
+  # Measured: it silently suppressed this exact check while this comment was
+  # being written.)
+  statement {
+    sid    = "ListIamCollectionsForRefresh"
+    effect = "Allow"
+    actions = [
+      "iam:ListRoles",
+      "iam:ListPolicies",
+      "iam:ListInstanceProfiles",
+      "iam:ListOpenIDConnectProviders",
+    ]
     resources = ["*"]
   }
 }

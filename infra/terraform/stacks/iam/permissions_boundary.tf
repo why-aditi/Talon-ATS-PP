@@ -61,6 +61,32 @@
 # ---------------------------------------------------------------------------
 
 data "aws_iam_policy_document" "permissions_boundary" {
+  # -------------------------------------------------------------------------
+  # THREE CHECKOV SUPPRESSIONS, AND WHY THEY ARE NOT A WAIVER.
+  #
+  # All three read this document as an IDENTITY policy. It is not one. It is
+  # only ever consumed as `permissions_boundary = ...` on the five roles in this
+  # stack, so what it expresses is the INTERSECTION operand, not a grant: a
+  # principal's effective permissions are (its policies) ∩ (this document), and
+  # nothing here can hand out a permission an attached policy did not already
+  # give. `Allow *:*` minus explicit Denies is the only shape a ceiling can take
+  # that does not break the next stack as a mid-apply AccessDenied — the same
+  # argument role_github_deploy.tf makes for not hand-rolling PowerUserAccess.
+  #
+  # These are per-check, on this one resource, on purpose. NOT `soft_fail: true`
+  # in the workflow, NOT a `--skip-check` flag, NOT a directory-level skip: the
+  # checks stay live for every other document in this stack, including
+  # github_deploy_iam_addendum, which IS an identity policy and where a `*` is a
+  # real finding. A gate that stops failing everywhere is decoration.
+  #
+  # If you delete one of these lines to "clean up", read spec 002 §5 first —
+  # the skips are recorded there with the same reasons, and the corresponding
+  # `child` rows in simulate.py are what prove the ceiling actually denies.
+  # -------------------------------------------------------------------------
+  #checkov:skip=CKV_AWS_49:Boundary, not an identity policy — this document is only ever attached as permissions_boundary, so Action "*" is the ceiling being intersected with, not a grant. Enumerating services instead drifts on every new stack and fails as a mid-apply AccessDenied; the carve-outs are the explicit Deny statements below, and simulate.py's `child` principal (inline *:* under this boundary) proves they bite.
+  #checkov:skip=CKV_AWS_1:Same statement as CKV_AWS_49. A ceiling starts at "*-*" by construction; no role in this stack holds *:* as an identity policy, so no principal's effective permissions are administrative. Verified by simulation rather than asserted — spec 002 §5.1.
+  #checkov:skip=CKV2_AWS_40:iam:* is inside the ceiling for the same reason, and every IAM call that could escalate is explicitly denied below: DenyIamWritesOutsideProjectNames, DenyIamUsersAndGroups, DenyRemovingTheBoundary, DenyRewritingTheBoundary, RequireThisBoundaryOnRolesAndPolicies, DenyWritingCiRoles. simulate.py asserts explicitDeny for each against a child holding inline *:*.
+
   # A boundary is a ceiling, not a grant: nothing is permitted by this statement
   # that an attached policy does not also permit. Starting from "*" and carving
   # out is the only shape that does not silently break the next stack.

@@ -498,11 +498,11 @@ on its first IAM write. That is §4.8's deliberate consequence, not an oversight
 | `terraform plan`, create path | 18 to add, 0 to change, 0 to destroy on an empty account | passing |
 | `terraform plan`, reuse path | `-var github_oidc_provider_arn=…`; same 18 minus the provider, trust policies fully rendered | passing |
 | Variable validation | six wildcard/foreign-repo/`pull_request` claim shapes rejected at plan time, exit 1 | passing |
-| `aws iam simulate-custom-policy` | 58 assertions over the rendered documents, across **four** simulated principals — see §5.1. Runnable: `python infra/terraform/stacks/iam/simulate/simulate.py plan.json` | passing |
+| `aws iam simulate-custom-policy` | 83 assertions over the rendered documents, across **four** simulated principals — see §5.1. Runnable: `python infra/terraform/stacks/iam/simulate/simulate.py plan.json` | passing |
 | `terraform plan`, persistent from zero | `2 to add, 0 to change, 0 to destroy`; `3 to add` with a domain | passing |
 | `terraform plan`, persistent adoption | `2 to import, 0 to add, 1 to change, 0 to destroy` — **no replacement**; §4a.4 | passing |
 | Protected-resource plan check | fails any plan replacing `aws_cognito_user_pool`, `aws_rds_cluster`, a KMS key or a state bucket; manual override needs a written reason (ARCHITECTURE §9.5, CLAUDE.md §4) | **wired** — `infra/terraform/scripts/check-plan.py`, run on the plan and apply paths of `.github/workflows/terraform.yml`. Verified in both directions against real plans, §4b |
-| `tflint`, `checkov` | ARCHITECTURE §9.5 requires both on every PR | **wired but unproven locally** — steps exist in `.github/workflows/terraform.yml`'s `static` job, which needs no credentials and runs on every PR. Neither tool is installed on the authoring machine, so **no claim is made here that they pass**; the first PR run is the proof |
+| `tflint`, `checkov` | ARCHITECTURE §9.5 requires both on every PR | **wired, hard-failing, and proven** — `static` job in `.github/workflows/terraform.yml`, no credentials, runs on every PR. checkov: **158 passed, 0 failed, 3 skipped**, `soft_fail: false`. tflint: 0 errors on both stacks (3 pre-existing `terraform_unused_declarations` warnings in `persistent`, below the `--minimum-failure-severity=error` bar). Reproduced locally in the CI container — commands and the four original failures in §5.2 |
 | Plan posted as a PR comment | ARCHITECTURE §9.5 | **wired, unproven** — needs `vars.AWS_PLAN_ROLE_ARN`, which needs `stacks/iam` applied |
 | Trust-policy assertion | `sub` is pinned to `var.github_repo`; no `repo:*` reaches an apply | **not written** — see open question 3, re-scoped by §4.3a |
 
@@ -515,7 +515,7 @@ The assertions are **checked in** at `infra/terraform/stacks/iam/simulate/simula
 ```bash
 terraform -chdir=infra/terraform/stacks/iam plan -var 'github_repo=OWNER/REPO' -out=tf.plan
 terraform -chdir=infra/terraform/stacks/iam show -json tf.plan > plan.json
-python infra/terraform/stacks/iam/simulate/simulate.py plan.json    # 58 assertions, 0 failures
+python infra/terraform/stacks/iam/simulate/simulate.py plan.json    # 83 assertions, 0 failures
 ```
 
 **Four simulated principals**, and the fourth is the fix for the blind spot that let BL-1 ship:
@@ -631,6 +631,84 @@ A boundary that locked the stack out of its own next apply would be a worse bug 
 
 A6 and A7 are the load-bearing rows: the new mirrors do **not** prevent the human operator from changing the boundary or the CI roles on a subsequent apply. A8 is `allowed` for the operator and `explicitDeny` for the deploy role and for a `child` — which is the intended asymmetry, not an inconsistency.
 
+#### The IAM reads `terraform plan` needs — and the ones it no longer gets
+
+Added with §5.2's `ReadIamForRefresh` split. The first seventeen rows are the API calls the AWS provider actually makes while refreshing resources this stack manages; they are the proof that the tightened scoping does not break `plan`. All seventeen are `allowed` both before and after, so the split costs nothing.
+
+The eight rows below them are what it buys. Every one was **`allowed`** before, on a shared company account.
+
+| # | Action | Resource | Before | After |
+|---|---|---|---|---|
+| R1 | `iam:GetRolePolicy` | `role/someone-elses-role` | allowed | **implicitDeny** |
+| R2 | `iam:GetRole` | `role/someone-elses-role` | allowed | **implicitDeny** |
+| R3 | `iam:ListRolePolicies` | `role/someone-elses-role` | allowed | **implicitDeny** |
+| R4 | `iam:ListAttachedRolePolicies` | `role/someone-elses-role` | allowed | **implicitDeny** |
+| R5 | `iam:ListRoleTags` | `role/someone-elses-role` | allowed | **implicitDeny** |
+| R6 | `iam:GetPolicy` | `policy/someone-elses` | allowed | **implicitDeny** |
+| R7 | `iam:GetPolicyVersion` | `policy/someone-elses` | allowed | **implicitDeny** |
+| R8 | `iam:GetInstanceProfile` | `instance-profile/someone-elses` | allowed | **implicitDeny** |
+
+`implicitDeny` rather than `explicitDeny` is correct here and is not a weaker result: there is no `Allow` in the addendum that reaches those ARNs any more, and PowerUserAccess excludes `iam:*` outright. An explicit `Deny` would additionally have to be mirrored into the boundary and would buy nothing, because R1–R8 are a *disclosure* surface rather than an escalation one.
+
+R1 is the row that mattered: `iam:GetRolePolicy` on `*` let a CI run print the inline policy of every role in the account — other teams' bucket names, secret ARNs and conditions — into a workflow log.
+
+## 5.2 checkov is wired and hard-failing — and three suppressions are load-bearing
+
+`.github/workflows/terraform.yml`'s `static` job runs `bridgecrewio/checkov-action` over `infra/terraform` with `soft_fail: false`, so a finding is a red build. Reproduce the exact check locally:
+
+```bash
+docker run --rm -v "$PWD":/tf ghcr.io/bridgecrewio/checkov:3.3.9 \
+  -d /tf/infra/terraform --quiet --framework terraform
+# 158 passed, 0 failed, 3 skipped
+```
+
+It first ran red: **157 passed, 4 failed**. The four were not one kind of finding, and were not treated as one.
+
+### The three on `aws_iam_policy_document.permissions_boundary` — suppressed
+
+`CKV_AWS_49` (`*` as a statement's actions), `CKV_AWS_1` (full `*-*` administrative privileges) and `CKV2_AWS_40` (full IAM privileges) all fire on the same `PermissionCeiling` statement, and all three read the document as an **identity policy**. It is never used as one: it is consumed only as `permissions_boundary = …` on the five roles in this stack, so it expresses the intersection operand, not a grant. A principal's effective permissions are (its policies) ∩ (this document); nothing in it can hand out a permission an attached policy did not already give. `Allow *:*` minus explicit `Deny`s is the only shape a ceiling can take that does not break the next stack as a mid-apply `AccessDenied` — the same argument §4.7 already makes for not hand-rolling PowerUserAccess.
+
+Suppressed **per check, on that one resource**, in `permissions_boundary.tf`. The reason text is checked in and is what checkov prints:
+
+| Check | Reason, as written in the file |
+|---|---|
+| `CKV_AWS_49` | Boundary, not an identity policy — this document is only ever attached as `permissions_boundary`, so `Action "*"` is the ceiling being intersected with, not a grant. Enumerating services instead drifts on every new stack and fails as a mid-apply `AccessDenied`; the carve-outs are the explicit `Deny` statements below, and `simulate.py`'s `child` principal (inline `*:*` under this boundary) proves they bite. |
+| `CKV_AWS_1` | Same statement as `CKV_AWS_49`. A ceiling starts at `*-*` by construction; no role in this stack holds `*:*` as an identity policy, so no principal's effective permissions are administrative. Verified by simulation rather than asserted — §5.1. |
+| `CKV2_AWS_40` | `iam:*` is inside the ceiling for the same reason, and every IAM call that could escalate is explicitly denied below: `DenyIamWritesOutsideProjectNames`, `DenyIamUsersAndGroups`, `DenyRemovingTheBoundary`, `DenyRewritingTheBoundary`, `RequireThisBoundaryOnRolesAndPolicies`, `DenyWritingCiRoles`. `simulate.py` asserts `explicitDeny` for each against a `child` holding inline `*:*`. |
+
+**Do not "clean these up".** Equally, do not widen them: `soft_fail: true`, a `--skip-check` flag in the workflow, or a directory-level skip would switch these checks off for every other document in this stack — including `github_deploy_iam_addendum`, which *is* an identity policy and where a `*` is a real finding, as the fourth failure proved. A gate that stops failing everywhere is decoration.
+
+### The fourth, on `aws_iam_policy_document.github_deploy_iam_addendum` — fixed, not suppressed
+
+`CKV_AWS_356` (`*` as a resource for restrictable actions) fired on `ReadIamForRefresh`: fifteen IAM read actions on `resources = ["*"]`, justified in a comment by "`terraform plan` refreshes attachments whose policy ARNs are AWS-managed and so can never match a project prefix". That justification is true of two of the fifteen and false of the other thirteen — and §9.5 says this is a **shared company account**, so `iam:GetRolePolicy` on `*` is other teams' inline policies readable from CI. Information disclosure, not a lint nit.
+
+The statement is now four, split on IAM's own line — whether an action supports resource-level permissions at all:
+
+| Statement | Actions | Resource |
+|---|---|---|
+| `ReadProjectRolesForRefresh` | `GetRole`, `GetRolePolicy`, `ListRolePolicies`, `ListAttachedRolePolicies`, `ListRoleTags`, `ListInstanceProfilesForRole` | `role/talon-<env>-*` |
+| `ReadPoliciesForRefresh` | `GetPolicy`, `GetPolicyVersion`, `ListPolicyVersions` | `iam::aws:policy/*` **and** `policy/talon-<env>-*` |
+| `ReadProjectInstanceProfilesAndOidcForRefresh` | `GetInstanceProfile`, `GetOpenIDConnectProvider` | `instance-profile/talon-<env>-*`, the OIDC provider ARN |
+| `ListIamCollectionsForRefresh` | `ListRoles`, `ListPolicies`, `ListInstanceProfiles`, `ListOpenIDConnectProviders` | `*` |
+
+No action was added or removed; the fifteen are the same fifteen. `ListAttachedRolePolicies` is the call the old comment was really about, and it is authorized against the **role**, not against the attached policy — which is why the AWS-managed-ARN argument never applied to it. The genuine AWS-managed case is `GetPolicy`/`GetPolicyVersion`, and that is a *namespace* (`arn:aws:iam::aws:policy/*`, world-readable anyway), not the whole account.
+
+The last four take `*` because IAM has no resource-level permission for them at all — they are authorized against the collection and take a `PathPrefix` request parameter, not an ARN, so any other `Resource` denies the call outright. They disclose names and paths, not policy bodies. **They need no suppression**: `CKV_AWS_356` is cloudsplaining's `all_allowed_unrestricted_actions`, and cloudsplaining classifies all four as unrestrictable, so the check now genuinely *passes* on this document (157 → 158 passed) and stays live for anything added to it later.
+
+**A trap worth knowing about, found while writing that comment.** checkov matches `#checkov:skip=<ID>:<reason>` by regex *anywhere inside the block*, and the skip binds to the whole `data` block, not to one `statement`. A prose comment saying "deliberately no `#checkov:skip=CKV_AWS_356` here" therefore registered as a real skip, with `Suppress comment: No comment provided`, and silently switched the check off for the entire identity policy. The scan still reported `0 failed` — with `Skipped checks: 4` instead of `3` as the only visible difference. Never write the directive syntax in prose, and read the skipped count, not just the failed count.
+
+### `stacks/persistent` was scanned — and checkov has nothing to say about it
+
+Confirmed rather than assumed, because "0 failed" and "not scanned" look identical from the summary line:
+
+```bash
+docker run --rm -v "$PWD":/tf ghcr.io/bridgecrewio/checkov:3.3.9 \
+  -d /tf/infra/terraform/stacks/persistent --framework terraform -o json
+# summary: {passed: 1, failed: 0, skipped: 0, parsing_errors: 0, resource_count: 3}
+```
+
+`resource_count: 3` is the pool, the client and the domain, and `parsing_errors: 0` — the files were parsed. The single passing check is `CKV_AWS_41` on the provider block. checkov 3.3.9 ships **no** check that references `aws_cognito_user_pool`, `aws_cognito_user_pool_client` or `aws_cognito_user_pool_domain` (verified by grep inside the image), so the persistent stack's clean result means *no applicable policy*, not *reviewed and fine*. The Cognito protections CLAUDE.md §4 actually cares about — no schema diff, no replacement — are guarded by `check-plan.py` (§4b), not by checkov, and that division is now written down so nobody reads a green checkov as coverage of the pool.
+
 ## 6. Edge cases
 
 1. **The OIDC provider already exists in the account** — `var.github_oidc_provider_arn` reuses it; creating it would fail with `EntityAlreadyExists`.
@@ -670,7 +748,8 @@ A6 and A7 are the load-bearing rows: the new mirrors do **not** prevent the huma
 - [x] **A role the deploy role creates cannot do any of those things either** — the boundary mirrors all six guardrails, verified by the `child` principal in §5.1 (§4.7a, BL-1)
 - [x] The operator identity is not locked out of the next apply by the new mirrors — §5.1, rows A1–A10
 - [x] No `aws_iam_role` anywhere else in the repo — including `stacks/persistent`, which takes role ARNs as input variables
-- [x] `tflint` + `checkov` wired into CI — steps exist and need no credentials. Neither is installed on the authoring machine, so **no claim is made that they pass**; the first PR run is the proof
+- [x] `tflint` + `checkov` wired into CI and **passing, hard-failing** — checkov 158 passed / 0 failed / 3 skipped with `soft_fail: false`, tflint 0 errors on both stacks. Reproduced in the CI container, not asserted (§5.2)
+- [x] The CI role can no longer read another team's IAM on this shared account — `ReadIamForRefresh` split four ways, and `terraform plan`'s seventeen refresh reads proven still `allowed` by simulation (§5.1, §5.2)
 - [x] Protected-resource plan check wired into CI (§4b), verified in both directions against real plans
 - [x] Cognito user pool under Terraform with `ignore_changes = [schema]`, deletion protection, and an adoption path proven not to replace it (§4a)
 - [x] A hosted auth domain is one variable away, with every OAuth setting defaulted off so it changes nothing for today's password flow (§4a.3)

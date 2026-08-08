@@ -208,6 +208,62 @@ def main(plan_path):
             ('plan', 'dynamodb:PutItem', LOCK, {}, 'allowed'),
             ('plan', 'ec2:DescribeVpcs', '*', {}, 'allowed'),
         ]),
+        # --- the IAM reads `terraform plan` makes during refresh ---------------
+        #
+        # ReadIamForRefresh used to be one statement on `resources = ["*"]`.
+        # Splitting it is the only way to stop a CI run reading another team's
+        # inline policies on this shared account (CKV_AWS_356) — and the whole
+        # risk of splitting it is that `plan` then fails to refresh, which looks
+        # like a permissions bug at the worst possible moment. Every row in the
+        # first block is an API call the AWS provider makes while refreshing a
+        # resource this stack manages; if one of them is not `allowed`, the
+        # split is too tight. The second block is what the split BUYS.
+        ('Refresh still works: the deploy role can read its own IAM', [
+            # aws_iam_role.* — GetRole, then ListRoleTags for the tag map.
+            ('deploy', 'iam:GetRole', R + f'{name}-github-deploy', {}, 'allowed'),
+            ('deploy', 'iam:ListRoleTags', R + f'{name}-github-deploy', {}, 'allowed'),
+            # aws_iam_role_policy.* — the inline addendum and guardrails.
+            ('deploy', 'iam:GetRolePolicy', R + f'{name}-github-deploy', {}, 'allowed'),
+            ('deploy', 'iam:ListRolePolicies', R + f'{name}-ecs-task', {}, 'allowed'),
+            # aws_iam_role_policy_attachment.* — authorized against the ROLE,
+            # which is why the "AWS-managed ARNs cannot match a prefix" argument
+            # never applied to this call.
+            ('deploy', 'iam:ListAttachedRolePolicies', R + f'{name}-github-deploy', {}, 'allowed'),
+            ('deploy', 'iam:ListInstanceProfilesForRole', R + f'{name}-ec2-nat', {}, 'allowed'),
+            # aws_iam_policy.permissions_boundary — project-prefixed.
+            ('deploy', 'iam:GetPolicy', f'arn:aws:iam::{acct}:policy/{bnd_name}', {}, 'allowed'),
+            ('deploy', 'iam:GetPolicyVersion', f'arn:aws:iam::{acct}:policy/{bnd_name}', {}, 'allowed'),
+            ('deploy', 'iam:ListPolicyVersions', f'arn:aws:iam::{acct}:policy/{bnd_name}', {}, 'allowed'),
+            # The AWS-managed namespace the old comment was actually about.
+            ('deploy', 'iam:GetPolicy', 'arn:aws:iam::aws:policy/PowerUserAccess', {}, 'allowed'),
+            ('deploy', 'iam:GetPolicyVersion', 'arn:aws:iam::aws:policy/ReadOnlyAccess', {}, 'allowed'),
+            # aws_iam_instance_profile (§9.6's NAT instance) and the OIDC provider.
+            ('deploy', 'iam:GetInstanceProfile',
+             f'arn:aws:iam::{acct}:instance-profile/{name}-ec2-nat', {}, 'allowed'),
+            ('deploy', 'iam:GetOpenIDConnectProvider',
+             f'arn:aws:iam::{acct}:oidc-provider/token.actions.githubusercontent.com', {}, 'allowed'),
+            # The four collection reads. IAM has no resource-level permission for
+            # any of them, so `*` is the only Resource that works at all.
+            ('deploy', 'iam:ListRoles', '*', {}, 'allowed'),
+            ('deploy', 'iam:ListPolicies', '*', {}, 'allowed'),
+            ('deploy', 'iam:ListInstanceProfiles', '*', {}, 'allowed'),
+            ('deploy', 'iam:ListOpenIDConnectProviders', '*', {}, 'allowed'),
+        ]),
+        # This is the finding, not the lint. §9.5: one shared company account.
+        # `implicitDeny` rather than `explicitDeny` is correct and sufficient —
+        # there is simply no Allow that reaches these ARNs any more. Every row
+        # here was `allowed` before the split.
+        ('And no longer read another team\'s IAM', [
+            ('deploy', 'iam:GetRolePolicy', R + 'someone-elses-role', {}, 'implicitDeny'),
+            ('deploy', 'iam:GetRole', R + 'someone-elses-role', {}, 'implicitDeny'),
+            ('deploy', 'iam:ListRolePolicies', R + 'someone-elses-role', {}, 'implicitDeny'),
+            ('deploy', 'iam:ListAttachedRolePolicies', R + 'someone-elses-role', {}, 'implicitDeny'),
+            ('deploy', 'iam:ListRoleTags', R + 'someone-elses-role', {}, 'implicitDeny'),
+            ('deploy', 'iam:GetPolicy', f'arn:aws:iam::{acct}:policy/someone-elses', {}, 'implicitDeny'),
+            ('deploy', 'iam:GetPolicyVersion', f'arn:aws:iam::{acct}:policy/someone-elses', {}, 'implicitDeny'),
+            ('deploy', 'iam:GetInstanceProfile',
+             f'arn:aws:iam::{acct}:instance-profile/someone-elses', {}, 'implicitDeny'),
+        ]),
         # --- the operator is not locked out of the next apply ------------------
         ('The operator can still apply and destroy this stack', [
             ('admin', 'iam:CreateRole', R + f'{name}-github-deploy', {'boundary': BND}, 'allowed'),
