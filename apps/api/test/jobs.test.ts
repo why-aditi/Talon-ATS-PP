@@ -4,7 +4,16 @@
  */
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { ERROR_TYPES, JobSchema } from '@talon/contracts';
-import { bearer, dedicatedUser, loadFixtures, removeDedicatedUser, startApp, type Fixtures, type Person, type TestApp } from './helpers.js';
+import {
+  bearer,
+  dedicatedUser,
+  loadFixtures,
+  removeDedicatedUser,
+  startApp,
+  type Fixtures,
+  type Person,
+  type TestApp,
+} from './helpers.js';
 
 let test: TestApp;
 let fixtures: Fixtures;

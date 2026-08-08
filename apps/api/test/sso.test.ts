@@ -34,7 +34,10 @@ beforeAll(async () => {
   // Provisioning points `users.external_id` at the sub Cognito allocated — the join
   // this entire design rests on. On a user this file owns, so re-provisioning cannot
   // invalidate another suite's live session.
-  const dedicated = await dedicatedUser(test, 'sso', { tenantId: fixtures.talon.tenantId, role: 'recruiter' });
+  const dedicated = await dedicatedUser(test, 'sso', {
+    tenantId: fixtures.talon.tenantId,
+    role: 'recruiter',
+  });
   owned = dedicated.person;
   sub = dedicated.session.sub;
 });
@@ -48,8 +51,7 @@ afterAll(async () => {
 const sso = (body: unknown) =>
   test.app.inject({ method: 'POST', url: '/v1/auth/sso', payload: body as object });
 
-const idToken = (overrides = {}) =>
-  test.stub.mintIdToken(sub, owned.email, overrides);
+const idToken = (overrides = {}) => test.stub.mintIdToken(sub, owned.email, overrides);
 
 describe('a completed Google flow', () => {
   it('returns a session indistinguishable from a password sign-in', async () => {
@@ -79,7 +81,10 @@ describe('a completed Google flow', () => {
   it('mints claims naming the Cognito sub, not users.id', async () => {
     const res = await sso({ idToken: idToken(), refreshToken: 'r' });
     const claims = JSON.parse(
-      Buffer.from(SignInResponseSchema.parse(res.json()).accessToken.split('.')[1]!, 'base64url').toString(),
+      Buffer.from(
+        SignInResponseSchema.parse(res.json()).accessToken.split('.')[1]!,
+        'base64url',
+      ).toString(),
     );
     // `auth_user_by_sub` matches `external_id`; minting `users.id` here would sign in
     // cleanly and then 401 on the very next request.

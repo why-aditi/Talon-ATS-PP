@@ -10,7 +10,16 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { ERROR_TYPES, ListJobsResponseSchema, type Job } from '@talon/contracts';
-import { bearer, dedicatedUser, loadFixtures, removeDedicatedUser, startApp, type Fixtures, type Person, type TestApp } from './helpers.js';
+import {
+  bearer,
+  dedicatedUser,
+  loadFixtures,
+  removeDedicatedUser,
+  startApp,
+  type Fixtures,
+  type Person,
+  type TestApp,
+} from './helpers.js';
 import { OWNER_URL } from './urls.js';
 
 let test: TestApp;
@@ -210,7 +219,10 @@ describe('cursor pagination', () => {
     const seen: string[] = [];
     let cursor: string | null = null;
     for (let page = 0; page < 10; page++) {
-      const res = await list(recruiter, `?limit=2${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+      const res = await list(
+        recruiter,
+        `?limit=2${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`,
+      );
       expect(res.statusCode, res.body).toBe(200);
       const body = ListJobsResponseSchema.parse(res.json());
       expect(body.data.length).toBeLessThanOrEqual(2);
@@ -265,7 +277,9 @@ describe('jobs with no applications', () => {
   });
 
   it('a cursor whose row was deleted resumes at the next row — §9 edge case 6', async () => {
-    const page = ListJobsResponseSchema.parse((await list(recruiter, '?department=Temp&limit=1')).json());
+    const page = ListJobsResponseSchema.parse(
+      (await list(recruiter, '?department=Temp&limit=1')).json(),
+    );
     expect(page.data.map((job) => job.reqCode)).toEqual(['TMP-001']);
     expect(page.nextCursor).not.toBeNull();
 

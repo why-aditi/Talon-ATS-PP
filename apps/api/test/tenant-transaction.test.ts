@@ -18,7 +18,16 @@ import {
   openTenantTransaction,
   resolveTenant,
 } from '../src/hooks/auth.js';
-import { dedicatedUser, loadFixtures, removeDedicatedUser, startApp, testConfig, type Fixtures, type Person, type TestApp } from './helpers.js';
+import {
+  dedicatedUser,
+  loadFixtures,
+  removeDedicatedUser,
+  startApp,
+  testConfig,
+  type Fixtures,
+  type Person,
+  type TestApp,
+} from './helpers.js';
 import { OWNER_URL } from './urls.js';
 
 // A pool of exactly one: a single leaked connection makes the next request hang
@@ -55,35 +64,38 @@ beforeAll(async () => {
   app.addHook('onClose', async () => {
     await container.cradle.sql.end();
   });
-  await app.register(async (scoped) => {
-    scoped.addHook('onRequest', authenticate);
-    scoped.addHook('onRequest', resolveTenant);
-    scoped.addHook('preHandler', openTenantTransaction);
-    scoped.addHook('onSend', finishTenantTransaction);
+  await app.register(
+    async (scoped) => {
+      scoped.addHook('onRequest', authenticate);
+      scoped.addHook('onRequest', resolveTenant);
+      scoped.addHook('preHandler', openTenantTransaction);
+      scoped.addHook('onSend', finishTenantTransaction);
 
-    scoped.get('/boom', async () => {
-      throw new Error('handler exploded');
-    });
-    scoped.get('/write', async (request) => {
-      const tx = requireTx(request);
-      await tx.sql`insert into candidates (id, tenant_id, name) values (gen_random_uuid(), ${tx.tenantId}::uuid, 'Rollback Probe')`;
-      const [row] = await tx.sql<{ n: number }[]>`
+      scoped.get('/boom', async () => {
+        throw new Error('handler exploded');
+      });
+      scoped.get('/write', async (request) => {
+        const tx = requireTx(request);
+        await tx.sql`insert into candidates (id, tenant_id, name) values (gen_random_uuid(), ${tx.tenantId}::uuid, 'Rollback Probe')`;
+        const [row] = await tx.sql<{ n: number }[]>`
         select count(*)::int as n from candidates where name = 'Rollback Probe'`;
-      return { visibleInTransaction: row?.n ?? 0 };
-    });
-    scoped.get('/write-then-fail', async (request) => {
-      const tx = requireTx(request);
-      await tx.sql`insert into candidates (id, tenant_id, name) values (gen_random_uuid(), ${tx.tenantId}::uuid, 'Never Committed')`;
-      throw new Error('handler exploded after writing');
-    });
-    scoped.get('/settings', async (request) => {
-      const tx = requireTx(request);
-      const [row] = await tx.sql<{ tenant: string; user: string }[]>`
+        return { visibleInTransaction: row?.n ?? 0 };
+      });
+      scoped.get('/write-then-fail', async (request) => {
+        const tx = requireTx(request);
+        await tx.sql`insert into candidates (id, tenant_id, name) values (gen_random_uuid(), ${tx.tenantId}::uuid, 'Never Committed')`;
+        throw new Error('handler exploded after writing');
+      });
+      scoped.get('/settings', async (request) => {
+        const tx = requireTx(request);
+        const [row] = await tx.sql<{ tenant: string; user: string }[]>`
         select current_setting('app.tenant_id', true) as tenant,
                current_setting('app.user_id', true) as user`;
-      return row;
-    });
-  }, { prefix: '/v1' });
+        return row;
+      });
+    },
+    { prefix: '/v1' },
+  );
   await app.ready();
 }, 180_000);
 

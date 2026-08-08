@@ -60,7 +60,10 @@ let seedHighWater: number;
 beforeAll(async () => {
   test = await startApp();
   fixtures = await loadFixtures();
-  const dedicated = await dedicatedUser(test, 'board', { tenantId: fixtures.talon.tenantId, role: 'recruiter' });
+  const dedicated = await dedicatedUser(test, 'board', {
+    tenantId: fixtures.talon.tenantId,
+    role: 'recruiter',
+  });
   owned = dedicated.person;
   auth = bearer(dedicated.session);
   const [mark] = await owner`select coalesce(max(id), 0)::int as id from stage_transitions`;
@@ -94,14 +97,6 @@ afterAll(async () => {
  * stats assertions below run against a restored board rather than assuming ordering.
  */
 beforeEach(async () => {
-  // Signed in ONCE, in beforeAll, on a user this file owns.
-  //
-  // An earlier version signed in per test to survive `auth-chain.test.ts`
-  // invalidating the shared recruiter. That treated the symptom and worsened the
-  // cause: `signIn` re-provisions, rewriting `users.external_id`, so twenty
-  // sign-ins meant twenty rewrites of a row other files also read. Owning the user
-  // removes the interference rather than out-running it.
-
   for (const row of pristine) {
     await owner`
       update applications
@@ -147,10 +142,17 @@ const card = (board: Board, name: string): ApplicationCard =>
 describe('GET the board', () => {
   it('serves five columns — rejected and withdrawn are outcomes, not columns', async () => {
     const board = await getBoard();
-    expect(board.columns.map((c) => c.name)).toEqual(['Applied', 'Screen', 'Onsite', 'Offer', 'Hired']);
+    expect(board.columns.map((c) => c.name)).toEqual([
+      'Applied',
+      'Screen',
+      'Onsite',
+      'Offer',
+      'Hired',
+    ]);
     // They exist as job_stages rows; an application has to land somewhere when it is
     // rejected. Serving them would put two permanently empty columns on every board.
-    const stages = await owner`select canonical from job_stages where job_id = ${fixtures.talon.jobId}`;
+    const stages =
+      await owner`select canonical from job_stages where job_id = ${fixtures.talon.jobId}`;
     expect(stages.map((r) => r['canonical'])).toContain('rejected');
   });
 
@@ -227,7 +229,12 @@ describe('a rank-only reorder does not bump version', () => {
     const applied = column(before, 'Applied');
 
     const rank = (id: string, body: object) =>
-      test.app.inject({ method: 'PATCH', url: `/v1/applications/${id}/rank`, headers: auth, payload: body });
+      test.app.inject({
+        method: 'PATCH',
+        url: `/v1/applications/${id}/rank`,
+        headers: auth,
+        payload: body,
+      });
 
     expect((await rank(tess.id, { beforeId: null, afterId: priya.id })).statusCode).toBe(200);
     expect((await rank(priya.id, { beforeId: tess.id, afterId: null })).statusCode).toBe(200);
@@ -260,7 +267,12 @@ describe('a rank-only reorder does not bump version', () => {
 
 describe('a stage move', () => {
   const move = (id: string, body: object) =>
-    test.app.inject({ method: 'PATCH', url: `/v1/applications/${id}/stage`, headers: auth, payload: body });
+    test.app.inject({
+      method: 'PATCH',
+      url: `/v1/applications/${id}/stage`,
+      headers: auth,
+      payload: body,
+    });
 
   it('bumps version, resets time in stage, and writes transition, activity and outbox atomically', async () => {
     const before = await getBoard();
@@ -274,7 +286,11 @@ describe('a stage move', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ version: elena.version + 1, daysInStage: 0, nextAction: 'Loop' });
+    expect(res.json()).toMatchObject({
+      version: elena.version + 1,
+      daysInStage: 0,
+      nextAction: 'Loop',
+    });
 
     // All four writes, one transaction (ARCHITECTURE §6.1). Nothing is published
     // inline: a failed publish must never roll back a committed state change.
@@ -325,8 +341,14 @@ describe('a stage move', () => {
     expect(row?.['action']).toBe('application.stage_changed');
     expect(row?.['entity_type']).toBe('application');
     expect(row?.['actor_id']).toBe(owned.id);
-    expect(row?.['before']).toMatchObject({ stageId: column(before, 'Screen').stageId, version: elena.version });
-    expect(row?.['after']).toMatchObject({ stageId: column(before, 'Onsite').stageId, version: elena.version + 1 });
+    expect(row?.['before']).toMatchObject({
+      stageId: column(before, 'Screen').stageId,
+      version: elena.version,
+    });
+    expect(row?.['after']).toMatchObject({
+      stageId: column(before, 'Onsite').stageId,
+      version: elena.version + 1,
+    });
     // Not merely present — populated. A null ip or request id is the audit trail
     // quietly losing the two fields that make it worth keeping.
     expect(row?.['ip']).toBeTruthy();
@@ -369,7 +391,10 @@ describe('a stage move', () => {
     // Its own type, not REASON_REQUIRED: a client switching on that would prompt for a
     // reason, and no reason can satisfy this branch.
     expect(res.json().type).toBe(ERROR_TYPES.NOT_A_BOARD_MOVE);
-    expect(card(await getBoard(), 'Elena Ruiz')).toMatchObject({ status: 'active', version: elena.version });
+    expect(card(await getBoard(), 'Elena Ruiz')).toMatchObject({
+      status: 'active',
+      version: elena.version,
+    });
   });
 
   /**
@@ -389,15 +414,25 @@ describe('a stage move', () => {
     const tess = card(before, 'Tess Bianchi').id;
 
     const rank = (payload: object) =>
-      test.app.inject({ method: 'PATCH', url: `/v1/applications/${tess}/rank`, headers: auth, payload });
+      test.app.inject({
+        method: 'PATCH',
+        url: `/v1/applications/${tess}/rank`,
+        headers: auth,
+        payload,
+      });
 
     // Genuinely inverted: the upper bound is the FIRST card and the lower the last, so
     // `after > before` and `between` would throw.
-    expect((await rank({ beforeId: applied.cards[0]!.id, afterId: applied.cards.at(-1)!.id })).statusCode).toBe(200);
+    expect(
+      (await rank({ beforeId: applied.cards[0]!.id, afterId: applied.cards.at(-1)!.id }))
+        .statusCode,
+    ).toBe(200);
 
     // The contract still permits both fields to name the same card, which collapses to
     // `after === before` — also not an ordered pair.
-    expect((await rank({ beforeId: applied.cards[0]!.id, afterId: applied.cards[0]!.id })).statusCode).toBe(200);
+    expect(
+      (await rank({ beforeId: applied.cards[0]!.id, afterId: applied.cards[0]!.id })).statusCode,
+    ).toBe(200);
   });
 
   it('places the card between the neighbours it was given', async () => {

@@ -26,14 +26,11 @@ let test: TestApp;
 let fixtures: Fixtures;
 let session: Session;
 /**
- * This file's OWN user, not the seeded recruiter.
+ * This file's OWN user, not the seeded recruiter. See `dedicatedUser`.
  *
- * The `tokens_valid_after` test below deliberately invalidates every token this
- * person holds, and `signIn` additionally rewrites their `external_id`. Both are
- * correct things to do to a user you own and destructive to one you share.
- * Pointing this at the seeded recruiter left the shared row in a state later
- * files inherited, which is what made runs go red and then green with no code
- * change.
+ * This file writes `tokens_valid_after` on the row and mints tokens against it.
+ * Both are reasonable things to do to a user you own; neither is reasonable on a
+ * row eight other suites also authenticate as.
  */
 let owned: Person;
 
@@ -201,9 +198,7 @@ it('a token issued before users.tokens_valid_after is refused while still unexpi
       payload: { email: owned.email, password: TEST_PASSWORD },
     });
     expect(fresh.statusCode).toBe(200);
-    expect(
-      (await get(fresh.json<{ accessToken: string }>().accessToken)).statusCode,
-    ).toBe(200);
+    expect((await get(fresh.json<{ accessToken: string }>().accessToken)).statusCode).toBe(200);
   } finally {
     await sql`update users set tokens_valid_after = null where id = ${owned.id}::uuid`;
     await sql.end();
@@ -216,7 +211,13 @@ it('sign-in with a wrong password is 401 and says nothing about the account', as
   const res = await test.app.inject({
     method: 'POST',
     url: '/v1/auth/sign-in',
-    payload: { email: fixtures.talon.recruiter.email, password: 'not the password' },
+    // `owned.email`, and the whole test turns on it: this arm must be an account
+    // that EXISTS with a password that is wrong, so the provider raises
+    // NotAuthorizedException here and UserNotFoundException below. Naming a person
+    // this file never provisioned makes both arms UserNotFoundException — the
+    // assertion then compares an unknown account to an unknown account and holds
+    // no matter how loudly the api distinguishes the two.
+    payload: { email: owned.email, password: 'not the password' },
   });
   const unknown = await test.app.inject({
     method: 'POST',

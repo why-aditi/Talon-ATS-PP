@@ -129,7 +129,12 @@ it('applies an SLA override, including an override to no SLA', async () => {
         // Position 1 is Screen, seeded at 5 days. Position 0 is Applied, seeded
         // at null — overriding it TO null must stay null rather than falling
         // back to the template, which is what `??` would have done.
-        body({ stageOverrides: [{ position: 1, slaDays: 12 }, { position: 0, slaDays: null }] }),
+        body({
+          stageOverrides: [
+            { position: 1, slaDays: 12 },
+            { position: 0, slaDays: null },
+          ],
+        }),
       )
     ).json(),
   );
@@ -164,9 +169,11 @@ it('never issues the same req code twice under concurrency', async () => {
 
   // The bodies are in the message: a bare status array turns any failure here
   // into a guess about which layer refused.
-  expect(results.map((r) => `${r.statusCode} ${r.body.slice(0, 140)}`).filter((r) => !r.startsWith('201'))).toEqual(
-    [],
-  );
+  expect(
+    results
+      .map((r) => `${r.statusCode} ${r.body.slice(0, 140)}`)
+      .filter((r) => !r.startsWith('201')),
+  ).toEqual([]);
 
   const codes = results.map((r) => JobSchema.parse(r.json()).reqCode);
   expect(new Set(codes).size).toBe(5);
@@ -175,7 +182,10 @@ it('never issues the same req code twice under concurrency', async () => {
 /* ── The comp gate, on the way in ──────────────────────────────────────────── */
 
 it('refuses a band from a caller without comp:read — 403, not a silent drop', async () => {
-  const res = await post(member, body({ bandMinCents: '18000000', bandMaxCents: '22000000', currency: 'USD' }));
+  const res = await post(
+    member,
+    body({ bandMinCents: '18000000', bandMaxCents: '22000000', currency: 'USD' }),
+  );
 
   // Read-gating a field while leaving it writable is not access control (#2).
   expect(res.statusCode).toBe(403);
@@ -183,7 +193,10 @@ it('refuses a band from a caller without comp:read — 403, not a silent drop', 
 });
 
 it('lets a recruiter set a band, and returns it', async () => {
-  const res = await post(recruiter, body({ bandMinCents: '18000000', bandMaxCents: '22000000', currency: 'USD' }));
+  const res = await post(
+    recruiter,
+    body({ bandMinCents: '18000000', bandMaxCents: '22000000', currency: 'USD' }),
+  );
 
   expect(res.statusCode).toBe(201);
   expect(JobSchema.parse(res.json()).band).toMatchObject({
@@ -202,17 +215,26 @@ it('refuses a band with no currency — never assumes USD', async () => {
 });
 
 it('refuses half a band, and an inverted one', async () => {
-  expect((await post(recruiter, body({ bandMinCents: '18000000', currency: 'USD' }))).statusCode).toBe(400);
   expect(
-    (await post(recruiter, body({ bandMinCents: '22000000', bandMaxCents: '18000000', currency: 'USD' })))
-      .statusCode,
+    (await post(recruiter, body({ bandMinCents: '18000000', currency: 'USD' }))).statusCode,
+  ).toBe(400);
+  expect(
+    (
+      await post(
+        recruiter,
+        body({ bandMinCents: '22000000', bandMaxCents: '18000000', currency: 'USD' }),
+      )
+    ).statusCode,
   ).toBe(400);
 });
 
 /* ── Bad references ────────────────────────────────────────────────────────── */
 
 it('404s on a stage template that does not exist', async () => {
-  const res = await post(recruiter, body({ stageTemplateId: '00000000-0000-4000-8000-000000000000' }));
+  const res = await post(
+    recruiter,
+    body({ stageTemplateId: '00000000-0000-4000-8000-000000000000' }),
+  );
   // 404 and not 403: an id from another tenant must be indistinguishable from
   // one that was never issued (§6.4).
   expect(res.statusCode).toBe(404);
@@ -227,7 +249,11 @@ it('rejects an unexpected key rather than dropping it', async () => {
 /* ── The two reads behind steps 2 and 3 ────────────────────────────────────── */
 
 it('lists the tenant’s stage templates with their stages in order', async () => {
-  const res = await test.app.inject({ method: 'GET', url: '/v1/stage-templates', headers: recruiter });
+  const res = await test.app.inject({
+    method: 'GET',
+    url: '/v1/stage-templates',
+    headers: recruiter,
+  });
 
   expect(res.statusCode).toBe(200);
   const { data } = ListStageTemplatesResponseSchema.parse(res.json());
