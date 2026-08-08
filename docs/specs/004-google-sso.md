@@ -578,11 +578,13 @@ exchangeIdToken(idToken: string): Promise<AuthResult>;
    makes. One claim-shape source (§6.2) is what keeps a federated session
    indistinguishable from a password one everywhere downstream.
 
-**`LocalIdentityProvider`** — `IdentityFailure('not_implemented')` (501). There is
-no local hosted UI to have completed a flow with. Throwing here rather than
-leaving the method off the interface keeps the seam honest:
-`TALON_IDENTITY_PROVIDER=local` should say "this provider cannot do that", not
-fail with a type error at boot.
+> **Amended 2026-08-08.** This paragraph named a second implementation. There
+> isn't one any more: `f41ac45` (spec 002 open question 1, answered "Cognito
+> only") deleted `local-provider.ts`, `password.ts` and `totp.ts`, and
+> `container.ts` now registers `CognitoIdentityProvider` unconditionally. So
+> `exchangeIdToken` has exactly one implementation and needs no 501 branch. The
+> seam itself stays — `cognito-stub.ts` substitutes the *network*, not the class,
+> which is what keeps the tests in §11.7 deterministic.
 
 ### 11.6 Failures, and what the web app already does with them
 
