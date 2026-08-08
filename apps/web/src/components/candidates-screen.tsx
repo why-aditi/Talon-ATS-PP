@@ -17,8 +17,7 @@ import { Avatar, cx } from './ui';
 
 /** Declared once and shared with the skeleton, so the two cannot drift out of
  *  alignment — the pattern `jobs-screen.tsx` uses and explains. */
-const ROW_GRID =
-  'grid items-center gap-4 px-4 grid-cols-[minmax(0,1fr)_auto_auto_auto_auto]';
+const ROW_GRID = 'grid items-center gap-4 px-4 grid-cols-[minmax(0,1fr)_auto_auto_auto_auto]';
 const ROW_HEIGHT = 'h-[var(--layout-row-height)]';
 
 const STAGE_DOT: Record<string, string> = {
@@ -42,7 +41,9 @@ function Row({ candidate }: { candidate: CandidateSummary }) {
         <span className="flex min-w-0 items-center gap-3">
           <Avatar id={candidate.id} name={candidate.name} size={24} />
           <span className="min-w-0">
-            <span className="block truncate text-body-strong text-text-primary">{candidate.name}</span>
+            <span className="block truncate text-body-strong text-text-primary">
+              {candidate.name}
+            </span>
             <span className="block truncate text-body text-text-secondary">
               {candidate.currentTitle} at {candidate.currentCompany}
             </span>
@@ -52,13 +53,18 @@ function Row({ candidate }: { candidate: CandidateSummary }) {
         {/* Dot plus label. The stage is never carried by colour alone (§4.15). */}
         <span className="flex items-center gap-2 text-body text-text-primary">
           <span
-            className={cx('size-[var(--layout-stage-dot-size)] shrink-0 rounded-full', STAGE_DOT[candidate.stage])}
+            className={cx(
+              'size-[var(--layout-stage-dot-size)] shrink-0 rounded-full',
+              STAGE_DOT[candidate.stage],
+            )}
             aria-hidden="true"
           />
           {stageLabel(candidate.stage)}
         </span>
         <span className="text-body text-text-tertiary tabular-nums">{candidate.daysInStage}d</span>
-        <span className="truncate text-body text-text-tertiary">{SOURCE_LABELS[candidate.source]}</span>
+        <span className="truncate text-body text-text-tertiary">
+          {SOURCE_LABELS[candidate.source]}
+        </span>
       </Link>
     </li>
   );
@@ -69,10 +75,23 @@ export function CandidatesScreen() {
 
   return (
     <div className="flex flex-1 flex-col gap-4 p-[var(--layout-page-gutter)]">
-      <h1 className="text-page-title text-text-primary">Candidates</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-page-title text-text-primary">Candidates</h1>
+        <Link
+          href="/imports"
+          className="inline-flex h-[var(--control-height-md)] items-center rounded-md bg-action-primary-bg px-4 text-body-strong text-text-on-primary"
+        >
+          Import CSV
+        </Link>
+      </div>
 
       <div className="overflow-hidden rounded-lg border border-border-subtle bg-bg-surface">
-        <div className={cx(ROW_GRID, 'h-10 border-b border-border-subtle text-caption uppercase text-text-tertiary')}>
+        <div
+          className={cx(
+            ROW_GRID,
+            'h-10 border-b border-border-subtle text-caption uppercase text-text-tertiary',
+          )}
+        >
           <span>Candidate</span>
           <span>Job</span>
           <span>Stage</span>
@@ -83,7 +102,10 @@ export function CandidatesScreen() {
         {query.isPending ? (
           <ul>
             {[0, 1, 2, 3, 4, 5].map((i) => (
-              <li key={i} className={cx(ROW_GRID, ROW_HEIGHT, 'border-b border-border-subtle last:border-0')}>
+              <li
+                key={i}
+                className={cx(ROW_GRID, ROW_HEIGHT, 'border-b border-border-subtle last:border-0')}
+              >
                 <span className="h-4 w-20 animate-pulse rounded-sm bg-bg-surface-sunken" />
                 <span className="h-4 w-20 animate-pulse rounded-sm bg-bg-surface-sunken" />
                 <span className="h-4 w-12 animate-pulse rounded-sm bg-bg-surface-sunken" />

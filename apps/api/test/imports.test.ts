@@ -71,9 +71,14 @@ async function createImport(csv: string): Promise<string> {
 }
 
 it('requires the mandatory dry run before commit', async () => {
-  const id = await createImport(`Name,Email\nGate Probe ${Date.now()},gate-${Date.now()}@example.test\n`);
+  const id = await createImport(
+    `Name,Email\nGate Probe ${Date.now()},gate-${Date.now()}@example.test\n`,
+  );
   const response = await test.app.inject({
-    method: 'POST', url: `/v1/imports/${id}/commit`, headers: recruiter, payload: mapping(),
+    method: 'POST',
+    url: `/v1/imports/${id}/commit`,
+    headers: recruiter,
+    payload: mapping(),
   });
   expect(response.statusCode, response.body).toBe(409);
   expect(response.json()).toMatchObject({ type: ERROR_TYPES.IMPORT_DRY_RUN_REQUIRED });
@@ -87,17 +92,26 @@ it('commits through intake, records the first transition, and retries idempotent
   );
 
   const dryRun = await test.app.inject({
-    method: 'POST', url: `/v1/imports/${id}/dry-run`, headers: recruiter, payload: mapping(),
+    method: 'POST',
+    url: `/v1/imports/${id}/dry-run`,
+    headers: recruiter,
+    payload: mapping(),
   });
   expect(dryRun.statusCode, dryRun.body).toBe(200);
   expect(dryRun.json()).toMatchObject({ total: 2, valid: 2, invalid: 0, errorCsvUrl: null });
 
-  const commit = () => test.app.inject({
-    method: 'POST', url: `/v1/imports/${id}/commit`, headers: recruiter, payload: mapping(),
-  });
+  const commit = () =>
+    test.app.inject({
+      method: 'POST',
+      url: `/v1/imports/${id}/commit`,
+      headers: recruiter,
+      payload: mapping(),
+    });
   const first = await commit();
   expect(first.statusCode, first.body).toBe(202);
-  expect(first.json()).toMatchObject({ job: { status: 'succeeded', total: 2, processed: 2, failed: 0 } });
+  expect(first.json()).toMatchObject({
+    job: { status: 'succeeded', total: 2, processed: 2, failed: 0 },
+  });
 
   const sql = postgres(OWNER_URL, { max: 1, onnotice: () => {} });
   try {
@@ -117,4 +131,44 @@ it('commits through intake, records the first transition, and retries idempotent
   const retry = await commit();
   expect(retry.statusCode, retry.body).toBe(202);
   expect(retry.json()).toMatchObject({ job: { status: 'succeeded', processed: 2, failed: 0 } });
+});
+
+it('actually processes files above the old 50-row cutoff', async () => {
+  const stamp = Date.now();
+  const csv = [
+    'Name,Email',
+    ...Array.from(
+      { length: 51 },
+      (_, index) => `Bulk ${stamp} ${index},bulk-${stamp}-${index}@example.test`,
+    ),
+  ].join('\n');
+  const id = await createImport(csv);
+
+  const dryRun = await test.app.inject({
+    method: 'POST',
+    url: `/v1/imports/${id}/dry-run`,
+    headers: recruiter,
+    payload: mapping(),
+  });
+  expect(dryRun.statusCode, dryRun.body).toBe(200);
+
+  const committed = await test.app.inject({
+    method: 'POST',
+    url: `/v1/imports/${id}/commit`,
+    headers: recruiter,
+    payload: mapping(),
+  });
+  expect(committed.statusCode, committed.body).toBe(202);
+  expect(committed.json()).toMatchObject({
+    job: { status: 'succeeded', total: 51, processed: 51, failed: 0 },
+  });
+
+  const sql = postgres(OWNER_URL, { max: 1, onnotice: () => {} });
+  try {
+    const rows = await sql<{ application_id: string }[]>`
+      select application_id from import_rows where job_id = ${id} and status = 'committed'`;
+    applications.push(...rows.map((row) => row.application_id));
+  } finally {
+    await sql.end();
+  }
 });
