@@ -216,6 +216,7 @@ export const TOKENS = {
   '--layout-scheduling-left-pane': "289px",
   '--layout-scheduling-row-height': "44px",
   '--layout-row-height': "55px",
+  '--layout-reports-trend-height': "70px",
   '--layout-progress-rule-height': "3px",
   '--layout-nav-marker-width': "2px",
   '--layout-notification-dot-size': "6px",

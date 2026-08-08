@@ -241,6 +241,7 @@
     "schedulingLeftPane": { "$value": "289px", "$description": "matches the review pane" },
     "schedulingRowHeight": { "$value": "44px", "$description": "estimated" },
     "rowHeight":        { "$value": "55px",   "$description": "measured - job list dividers at 55px intervals" },
+    "reportsTrendHeight": { "$value": "70px", "$description": "measured - Reports interviews-per-week plot area: all eight bars share a baseline and the tallest (W8, 28) rises 70px above it" },
     "progressRuleHeight": { "$value": "3px",  "$description": "thin capsule under kanban column headers and in job rows (DESIGN_SYSTEM §3)" },
     "navMarkerWidth":   { "$value": "2px",    "$description": "indigo left marker on the active sidebar item" },
     "notificationDotSize": { "$value": "6px", "$description": "unread dot on the topbar bell" },
