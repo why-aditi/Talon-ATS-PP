@@ -55,12 +55,26 @@ export interface BoardCardRow {
   version: number;
 }
 
-/** What a move needs to know before it decides, read under a row lock. */
+/**
+ * What a move needs before it decides, read under a row lock.
+ *
+ * Carries the whole card, not just the version: a 409 answers with `current` so the
+ * client can reconcile without a second round trip, and fetching that separately after
+ * the conflict would read outside the lock and could report a third state.
+ */
 export interface MovableApplication {
   id: string;
+  jobId: string;
+  candidateId: string;
   name: string;
+  currentTitle: string;
+  currentCompany: string;
+  source: Source;
+  status: ApplicationStatus;
   currentStageId: string;
   currentStageName: string;
+  currentStageCanonical: CanonicalStage;
+  daysInStage: number;
   version: number;
 }
 
@@ -249,9 +263,26 @@ export class ApplicationsRepository {
    */
   async lockForMove(tx: TenantTransaction, applicationId: string): Promise<MovableApplication | null> {
     const [row] = await tx.sql<
-      { id: string; name: string; current_stage_id: string; stage_name: string; version: number }[]
+      {
+        id: string;
+        job_id: string;
+        candidate_id: string;
+        name: string;
+        current_title: string | null;
+        current_company: string | null;
+        source: Source;
+        status: ApplicationStatus;
+        current_stage_id: string;
+        stage_name: string;
+        canonical: CanonicalStage;
+        days_in_stage: number;
+        version: number;
+      }[]
     >`
-      select a.id, c.name, a.current_stage_id, js.name as stage_name, a.version
+      select a.id, a.job_id, a.candidate_id, c.name, c.current_title, c.current_company,
+             a.source, a.status, a.current_stage_id, a.version,
+             js.name as stage_name, js.canonical,
+             floor(extract(epoch from (now() - a.stage_entered_at)) / 86400)::int as days_in_stage
       from applications a
       join candidates c on c.id = a.candidate_id and c.tenant_id = a.tenant_id
       join job_stages js on js.id = a.current_stage_id
@@ -260,9 +291,17 @@ export class ApplicationsRepository {
     if (!row) return null;
     return {
       id: row.id,
+      jobId: row.job_id,
+      candidateId: row.candidate_id,
       name: row.name,
+      currentTitle: row.current_title ?? '',
+      currentCompany: row.current_company ?? '',
+      source: row.source,
+      status: row.status,
       currentStageId: row.current_stage_id,
       currentStageName: row.stage_name,
+      currentStageCanonical: row.canonical,
+      daysInStage: row.days_in_stage,
       version: row.version,
     };
   }

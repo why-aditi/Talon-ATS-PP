@@ -43,9 +43,9 @@ Spec 003 shipped the pipeline board against MSW fixtures with a mock that enforc
 
 `api.md`: *"If the schema you need doesn't exist yet, stop — `schema` goes first."* There is no `outbox` table in `packages/db`, and ARCHITECTURE §6.1 requires every successful move to insert one **in the same transaction as the state change**. Nothing else in this spec can be built correctly without it.
 
-Shipped as **`0005_outbox`** — not 0004: `0004_users_external_id` already exists on main from the identity stream, and two migrations sharing a number makes ordering depend on alphabetical luck.
+Shipped as **`0006_outbox`** — not 0004: `0004_users_external_id` already exists on main from the identity stream, and two migrations sharing a number makes ordering depend on alphabetical luck.
 
-See `packages/db/migrations/0005_outbox.up.sql` for the DDL. Three decisions worth naming:
+See `packages/db/migrations/0006_outbox.up.sql` for the DDL. Three decisions worth naming:
 
 - **`id` is `bigserial`, not `uuid`.** Delivery is at-least-once and consumers are idempotent keyed on it (non-negotiable #19), so it has to be a total ordering as well as unique.
 - **No `unique (aggregate_id, event_type)`.** One application legitimately produces many `ApplicationStageChanged` events. Deduplication is the consumer's job.
@@ -221,7 +221,7 @@ No comp fields on this surface. `scoreAvg` is out of scope entirely, so scorecar
 
 | Step | Deliverable |
 |---|---|
-| 1 | ✅ **`0005_outbox` migration** (§3) — landed, 78 db tests green |
+| 1 | ✅ **`0006_outbox` migration** (§3) — landed, 78 db tests green |
 | 2 | `packages/domain`: lexorank + `nextActionFor`, with property tests |
 | 3 | `packages/contracts/src/pipeline.ts` + the two error types |
 | 4 | `applications/repository.ts` — board read, the stats query, `updateRank`, `moveStage` |
