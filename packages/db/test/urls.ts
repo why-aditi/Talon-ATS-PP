@@ -52,6 +52,13 @@ export const TENANT_TABLES = [
   'stage_transitions',
   'activities',
   'audit_log',
+  // Scheduling (migration 0009). Listed because the seed writes rows for BOTH tenants —
+  // Ana's four-round loop and Acme's one-round loop — so the sweep is not vacuous.
+  'interview_loops',
+  'interview_rounds',
+  'interview_round_panelists',
+  'interviews',
+  'interview_panelists',
   // `outbox` (migration 0006) is deliberately NOT here, and it is worth saying why
   // rather than leaving it looking forgotten. The sweep asserts that tenant A sees
   // rows and none of tenant B's — it needs SEEDED DATA to mean anything, and an empty

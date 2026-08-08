@@ -17,6 +17,7 @@ it('up → down → up (run in global setup) left a fully migrated, seeded datab
       '0006_outbox',
       '0007_definer_rls_exemption',
       '0008_jobs_version',
+      '0009_scheduling',
     ]);
     // 0002 dropped users.avatar_color — the UI hashes the id over the avatar.1–8
     // token palette, so a stored hex has no reader (CLAUDE.md §4.8).
@@ -27,8 +28,9 @@ it('up → down → up (run in global setup) left a fully migrated, seeded datab
     const [tables] = await sql`
       select count(*)::int as n from information_schema.tables
       where table_schema = 'public' and table_name <> '_migrations'`;
-    // 10 from 0001, plus local_identities from 0003 and outbox from 0006.
-    expect(tables?.['n']).toBe(12);
+    // 10 from 0001, plus local_identities from 0003, outbox from 0006, and 0009's five
+    // scheduling tables.
+    expect(tables?.['n']).toBe(17);
     // The security definer surface must survive down → up as well, and its size
     // is the thing to watch: 0003's two readers are the only way sign-in can
     // read a users row (spec 001 §11b), and 0005's writer is the only way it can
