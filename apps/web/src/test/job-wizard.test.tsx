@@ -1,10 +1,42 @@
-import { render, screen, within } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { render as rtlRender, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import axe from 'axe-core';
 import { describe, expect, it } from 'vitest';
 import { JobWizard } from '../components/job-wizard';
 import { initialState, kToCents, toCreateJobPayload, validateStep, type WizardState } from '../lib/job-wizard';
+import { SessionProvider } from '../lib/session';
+import { json, route } from './fetch-stub';
 import { routerPush } from './setup';
+
+/**
+ * The wizard reads its own data now, so it needs a session and a query client.
+ * `/v1/stage-templates` and `/v1/users` 404 from the stub's UNBUILT list, which
+ * is what the api actually does — the empty states below are the real behaviour,
+ * not a test fixture.
+ */
+function render(ui: React.ReactElement) {
+  route((url) => (url.pathname === '/api/auth/refresh' ? json(SESSION) : undefined));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return rtlRender(
+    <QueryClientProvider client={client}>
+      <SessionProvider>{ui}</SessionProvider>
+    </QueryClientProvider>,
+  );
+}
+
+const SESSION = {
+  accessToken: 'test-access-token',
+  expiresIn: 3600,
+  user: {
+    id: '0198f3a1-0007-7000-8000-000000000001',
+    tenantId: '0198f3a1-0000-7000-8000-000000000001',
+    email: 'maya@taloninc.com',
+    name: 'Maya Reyes',
+    role: 'recruiter',
+    timezone: 'America/Los_Angeles',
+  },
+};
 
 const state = (over: Partial<WizardState> = {}): WizardState => ({ ...initialState, ...over });
 
@@ -190,6 +222,152 @@ describe('the wizard on screen', () => {
 
   it('has no axe violations', async () => {
     const { container } = render(<JobWizard />);
+    await expectNoAxeViolations(container);
+  });
+});
+
+/* ── Steps 2-4 with data ───────────────────────────────────────────────────── */
+
+const TEMPLATES = [
+  {
+    id: '0198f3a1-0100-7000-8000-000000000001',
+    name: 'Standard engineering',
+    stages: [
+      { name: 'Applied', slaDays: null },
+      { name: 'Screen', slaDays: 3 },
+      { name: 'Onsite', slaDays: 5 },
+      { name: 'Offer', slaDays: 2 },
+    ],
+  },
+  { id: '0198f3a1-0100-7000-8000-000000000002', name: 'Executive', stages: [{ name: 'Applied', slaDays: null }] },
+];
+
+const RECRUITERS = [{ id: '0198f3a1-0007-7000-8000-000000000001', name: 'Maya Reyes' }];
+const MANAGERS = [{ id: '0198f3a1-0007-7000-8000-000000000004', name: 'Sam Altmann' }];
+
+const populated = () => (
+  <JobWizard templates={TEMPLATES} recruiters={RECRUITERS} managers={MANAGERS} />
+);
+
+/** Fill step 1 and land on step 2. */
+async function toStep2(user: ReturnType<typeof userEvent.setup>) {
+  await user.type(screen.getByLabelText('Job title'), 'Senior Backend Engineer');
+  await user.click(screen.getByRole('radio', { name: 'Engineering' }));
+  await user.click(screen.getByRole('radio', { name: 'Remote (US)' }));
+  await user.click(screen.getByRole('button', { name: 'Continue →' }));
+}
+
+describe('step 2 — pipeline', () => {
+  it('lists the templates with their stages, and blocks Continue until one is picked', async () => {
+    const user = userEvent.setup();
+    render(populated());
+    await toStep2(user);
+
+    expect(screen.getByRole('radio', { name: /Standard engineering/ })).toBeInTheDocument();
+    // The stage names are visible without opening anything — the reason this is a
+    // list rather than a select.
+    expect(screen.getByText('Onsite')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Continue →' }));
+    expect(screen.getByText('Step 2 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Choose a pipeline.')).toBeInTheDocument();
+  });
+
+  it('reveals SLA inputs prefilled from the chosen template', async () => {
+    const user = userEvent.setup();
+    render(populated());
+    await toStep2(user);
+    await user.click(screen.getByRole('radio', { name: /Standard engineering/ }));
+
+    expect(screen.getByLabelText('Screen SLA in days')).toHaveValue('3');
+    // Blank means no SLA, which is not the same as zero — §6.3.
+    expect(screen.getByLabelText('Applied SLA in days')).toHaveValue('');
+  });
+});
+
+describe('step 3 — hiring team', () => {
+  it('offers the fetched people and defaults both to Unassigned', async () => {
+    const user = userEvent.setup();
+    render(populated());
+    await toStep2(user);
+    await user.click(screen.getByRole('radio', { name: /Executive/ }));
+    await user.click(screen.getByRole('button', { name: 'Continue →' }));
+
+    expect(screen.getByText('Step 3 of 4')).toBeInTheDocument();
+    // Nullable columns, and the jobs list already renders "Unassigned", so it is
+    // a real choice rather than a placeholder.
+    expect(screen.getByRole('combobox', { name: 'Recruiter' })).toHaveTextContent('Unassigned');
+    expect(screen.getByLabelText('Openings')).toHaveValue('1');
+  });
+
+  it('refuses zero openings', async () => {
+    const user = userEvent.setup();
+    render(populated());
+    await toStep2(user);
+    await user.click(screen.getByRole('radio', { name: /Executive/ }));
+    await user.click(screen.getByRole('button', { name: 'Continue →' }));
+
+    await user.clear(screen.getByLabelText('Openings'));
+    await user.type(screen.getByLabelText('Openings'), '0');
+    await user.click(screen.getByRole('button', { name: 'Continue →' }));
+
+    expect(screen.getByText('Step 3 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Between 1 and 999.')).toBeInTheDocument();
+  });
+});
+
+describe('step 4 — review', () => {
+  async function toReview(user: ReturnType<typeof userEvent.setup>) {
+    await toStep2(user);
+    await user.click(screen.getByRole('radio', { name: /Executive/ }));
+    await user.click(screen.getByRole('button', { name: 'Continue →' }));
+    await user.click(screen.getByRole('button', { name: 'Continue →' }));
+  }
+
+  it('summarises every step and names the pipeline', async () => {
+    const user = userEvent.setup();
+    render(populated());
+    await toReview(user);
+
+    expect(screen.getByText('Step 4 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Senior Backend Engineer')).toBeInTheDocument();
+    expect(screen.getByText('Executive')).toBeInTheDocument();
+    expect(screen.getByText('Remote (US)')).toBeInTheDocument();
+  });
+
+  it('returns to the step behind a value, with the answers intact', async () => {
+    const user = userEvent.setup();
+    render(populated());
+    await toReview(user);
+
+    await user.click(screen.getByRole('button', { name: /Edit Department/ }));
+    expect(screen.getByText('Step 1 of 4')).toBeInTheDocument();
+    expect(screen.getByLabelText('Job title')).toHaveValue('Senior Backend Engineer');
+  });
+
+  it('cannot submit, and says why rather than looking broken', async () => {
+    const user = userEvent.setup();
+    render(populated());
+    await toReview(user);
+
+    expect(screen.getByRole('button', { name: 'Create job' })).toBeDisabled();
+    expect(screen.getByRole('status')).toHaveTextContent(/POST \/v1\/jobs/);
+  });
+
+  it('omits the band entirely without comp:read', async () => {
+    const user = userEvent.setup();
+    render(<JobWizard canReadComp={false} templates={TEMPLATES} recruiters={RECRUITERS} managers={MANAGERS} />);
+    await toReview(user);
+
+    // Absent, not an empty "Band —": an empty row would say the job has no band,
+    // which is a different fact from "you may not see it" (#2).
+    expect(screen.queryByText('Band')).not.toBeInTheDocument();
+  });
+
+  it('has no axe violations on the last step', async () => {
+    const user = userEvent.setup();
+    const { container } = render(populated());
+    await toReview(user);
     await expectNoAxeViolations(container);
   });
 });

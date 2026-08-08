@@ -17,6 +17,7 @@ import {
   type StepIndex,
   type WizardState,
 } from '../lib/job-wizard';
+import { useAssignableUsers, useStageTemplates, type StageTemplate, type UserOption } from '../lib/job-wizard-query';
 import { Button, Select, cx } from './ui';
 
 /*
@@ -253,19 +254,14 @@ function RoleBasics({
 
 /* ── Steps 2-4 — no reference. Spec 005 §6.3-§6.5. ─────────────────────────── */
 
-/**
- * The stage templates a job can be built from.
- *
- * `GET /v1/stage-templates` does not exist (spec 005 §12 step 4), so this list is
- * empty and the step renders its own empty state. That is the honest shape: the
- * step cannot invent pipelines, and a hardcoded list here would be data that
- * looks like data and answers to nothing — the mistake the sidebar counts made.
- */
-interface StageTemplate {
-  id: string;
-  name: string;
-  stages: { name: string; slaDays: number | null }[];
-}
+/*
+  Steps 2 and 3 read from `GET /v1/stage-templates` and `GET /v1/users?role=`,
+  neither of which exists yet (spec 005 §12 step 4, §15 OQ7). The queries are
+  written against the contract so the steps fill in the moment those ship; until
+  then a 404 resolves to an empty list and the step says which endpoint it is
+  waiting for. A hardcoded list here would be data that looks like data and
+  answers to nothing — the mistake the sidebar counts made.
+*/
 
 function Pipeline({
   state,
@@ -273,22 +269,43 @@ function Pipeline({
   setSla,
   errors,
   templates,
+  unavailable,
+  isPending,
 }: {
   state: WizardState;
   set: (field: keyof WizardState, value: string) => void;
   setSla: (position: number, value: string) => void;
   errors: Errors;
   templates: StageTemplate[];
+  unavailable: boolean;
+  isPending: boolean;
 }) {
   const chosen = templates.find((t) => t.id === state.stageTemplateId);
+
+  if (isPending) {
+    return (
+      <div aria-busy="true" aria-label="Loading pipelines">
+        {[0, 1].map((i) => (
+          <div key={i} className="mb-3 h-16 animate-pulse rounded-md bg-bg-canvas" />
+        ))}
+      </div>
+    );
+  }
 
   if (templates.length === 0) {
     return (
       <div>
         <p className="text-body-strong text-text-primary">No stage templates yet.</p>
         <p className="mt-1 text-body text-text-secondary">
-          A job needs a pipeline before it can accept candidates, and none are available. This step needs{' '}
-          <code className="font-mono text-code">GET /v1/stage-templates</code>, which isn’t built yet.
+          A job needs a pipeline before it can accept candidates, and none are available.{' '}
+          {unavailable ? (
+            <>
+              This step reads <code className="font-mono text-code">GET /v1/stage-templates</code>, which isn’t built
+              yet.
+            </>
+          ) : (
+            <>Ask an admin to add one.</>
+          )}
         </p>
       </div>
     );
@@ -352,11 +369,6 @@ function Pipeline({
   );
 }
 
-interface UserOption {
-  id: string;
-  name: string;
-}
-
 function HiringTeam({
   state,
   set,
@@ -364,6 +376,7 @@ function HiringTeam({
   ids,
   recruiters,
   managers,
+  unavailable,
 }: {
   state: WizardState;
   set: (field: keyof WizardState, value: string) => void;
@@ -371,6 +384,7 @@ function HiringTeam({
   ids: Record<string, string>;
   recruiters: UserOption[];
   managers: UserOption[];
+  unavailable: boolean;
 }) {
   // Both columns are nullable and the jobs list already renders "Unassigned", so
   // an empty option is a real choice rather than a placeholder.
@@ -420,10 +434,10 @@ function HiringTeam({
         <FieldError id={`${ids['openings']}-error`} message={errors.openings} />
       </div>
 
-      {recruiters.length === 0 && managers.length === 0 ? (
+      {recruiters.length === 0 && managers.length === 0 && unavailable ? (
         <p className="mt-4 text-meta text-text-tertiary">
-          Nobody to assign yet — this needs <code className="font-mono text-code">GET /v1/users?role=</code>, which
-          isn’t built. The job can be created unassigned and assigned later.
+          Nobody to assign yet — this reads <code className="font-mono text-code">GET /v1/users?role=</code>, which
+          isn’t built. Both columns are nullable, so the job can be created unassigned and assigned later.
         </p>
       ) : null}
     </>
@@ -435,20 +449,39 @@ function Review({
   canReadComp,
   onEdit,
   templates,
+  recruiters,
+  managers,
 }: {
   state: WizardState;
   canReadComp: boolean;
   onEdit: (step: StepIndex) => void;
   templates: StageTemplate[];
+  recruiters: UserOption[];
+  managers: UserOption[];
 }) {
   const payload = toCreateJobPayload(state);
   const template = templates.find((t) => t.id === state.stageTemplateId);
+  const named = (users: UserOption[], id: string) => users.find((u) => u.id === id)?.name ?? 'Unassigned';
+
+  // Only the overrides that differ from the template. Listing every stage would
+  // bury the two the user actually changed in a list of the ones they did not.
+  const changedSlas = template
+    ? template.stages
+        .map((stage, position) => ({ stage, position, override: state.slaOverrides[position] }))
+        .filter(({ stage, override }) => override !== undefined && override !== (stage.slaDays?.toString() ?? ''))
+        .map(({ stage, override }) => `${stage.name} ${override === '' ? 'no SLA' : `${override}d`}`)
+    : [];
 
   const rows: { label: string; value: string; step: StepIndex }[] = [
     { label: 'Title', value: payload.title, step: 0 },
     { label: 'Department', value: payload.department, step: 0 },
     { label: 'Location', value: payload.location, step: 0 },
     { label: 'Pipeline', value: template?.name ?? '—', step: 1 },
+    ...(changedSlas.length > 0
+      ? [{ label: 'SLA changes', value: changedSlas.join(', '), step: 1 as StepIndex }]
+      : []),
+    { label: 'Recruiter', value: named(recruiters, state.recruiterId), step: 2 },
+    { label: 'Hiring manager', value: named(managers, state.hiringManagerId), step: 2 },
     { label: 'Openings', value: String(payload.openings), step: 2 },
   ];
 
@@ -464,25 +497,34 @@ function Review({
   }
 
   return (
-    <dl>
-      {rows.map((row) => (
-        <div key={row.label} className="flex items-baseline gap-3 border-b border-border-subtle py-2 last:border-0">
-          <dt className="w-20 shrink-0 text-meta text-text-tertiary">{row.label}</dt>
-          <dd className="flex-1 text-body text-text-primary">{row.value || '—'}</dd>
-          <button
-            type="button"
-            onClick={() => onEdit(row.step)}
-            className="text-body text-text-link hover:underline"
-          >
-            Edit<span className="sr-only"> {row.label}</span>
-          </button>
-        </div>
-      ))}
+    <>
+      <dl>
+        {rows.map((row) => (
+          <div key={row.label} className="flex items-baseline gap-3 border-b border-border-subtle py-2 last:border-0">
+            <dt className="w-20 shrink-0 text-meta text-text-tertiary">{row.label}</dt>
+            {/* The Edit control lives inside the <dd>, not beside it: a <div> in a
+                <dl> may contain dt and dd and nothing else, and a sibling button
+                is an axe `definition-list` violation. */}
+            <dd className="flex flex-1 items-baseline gap-3 text-body text-text-primary">
+              <span className="flex-1">{row.value || '—'}</span>
+              <button
+                type="button"
+                onClick={() => onEdit(row.step)}
+                className="text-body text-text-link hover:underline"
+              >
+                Edit<span className="sr-only"> {row.label}</span>
+              </button>
+            </dd>
+          </div>
+        ))}
+      </dl>
+      {/* Outside the <dl>: a definition list may only contain dt/dd/div, and a
+          stray <p> is an axe `definition-list` violation. Caught by the gate. */}
       <p className="mt-4 text-meta text-text-tertiary">
         Creates a <strong className="text-text-secondary">draft</strong>. Publish it from the job once the description
         is written — §6.5.
       </p>
-    </dl>
+    </>
   );
 }
 
@@ -490,16 +532,25 @@ function Review({
 
 export function JobWizard({
   canReadComp = true,
-  templates = [],
-  recruiters = [],
-  managers = [],
+  templates: templatesProp,
+  recruiters: recruitersProp,
+  managers: managersProp,
 }: {
   canReadComp?: boolean;
+  /* Overrides exist so a test can drive a populated step without standing up the
+     endpoints. Nothing in the app passes them — the wizard fetches its own data. */
   templates?: StageTemplate[];
   recruiters?: UserOption[];
   managers?: UserOption[];
-}) {
+} = {}) {
   const router = useRouter();
+  const templateQuery = useStageTemplates();
+  const recruiterQuery = useAssignableUsers('recruiter');
+  const managerQuery = useAssignableUsers('hiring_manager');
+
+  const templates = templatesProp ?? templateQuery.data;
+  const recruiters = recruitersProp ?? recruiterQuery.data;
+  const managers = managersProp ?? managerQuery.data;
   const [state, dispatch] = useReducer(wizardReducer, initialState);
   const [step, setStep] = useState<StepIndex>(0);
   const [showErrors, setShowErrors] = useState(false);
@@ -613,6 +664,8 @@ export function JobWizard({
             setSla={(position, value) => dispatch({ type: 'setSla', position, value })}
             errors={errors}
             templates={templates}
+            unavailable={templatesProp === undefined && templateQuery.unavailable}
+            isPending={templatesProp === undefined && templateQuery.isPending}
           />
         ) : null}
         {step === 2 ? (
@@ -623,10 +676,18 @@ export function JobWizard({
             ids={ids}
             recruiters={recruiters}
             managers={managers}
+            unavailable={recruitersProp === undefined && recruiterQuery.unavailable && managerQuery.unavailable}
           />
         ) : null}
         {step === 3 ? (
-          <Review state={state} canReadComp={canReadComp} onEdit={setStep} templates={templates} />
+          <Review
+            state={state}
+            canReadComp={canReadComp}
+            onEdit={setStep}
+            templates={templates}
+            recruiters={recruiters}
+            managers={managers}
+          />
         ) : null}
       </div>
 

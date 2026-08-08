@@ -20,6 +20,13 @@ export type Route = (
 
 const routes: Route[] = [];
 
+/**
+ * Endpoints the spec defines and the api has not built. Delete a line here when
+ * the route lands — the list is the record of what the web side is waiting on,
+ * and an entry that outlives its endpoint would mask a real 404.
+ */
+const UNBUILT = [/^\/v1\/stage-templates$/, /^\/v1\/users$/];
+
 /** Registers a route for the current test. Cleared automatically after each one. */
 export function route(handler: Route): void {
   routes.unshift(handler);
@@ -60,6 +67,14 @@ export function installFetchStub(): void {
     // still override one of them.
     const board = await pipelineRoute(url, init);
     if (board) return board;
+
+    // Routes the api has not built yet (spec 005 §12 step 4, §15 OQ7). Modelled
+    // as the 404 they actually are rather than left to the throw below: the
+    // wizard reads them on mount, and a suite that treated an unbuilt endpoint as
+    // an unexpected call would fail on the app behaving correctly.
+    if (UNBUILT.some((pattern) => pattern.test(url.pathname))) {
+      return json({ type: 'urn:talon:error:not-found', title: 'Not found', status: 404 }, 404);
+    }
 
     throw new Error(`Unhandled request in test: ${init?.method ?? 'GET'} ${url.pathname}`);
   });
