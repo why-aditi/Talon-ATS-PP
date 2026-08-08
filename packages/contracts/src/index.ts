@@ -121,5 +121,45 @@ export {
   type CreateApplicationResponse,
 } from './pipeline.js';
 
+export {
+  // Enums (spec 004)
+  RoundKindSchema,
+  type RoundKind,
+  InterviewStatusSchema,
+  type InterviewStatus,
+  LoopStatusSchema,
+  type LoopStatus,
+
+  // Availability
+  BusyIntervalSchema,
+  type BusyInterval,
+  TimeWindowSchema,
+  type TimeWindow,
+  SchedulingPanelistSchema,
+  type SchedulingPanelist,
+
+  // Solve
+  SolveBlockerSchema,
+  type SolveBlocker,
+  PlacedRoundSchema,
+  type PlacedRound,
+  ArrangementSchema,
+  type Arrangement,
+  SolveResultSchema,
+  type SolveResult,
+
+  // Loop
+  RoundPanelistSchema,
+  type RoundPanelist,
+  ScheduledInterviewSchema,
+  type ScheduledInterview,
+  InterviewRoundSchema,
+  type InterviewRound,
+  LoopHoldSchema,
+  type LoopHold,
+  InterviewLoopSchema,
+  type InterviewLoop,
+} from './scheduling.js';
+
 export { ProblemSchema, type Problem } from './problem.js';
 export { ERROR_TYPES, type ErrorType } from './errors.js';
