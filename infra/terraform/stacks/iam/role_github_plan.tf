@@ -35,6 +35,35 @@ data "aws_iam_policy_document" "github_plan_state" {
     # let a plan read state while a merge apply is writing it.
     resources = [local.state_lock_arn]
   }
+
+  # AWS's ReadOnlyAccess deliberately excludes secretsmanager:GetSecretValue —
+  # reading a secret's METADATA and reading its VALUE are separate powers, and
+  # that separation is correct. This adds the value read back for exactly one
+  # path and no more.
+  #
+  # It is needed because stacks/persistent reads the Google OAuth credentials
+  # through `data.aws_secretsmanager_secret_version` to configure the Cognito
+  # identity provider, and a data source is read during PLAN. Without this the
+  # persistent plan fails on every PR with AccessDeniedException, and the fix is
+  # not to stop managing the IdP: unmanaged, it drifts and nothing checks it.
+  #
+  # Scoped to `<name>/sso/*`, NOT `<name>/*`. The ECS task roles read
+  # `<name>/*` because they legitimately need the database URL and the JWT
+  # signing key at runtime. A pull-request plan needs neither, and this role is
+  # assumable by any branch pushed to this repository.
+  #
+  # On the plan comment: `secret_string` is marked sensitive by the AWS provider
+  # and Terraform propagates that mark through `jsondecode`, so the client secret
+  # renders as `(sensitive value)` rather than in cleartext. That is a property of
+  # Terraform's output, not a guarantee about the role — anything this role can
+  # read, a workflow step in an unmerged PR can also print. That is the reason for
+  # the narrow scope rather than a broader one.
+  statement {
+    sid       = "ReadFederationSecrets"
+    effect    = "Allow"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = ["arn:${local.partition}:secretsmanager:${var.aws_region}:${local.account_id}:secret:${local.name}/sso/*"]
+  }
 }
 
 resource "aws_iam_role_policy" "github_plan_state" {
