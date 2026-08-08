@@ -61,6 +61,13 @@ export interface IdTokenOverrides {
   exp?: number;
   auth_time?: number;
   kid?: string;
+  /**
+   * Cognito's Google mapping fills `name`; nothing else in this pool does, so it
+   * is absent unless a test asks for it. Additive and opt-in — omitting it mints
+   * exactly the token this stub minted before, which is what keeps every other
+   * file in the suite unaffected.
+   */
+  name?: string;
 }
 
 interface AwsError {
@@ -236,6 +243,7 @@ export class CognitoStub {
       exp: overrides.exp ?? iat + 3600,
       jti: randomUUID(),
       'cognito:username': sub,
+      ...(overrides.name === undefined ? {} : { name: overrides.name }),
     };
     const signingInput = `${b64(header)}.${b64(claims)}`;
     const signature = createSign('RSA-SHA256')

@@ -25,17 +25,25 @@ export const identityRoutes: FastifyPluginAsync = async (app) => {
    * PUBLIC_ROUTES, and the route-manifest test fails CI if it is not — which is the
    * correct outcome if this step is ever forgotten.
    *
-   * No audit context: Cognito minted the id token and has already recorded that
-   * authentication. This endpoint exchanges an already-proven identity for a session,
-   * while the sign-in audit records the outcome of OUR OWN credential check.
+   * The audit context is NOT for a sign-in row — Cognito minted the id token and has
+   * already recorded that authentication, and this endpoint exchanges an
+   * already-proven identity rather than checking a credential of our own. It is here
+   * for the one row this path can write: a `users` row created just in time
+   * (`user.provisioned.jit`), which is a mutation and so must carry an actor, an ip
+   * and a request id like every other (CLAUDE.md §4). With `TALON_JIT_PROVISION`
+   * unset nothing is written and the context is unused.
    */
   app.post('/auth/sso', async (request, reply) => {
     const body = parseOrThrow(SsoRequestSchema, request.body, 'body');
-    return reply.send(await services(request).identityService.signInWithSso(body));
+    const audit = { ip: request.ip, requestId: request.id };
+    return reply.send(await services(request).identityService.signInWithSso(body, audit));
   });
 
   app.post('/auth/refresh', async (request, reply) => {
     const body = parseOrThrow(RefreshRequestSchema, request.body, 'body');
-    return reply.send(await services(request).identityService.refresh(body));
+    // Same reason as /auth/sso: the refresh itself writes no audit row, but a
+    // first refresh for an allow-listed identity can create the `users` row.
+    const audit = { ip: request.ip, requestId: request.id };
+    return reply.send(await services(request).identityService.refresh(body, audit));
   });
 };
