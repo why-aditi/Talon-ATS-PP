@@ -1,7 +1,8 @@
 'use client';
 
+import { useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { isOpenJob, useJobs } from '../lib/jobs-query';
 import { useSession } from '../lib/session';
 import {
@@ -101,6 +102,53 @@ const roleLabel = (role: string) => {
   return words.charAt(0).toUpperCase() + words.slice(1);
 };
 
+/**
+ * Ends the session and leaves.
+ *
+ * Three things have to happen and the order is not arbitrary. The route handler
+ * clears the httpOnly refresh cookie — the browser cannot, which is the point of
+ * it being httpOnly. `signOut` then drops the in-memory access token. Only then is
+ * the query cache cleared: it holds this tenant's jobs, and without this the next
+ * person to sign in on the same tab is served the previous one's rows from cache
+ * before their own request resolves. Hiding that behind a fresh fetch would be a
+ * cross-tenant read that happened to be brief (§4.1).
+ *
+ * `replace`, not `push`: Back must not return to an authenticated screen.
+ */
+function SignOutButton() {
+  const router = useRouter();
+  const queryClient = useQueryClient();
+  const { signOut } = useSession();
+  const [leaving, setLeaving] = useState(false);
+
+  return (
+    <button
+      type="button"
+      // Icon-only, so the accessible name is the label. 24px is the whole button,
+      // not a wrapper around a smaller one — the target is the control itself.
+      aria-label="Sign out"
+      disabled={leaving}
+      onClick={async () => {
+        setLeaving(true);
+        // signOut swallows a failed request on purpose: a session the server
+        // already forgot must still end here, or the user is stuck signed in to
+        // a token nothing will honour.
+        await signOut();
+        queryClient.clear();
+        router.replace('/sign-in');
+      }}
+      className={cx(
+        'grid size-6 place-items-center rounded-md text-text-tertiary',
+        'transition-colors duration-[var(--duration-instant)] ease-standard',
+        'hover:bg-action-ghost-bg-hover hover:text-text-secondary',
+        'disabled:cursor-not-allowed disabled:text-action-disabled-text',
+      )}
+    >
+      <SignOutIcon />
+    </button>
+  );
+}
+
 function Sidebar() {
   const pathname = usePathname();
   const openJobTemplate = useJobTemplate();
@@ -183,14 +231,11 @@ function Sidebar() {
           </span>
         </span>
         {/*
-          Sign-out is a picture until the auth chain exists (step 4), for the same
-          reason the topbar search is: a control that takes focus and does nothing is
-          a keyboard dead end, and it teaches the next person the route is already
-          wired. Becomes a real button when there is a session to end.
+          A real control now that step 4 has shipped a session to end. It renders
+          only when there is one: with no session there is nothing to sign out of,
+          and the disabled-or-absent call is the same one the topbar search gets.
         */}
-        <span aria-hidden="true" className="grid size-6 place-items-center rounded-md text-text-tertiary">
-          <SignOutIcon />
-        </span>
+        {session ? <SignOutButton /> : null}
       </div>
     </div>
   );

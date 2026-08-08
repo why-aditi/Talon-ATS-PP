@@ -12,8 +12,31 @@ import { SEEDED_JOBS } from './seeded-jobs';
 import { json, route } from './fetch-stub';
 import { routerReplace, searchParams } from './setup';
 
+/**
+ * What the BFF hands the browser on a restored session: an access token, its
+ * lifetime, and the user. Never the refresh token — that stays in the httpOnly
+ * cookie the route handler set.
+ *
+ * The shell is authenticated chrome, so the harness has to be signed in for it to
+ * be tested at all. Without this, `session` was null through every case here and
+ * the sidebar's avatar, name, role and sign-out all silently rendered as nothing.
+ */
+const SEEDED_SESSION = {
+  accessToken: 'test-access-token',
+  expiresIn: 3600,
+  user: {
+    id: '0198f3a1-0007-7000-8000-000000000001',
+    tenantId: '0198f3a1-0000-7000-8000-000000000001',
+    email: 'maya@taloninc.com',
+    name: 'Maya Reyes',
+    role: 'recruiter',
+    timezone: 'America/Los_Angeles',
+  },
+};
+
 function renderJobs(query = '', queryOptions: Record<string, unknown> = {}) {
   searchParams.current = new URLSearchParams(query);
+  route((url) => (url.pathname === '/api/auth/refresh' ? json(SEEDED_SESSION) : undefined));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, ...queryOptions } } });
   // SessionProvider: the live path reads the access token from it, so the screen
   // cannot render without one even when the fixtures answer.
@@ -281,10 +304,13 @@ describe('keyboard path', () => {
     // the assertion that catches the swap away from a native select regressing it.
     expect(reached).toContain('Filter jobs by status');
 
-    // Nothing that does nothing takes focus: sign-out, the topbar search and the
-    // notification bell are all deferred features, so the keyboard path must not
-    // stop on any of them.
-    expect(reached).not.toContain('Sign out');
+    // Sign-out is a real control now that there is a session to end, so it is
+    // reachable — and reachable by its accessible name, since it is icon-only.
+    expect(reached).toContain('Sign out');
+
+    // Nothing that does nothing takes focus: the topbar search and the
+    // notification bell are still deferred features, so the keyboard path must
+    // not stop on either.
     expect(reached).not.toContain('Search candidates, jobs');
     // And every element it does reach has an accessible name.
     expect(reached.filter((label) => label === '')).toEqual([]);

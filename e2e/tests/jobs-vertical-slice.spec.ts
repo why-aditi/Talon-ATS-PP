@@ -88,21 +88,33 @@ test('sign in, read the seeded jobs from the real API, filter, and sign out', as
   await expect(rows).toHaveCount(SEEDED.length);
 
   // ── Sign out ─────────────────────────────────────────────────────────────
-  // From inside the page, not via `page.request`: the handlers require
-  // `Sec-Fetch-Site: same-origin`, which a browser sets and an API context does
-  // not. Driving it this way exercises the path a real click takes — and proves
-  // the CSRF guard admits a legitimate same-origin call as well as rejecting the
-  // cross-site one. There is no sign-out control yet; the sidebar affordance is
-  // still a picture (spec §7b.6).
-  const signedOut = await page.evaluate(async () => {
-    const response = await fetch('/api/auth/sign-out', { method: 'POST' });
-    return response.status;
-  });
-  expect(signedOut).toBe(200);
+  // A real click now, not a scripted fetch. Clicking is also what proves the CSRF
+  // guard admits a legitimate same-origin call: the handlers require
+  // `Sec-Fetch-Site: same-origin`, which a browser sets on a click and an API
+  // request context does not.
+  await page.getByRole('button', { name: 'Sign out' }).click();
+  await expect(page).toHaveURL(/\/sign-in$/);
+  await expect(page.getByRole('heading', { name: 'Welcome back' })).toBeVisible();
 
   // The refresh cookie is gone, so a reload cannot restore the session.
   const cookies = await page.context().cookies();
   expect(cookies.find((c) => c.name === 'talon_refresh')?.value ?? '').toBe('');
+});
+
+test('a signed-out visitor cannot reach a page behind the shell', async ({ page }) => {
+  // Straight to a deep link with no session at all — the case someone hits by
+  // following a bookmark after their cookie expired.
+  await page.goto('/jobs');
+  await expect(page).toHaveURL(/\/sign-in$/);
+
+  // Not merely redirected: none of the shell may paint on the way past. A visitor
+  // with no session should never see another tenant's chrome, however briefly.
+  await expect(page.getByRole('navigation', { name: 'Main' })).toBeHidden();
+  await expect(page.getByRole('heading', { name: 'Welcome back' })).toBeVisible();
+
+  // The root redirects into the group, so it lands in the same place.
+  await page.goto('/');
+  await expect(page).toHaveURL(/\/sign-in$/);
 });
 
 test('the refresh token is never readable from the page', async ({ page }) => {

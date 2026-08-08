@@ -49,14 +49,21 @@ export const isOpenJob = (job: { status: string }) => job.status !== 'closed';
 export function useJobs(filters: JobFilters) {
   const { session, ready } = useSession();
   return useQuery({
-    // The token is in the key so a sign-in refetches rather than serving the
-    // previous identity's page from cache.
+    // The signed-in user is in the key so a sign-in refetches rather than serving
+    // the previous identity's page from cache.
     queryKey: ['jobs', filters.status ?? null, filters.department ?? null, session?.user.id ?? null],
     queryFn: ({ signal }) => fetchJobs(filters, signal, session?.accessToken),
-    // Not until the cookie has been offered to /api/auth/refresh and answered.
-    // Firing before that sends no bearer, 401s, and with retry:false paints the
-    // error state — so a reload read error → skeleton → rows instead of
+    // Two conditions, for two different failures.
+    //
+    // `ready`: not until the cookie has been offered to /api/auth/refresh and
+    // answered. Firing before that sends no bearer, 401s, and with retry:false
+    // paints the error state — so a reload read error → skeleton → rows instead of
     // skeleton → rows. The query stays pending until then, which is the skeleton.
-    enabled: ready,
+    //
+    // `session`: an endpoint inside the authenticated scope has nothing to say to
+    // a request with no bearer. Without this, signing out refetches once on the way
+    // out — a guaranteed 401 whose only effect is to leave a failed entry in a
+    // cache that was just deliberately cleared.
+    enabled: ready && session !== null,
   });
 }
