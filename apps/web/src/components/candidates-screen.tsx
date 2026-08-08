@@ -18,7 +18,7 @@ import { Avatar, cx } from './ui';
 /** Declared once and shared with the skeleton, so the two cannot drift out of
  *  alignment — the pattern `jobs-screen.tsx` uses and explains. */
 const ROW_GRID =
-  'grid items-center gap-4 px-4 grid-cols-[minmax(0,1fr)_10rem_7rem_6rem_7rem]';
+  'grid items-center gap-4 px-4 grid-cols-[minmax(0,1fr)_auto_auto_auto_auto]';
 const ROW_HEIGHT = 'h-[var(--layout-row-height)]';
 
 const STAGE_DOT: Record<string, string> = {
@@ -84,9 +84,9 @@ export function CandidatesScreen() {
           <ul>
             {[0, 1, 2, 3, 4, 5].map((i) => (
               <li key={i} className={cx(ROW_GRID, ROW_HEIGHT, 'border-b border-border-subtle last:border-0')}>
-                <span className="h-4 w-48 animate-pulse rounded-sm bg-bg-surface-sunken" />
-                <span className="h-4 w-32 animate-pulse rounded-sm bg-bg-surface-sunken" />
-                <span className="h-4 w-16 animate-pulse rounded-sm bg-bg-surface-sunken" />
+                <span className="h-4 w-20 animate-pulse rounded-sm bg-bg-surface-sunken" />
+                <span className="h-4 w-20 animate-pulse rounded-sm bg-bg-surface-sunken" />
+                <span className="h-4 w-12 animate-pulse rounded-sm bg-bg-surface-sunken" />
                 <span className="h-4 w-8 animate-pulse rounded-sm bg-bg-surface-sunken" />
                 <span className="h-4 w-20 animate-pulse rounded-sm bg-bg-surface-sunken" />
               </li>

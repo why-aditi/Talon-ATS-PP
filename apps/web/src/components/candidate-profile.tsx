@@ -118,10 +118,10 @@ export function CandidateProfileScreen({ candidateId }: { candidateId: string })
     return (
       <div className="flex flex-1 gap-6 p-6">
         <div className="flex-1 space-y-3">
-          <div className="h-12 w-64 animate-pulse rounded-md bg-bg-surface-sunken" />
-          <div className="h-24 animate-pulse rounded-lg bg-bg-surface-sunken" />
+          <div className="h-12 w-20 animate-pulse rounded-md bg-bg-surface-sunken" />
+          <div className="h-20 animate-pulse rounded-lg bg-bg-surface-sunken" />
         </div>
-        <div className="h-64 w-[var(--layout-detail-rail-width)] animate-pulse rounded-lg bg-bg-surface-sunken" />
+        <div className="h-20 w-[var(--layout-detail-rail-width)] animate-pulse rounded-lg bg-bg-surface-sunken" />
       </div>
     );
   }
