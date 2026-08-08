@@ -8,10 +8,12 @@ import {
   boolean,
   char,
   customType,
+  date,
   integer,
   jsonb,
   pgTable,
   text,
+  time,
   timestamp,
   uuid,
 } from 'drizzle-orm/pg-core';
@@ -35,6 +37,9 @@ export const tenants = pgTable('tenants', {
   slug: citext('slug').notNull(),
   ssoEnforcedRoles: text('sso_enforced_roles').array().notNull().default([]),
   retentionDays: integer('retention_days').notNull().default(730),
+  /** Wall clock in the interview loop's timezone, not a fixed zone (migration 0009). */
+  businessHoursStart: time('business_hours_start').notNull().default('09:00'),
+  businessHoursEnd: time('business_hours_end').notNull().default('17:00'),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });
@@ -188,6 +193,94 @@ export const activities = pgTable('activities', {
   body: text('body'),
   meta: jsonb('meta').notNull().default({}),
   occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+/**
+ * Scheduling (migration 0009, spec 004 §5).
+ *
+ * The distinction that carries the whole subsystem: `interviewRounds` is the TEMPLATE
+ * ("this loop needs a 60m coding round with Maya"), `interviews` is the INSTANCE (that
+ * round, given a time). A round with no `interviews` row is unscheduled.
+ */
+export const interviewLoops = pgTable('interview_loops', {
+  id: id(),
+  tenantId: tenantId(),
+  applicationId: uuid('application_id').notNull(),
+  status: text('status', {
+    enum: ['draft', 'proposed', 'held', 'confirmed', 'completed', 'cancelled'],
+  }).notNull(),
+  targetDate: date('target_date'),
+  /** The ORGANIZER's IANA zone — the conversion target for rendering, not a second truth. */
+  timezone: text('timezone').notNull(),
+  /** Candidate availability, stored in the CANDIDATE's zone (spec 004 §6). All three
+   *  columns are set together or none is; the DB check enforces it. */
+  candidateTimezone: text('candidate_timezone'),
+  candidateWindowStart: time('candidate_window_start'),
+  candidateWindowEnd: time('candidate_window_end'),
+  /** The 24h soft reservation (spec 004 §9). Postgres is the source of truth. */
+  heldBy: uuid('held_by'),
+  holdExpiresAt: timestamp('hold_expires_at', { withTimezone: true }),
+  version: integer('version').notNull().default(1),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+export const interviewRounds = pgTable('interview_rounds', {
+  id: id(),
+  tenantId: tenantId(),
+  loopId: uuid('loop_id').notNull(),
+  kind: text('kind', { enum: ['coding', 'system_design', 'values', 'hiring_manager'] }).notNull(),
+  /** Multiple of 15 — the solver's bitmap granularity (spec 004 §7). DB-checked. */
+  durationMin: integer('duration_min').notNull(),
+  position: integer('position').notNull(),
+  /** Reserved. The M2 solver places rounds in `position` order and ignores this. */
+  isSwappable: boolean('is_swappable').notNull().default(false),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+export const interviewRoundPanelists = pgTable('interview_round_panelists', {
+  tenantId: tenantId(),
+  roundId: uuid('round_id').notNull(),
+  userId: uuid('user_id').notNull(),
+  /** Required panelists are a hard solver constraint; optional ones never block a slot. */
+  isRequired: boolean('is_required').notNull().default(true),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+export const interviews = pgTable('interviews', {
+  id: id(),
+  tenantId: tenantId(),
+  applicationId: uuid('application_id').notNull(),
+  loopId: uuid('loop_id').notNull(),
+  /** Not null and unique: one interview per round, so a re-solve updates in place. */
+  roundId: uuid('round_id').notNull(),
+  kind: text('kind', { enum: ['coding', 'system_design', 'values', 'hiring_manager'] }).notNull(),
+  durationMin: integer('duration_min').notNull(),
+  scheduledStart: timestamp('scheduled_start', { withTimezone: true }),
+  scheduledEnd: timestamp('scheduled_end', { withTimezone: true }),
+  status: text('status', {
+    enum: ['unscheduled', 'pending', 'confirmed', 'declined', 'completed', 'cancelled'],
+  }).notNull(),
+  externalEventId: text('external_event_id'),
+  externalProvider: text('external_provider'),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+export const interviewPanelists = pgTable('interview_panelists', {
+  tenantId: tenantId(),
+  interviewId: uuid('interview_id').notNull(),
+  userId: uuid('user_id').notNull(),
+  /** Never read back from the calendar server: Radicale has no iTIP, so a panelist marks
+   *  accepted or declined in Talon and this is the only record (spec 004 §10). */
+  response: text('response', { enum: ['pending', 'accepted', 'declined'] })
+    .notNull()
+    .default('pending'),
+  isRequired: boolean('is_required').notNull().default(true),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });

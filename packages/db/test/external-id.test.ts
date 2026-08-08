@@ -10,6 +10,7 @@
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { migrate } from '../src/migrate.js';
+import { seed } from '../src/seed.js';
 import { APP_URL, OWNER_URL } from './urls.js';
 
 const EXTERNAL_SUB = '9f1c2b7e-3d4a-4c55-8e21-0a7b6d5c4e3f'; // a Cognito-shaped sub
@@ -34,6 +35,14 @@ afterAll(async () => {
   // Leave the seed as the seed found it: every seeded user is a local-provider
   // user, and the migration round-trip below drops the column out from under it.
   await owner`update users set external_id = null where id = ${cognitoUser.id}`;
+  // And re-seed, because the round-trip below does more damage than one column.
+  // `down` steps back to 0004, which DROPS every table introduced after it, and
+  // `up` recreates them EMPTY. That was invisible while nothing above 0004 held
+  // seeded data; migration 0009 does (Ana's loop, Acme's loop), so without this
+  // every file that sorts after this one — rls, scheduling — sees empty tables and
+  // fails with something that looks like an isolation bug and is not.
+  // fileParallelism is off (vitest.config.ts), so "after this one" is well defined.
+  await seed(OWNER_URL);
   await owner.end();
 });
 
@@ -182,6 +191,7 @@ describe('0004 down → up', () => {
     // `down` steps back exactly one migration, so everything stacked above 0004 has
     // to come off first. Asserted rather than looped: a down that quietly took two
     // would be worth knowing about here, in the file that tests reversibility.
+    expect(await migrate('down', OWNER_URL)).toEqual(['0009_scheduling']);
     expect(await migrate('down', OWNER_URL)).toEqual(['0008_jobs_version']);
     expect(await migrate('down', OWNER_URL)).toEqual(['0007_definer_rls_exemption']);
     expect(await migrate('down', OWNER_URL)).toEqual(['0006_outbox']);
@@ -210,6 +220,7 @@ describe('0004 down → up', () => {
       '0006_outbox',
       '0007_definer_rls_exemption',
       '0008_jobs_version',
+      '0009_scheduling',
     ]);
 
     const [reapplied] = await subFn();
