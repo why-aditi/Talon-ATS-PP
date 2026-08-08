@@ -267,6 +267,11 @@ export const interviews = pgTable('interviews', {
   }).notNull(),
   externalEventId: text('external_event_id'),
   externalProvider: text('external_provider'),
+  /** Manual placement over a hard constraint, taken after an explicit confirm (spec 004
+   *  §7a). `acknowledgedBlocker` holds the solver blocker the recruiter was shown — a
+   *  DB check keeps it null unless `manualOverride` is true. */
+  manualOverride: boolean('manual_override').notNull().default(false),
+  acknowledgedBlocker: jsonb('acknowledged_blocker'),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });

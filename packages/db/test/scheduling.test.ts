@@ -230,6 +230,57 @@ describe('a committed interview always has a time', () => {
   });
 });
 
+describe('manual placement override (spec 004 §7a)', () => {
+  it('defaults to no override and no acknowledged blocker', async () => {
+    // The default has to be false rather than null: every seeded row predates §7a, and
+    // "we do not know whether a human forced this" is not a state the audit trail may have.
+    const rows = await owner<{ manual_override: boolean; acknowledged_blocker: unknown }[]>`
+      select manual_override, acknowledged_blocker from interviews where loop_id = ${ids.anaLoop}`;
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row.manual_override).toBe(false);
+      expect(row.acknowledged_blocker).toBeNull();
+    }
+  });
+
+  it('a blocker payload round-trips as the structured union the solver emits', async () => {
+    // Stored whole and read back whole — that is the reason it is jsonb and not a table.
+    const blocker = {
+      reason: 'panelist_busy',
+      roundId: ids.anaFirstRound,
+      roundKind: 'coding',
+      atUtc: '2026-03-12T17:00:00.000Z',
+      busyPanelists: [{ id: ids.maya, name: 'Maya Reyes' }],
+    };
+    await inRolledBackTx(async (tx) => {
+      const [row] = await tx<{ manual_override: boolean; acknowledged_blocker: unknown }[]>`
+        update interviews
+          set manual_override = true, acknowledged_blocker = ${tx.json(blocker)}
+        where round_id = ${ids.anaFirstRound}
+        returning manual_override, acknowledged_blocker`;
+      expect(row?.manual_override).toBe(true);
+      expect(row?.acknowledged_blocker).toEqual(blocker);
+    });
+  });
+
+  it('an acknowledged blocker without an override is rejected', async () => {
+    // Mirrors the contract's refine: a blocker only exists because someone overrode it.
+    // Without this, a row can claim a human was warned when nothing recorded them acting.
+    await rejectsWith('23514', (tx) => tx`
+      update interviews set acknowledged_blocker = ${tx.json({ reason: 'no_rounds' })}
+      where round_id = ${ids.anaFirstRound}`);
+  });
+
+  it('an override with no blocker is fine — a clean manual placement overrides nothing', async () => {
+    await inRolledBackTx(async (tx) => {
+      const rows = await tx`
+        update interviews set manual_override = true
+        where round_id = ${ids.anaFirstRound} returning id`;
+      expect(rows).toHaveLength(1);
+    });
+  });
+});
+
 describe('candidate availability (spec 004 §6)', () => {
   it('is stored in the candidate\'s zone, alongside the organizer\'s', async () => {
     const [loop] = await owner<

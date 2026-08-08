@@ -175,8 +175,28 @@ create table interviews (
   ),
   external_event_id text,
   external_provider text,
+
+  -- Manual placement (spec 004 §7a). A recruiter may place a round over a hard constraint
+  -- after an explicit "Place anyway", because they often know something the calendar does
+  -- not. These two columns are the audit trail of that choice: the flag says a human chose
+  -- it, `acknowledged_blocker` says what they were shown when they did. The flag alone is
+  -- worthless — "someone overrode something" answers nothing six weeks later.
+  --
+  -- jsonb, not its own table: the payload is the solver's structured blocker union
+  -- (packages/contracts SolveBlockerSchema), it is written once with the placement, and it
+  -- is only ever read back whole. Normalising a union of eight shapes that nothing queries
+  -- by field buys a join and a migration every time a reason is added.
+  manual_override boolean not null default false,
+  acknowledged_blocker jsonb,
+
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
+
+  -- Mirrors the contract's refine on ScheduledInterviewSchema. The reverse is allowed: a
+  -- manual placement that violated nothing overrides nothing and carries no blocker.
+  constraint interviews_acknowledged_blocker_requires_override_ck check (
+    acknowledged_blocker is null or manual_override
+  ),
 
   constraint interviews_schedule_pair_ck check (
     (scheduled_start is null) = (scheduled_end is null)
