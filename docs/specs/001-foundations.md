@@ -535,6 +535,21 @@ CI gates, all blocking, each wired in the step that first has something for it t
 
 A gate is not "declared blocking" before its step: the script exists and the workflow runs it, or the row above says which step it arrives in. A named-but-missing gate cannot be a required status check, and its absence is silent.
 
+**Amended 2026-08-08 — `e2e` cannot be a required check yet, and the reason changed.**
+It is written and green (3/3), but the Cognito-only refactor (`f41ac45`) deleted
+`LocalIdentityProvider`, so the api now refuses to boot without a reachable user
+pool and the suite needs **AWS credentials**. CI has none, and giving a test job
+a real pool would make the suite non-deterministic and let it mutate a shared
+pool — both worse than an unwired gate.
+
+`apps/api/test/cognito-stub.ts` already fakes Cognito at the network layer, but
+it works by mutating `process.env` and `globalThis.fetch` **inside the test
+process**, and Playwright spawns the api as a separate one. Extracting it into a
+standalone server the api can be pointed at with `AWS_ENDPOINT_URL` is what makes
+this suite hermetic and lets the gate land. Owner: api stream. Until then
+`pnpm e2e` is a local command, and `e2e/playwright.config.ts` fails fast with the
+list of variables it needs rather than a raw stack trace from `dist/config.js`.
+
 ## 11. Open questions
 
 1. **Can one email belong to two tenants?** **Answered 2026-08-07: no.** One tenant per email, enforced with a unique constraint. `tenant_id` stays in the token.
