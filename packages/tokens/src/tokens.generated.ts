@@ -95,6 +95,8 @@ export const TOKENS = {
   '--color-source-outbound': "#6F4FC4",
   '--color-source-careers-page': "#2569C2",
   '--color-source-agency': "#B4700F",
+  '--color-chart-bar-idle': "#C9CCF3",
+  '--color-chart-bar-current': "#4C56C8",
   '--color-feedback-success-bg': "#E5F3EA",
   '--color-feedback-success-fg': "#226641",
   '--color-feedback-warning-bg': "#FDF2E0",
