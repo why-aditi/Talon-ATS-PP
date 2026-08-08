@@ -15,6 +15,7 @@ import type { Cradle } from './context.js';
 import { registerIdentity } from './modules/identity/index.public.js';
 import { registerApplications } from './modules/applications/index.public.js';
 import { registerJobs } from './modules/jobs/index.public.js';
+import { registerUsers } from './modules/users/index.public.js';
 
 export function buildContainer(config: ApiConfig): AwilixContainer<Cradle> {
   const container = createContainer<Cradle>({ injectionMode: InjectionMode.PROXY });
@@ -26,5 +27,6 @@ export function buildContainer(config: ApiConfig): AwilixContainer<Cradle> {
   registerIdentity(container);
   registerJobs(container);
   registerApplications(container);
+  registerUsers(container);
   return container;
 }

@@ -4,7 +4,6 @@ import { JobStatusSchema, type Job } from '@talon/contracts';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { isOpenJob, useJobs } from '../lib/jobs-query';
-import { useJobTemplate } from './app-shell';
 import { Avatar, Button, DistributionBar, Eyebrow, Select, StatusPill, buttonClass, cx } from './ui';
 
 /**
@@ -150,7 +149,6 @@ export function JobsScreen() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const openJobTemplate = useJobTemplate();
 
   // The URL is user input. `ListJobsQuery` is `.strict()` and `status` is an enum, so
   // forwarding `?status=bogus` verbatim 400s the real endpoint while the mock merely
@@ -216,9 +214,9 @@ export function JobsScreen() {
           is what #5 requires: two entry points, one code path. Spec 003 records that
           this is a stopgap until the wizard on screen 09 exists.
         */}
-        <button type="button" onClick={openJobTemplate} className={buttonClass('primary')}>
+        <Link href="/jobs/new" className={buttonClass('primary')}>
           + New job
-        </button>
+        </Link>
       </div>
 
       {query.isPending ? <LoadingSkeleton /> : null}

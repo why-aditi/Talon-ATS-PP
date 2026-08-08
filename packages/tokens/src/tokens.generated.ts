@@ -221,6 +221,8 @@ export const TOKENS = {
   '--layout-search-field-width': "290px",
   '--layout-modal-max-height': "85vh",
   '--layout-filter-field-width': "205px",
+  '--layout-wizard-card-width': "638px",
+  '--layout-wizard-currency-width': "100px",
   '--layout-sign-in-hero-width': "747px",
   '--layout-sign-in-hero-card-width': "324px",
   '--layout-sign-in-form-width': "369px",

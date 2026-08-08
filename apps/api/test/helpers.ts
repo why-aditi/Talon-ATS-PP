@@ -130,6 +130,7 @@ export interface Fixtures {
     applicationId: string;
     stageId: string;
     nextStageId: string;
+    stageTemplateId: string;
   };
   acme: { tenantId: string; admin: Person; jobId: string };
 }
@@ -159,7 +160,14 @@ export async function loadFixtures(): Promise<Fixtures> {
       order by a.board_rank collate "C" limit 1`;
     const [talonNextStage] = await sql<{ id: string }[]>`
       select id from job_stages where job_id = ${talonJob?.id ?? null} and canonical = 'screen'`;
-    if (!talonTenant || !acmeTenant || !talonJob || !acmeJob || !talonApplication || !talonNextStage) {
+    // Tenant A's pipeline. The POST /v1/jobs hostile case names it, so the
+    // attacker sends a body that VALIDATES and is refused on tenancy alone.
+    const [talonTemplate] = await sql<{ id: string }[]>`
+      select id from stage_templates where tenant_id = ${talonTenant?.id ?? null} limit 1`;
+    if (
+      !talonTenant || !acmeTenant || !talonJob || !acmeJob || !talonApplication || !talonNextStage ||
+      !talonTemplate
+    ) {
       throw new Error('seed is incomplete');
     }
     return {
@@ -172,6 +180,7 @@ export async function loadFixtures(): Promise<Fixtures> {
         applicationId: talonApplication.id,
         stageId: talonApplication.current_stage_id,
         nextStageId: talonNextStage.id,
+        stageTemplateId: talonTemplate.id,
       },
       acme: { tenantId: acmeTenant.id, admin: find('beth@acme.test'), jobId: acmeJob.id },
     };
@@ -231,3 +240,25 @@ export async function signIn(test: TestApp, person: Person): Promise<Session> {
 export const bearer = (session: Session): Record<string, string> => ({
   authorization: `Bearer ${session.accessToken}`,
 });
+
+/**
+ * Deletes jobs a test created, and their stages.
+ *
+ * The suite shares one seeded database, and `jobs-list.test.ts` asserts the
+ * exact set of departments and their order. A test that creates a job and does
+ * not remove it breaks assertions in another file — decided by which one vitest
+ * happened to run first, which is the worst kind of failure to debug. The same
+ * trap `isolation.test.ts` documents for the stage and rank cases.
+ *
+ * Stages first: `job_stages` has a composite FK on the job.
+ */
+export async function deleteJobs(ids: readonly string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const sql = postgres(OWNER_URL, { max: 1, onnotice: () => {} });
+  try {
+    await sql`delete from job_stages where job_id = any(${ids as string[]}::uuid[])`;
+    await sql`delete from jobs where id = any(${ids as string[]}::uuid[])`;
+  } finally {
+    await sql.end();
+  }
+}

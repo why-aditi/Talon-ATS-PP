@@ -17,6 +17,7 @@ import type {
 } from './modules/identity/index.public.js';
 import type { ApplicationsService } from './modules/applications/index.public.js';
 import type { JobsService } from './modules/jobs/index.public.js';
+import type { UsersService } from './modules/users/index.public.js';
 
 export interface Cradle {
   config: ApiConfig;
@@ -26,6 +27,7 @@ export interface Cradle {
   identityProvider: IdentityProvider;
   identityService: IdentityService;
   jobsService: JobsService;
+  usersService: UsersService;
   applicationsService: ApplicationsService;
   /**
    * Module-internal registrations. Typed `unknown` on purpose: awilix injects
@@ -33,6 +35,7 @@ export interface Cradle {
    * repository from the container.
    */
   identityRepository: unknown;
+  usersRepository: unknown;
   jobsRepository: unknown;
   applicationsRepository: unknown;
   /**

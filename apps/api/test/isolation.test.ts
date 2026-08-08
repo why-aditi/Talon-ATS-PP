@@ -14,6 +14,7 @@ import { afterAll, beforeAll, expect, it } from 'vitest';
 import { ERROR_TYPES } from '@talon/contracts';
 import {
   bearer,
+  deleteJobs,
   loadFixtures,
   signIn,
   startApp,
@@ -91,6 +92,40 @@ const HOSTILE_REQUESTS: Record<string, HostileCase> = {
   // first Applied card to the bottom permanently, and `board.test.ts` asserts Applied's
   // exact order — a race decided by which file vitest happened to run first. Same trap
   // the stage case above was already fixed for; `/rank` just has no version to stale.
+  // Collections: they name no resource to be wrong about, so the hostile answer
+  // is 200 over the attacker's OWN rows. The body assertion below is what proves
+  // none of tenant A's data came back.
+  'GET /v1/stage-templates': {
+    request: () => ({ method: 'GET', url: '/v1/stage-templates' }),
+    hostileStatus: 200,
+  },
+  'GET /v1/users': {
+    request: () => ({ method: 'GET', url: '/v1/users' }),
+    hostileStatus: 200,
+  },
+  /*
+    The body is valid and names TENANT A's stage template, which is the whole
+    point: the attacker is refused because that template is invisible under RLS,
+    not because the schema rejected them. A body with their own template id would
+    succeed and prove nothing.
+
+    The owner gets 201 and a real job — this is the one case that writes. It uses
+    a department of its own so the req code cannot collide with a seeded one, and
+    nothing else asserts on a job created here.
+  */
+  'POST /v1/jobs': {
+    request: (f) => ({
+      method: 'POST',
+      url: '/v1/jobs',
+      payload: {
+        title: 'Isolation probe',
+        department: 'Isolation',
+        location: 'Remote (US)',
+        stageTemplateId: f.talon.stageTemplateId,
+      },
+    }),
+    victimStatus: 201,
+  },
   'PATCH /v1/applications/:id/rank': {
     request: (f) => ({
       method: 'PATCH',
@@ -112,7 +147,16 @@ beforeAll(async () => {
   attacker = await signIn(test, fixtures.acme.admin); // tenant B, an admin at home
 });
 
+/*
+  The POST case creates a real job for the owner, which is what proves the route
+  is visible to them. It is removed here for the same reason job-create.test.ts
+  removes its own: jobs-list.test.ts asserts the exact set of departments, and a
+  leftover row makes which file fails depend on vitest's run order.
+*/
+const createdJobs: string[] = [];
+
 afterAll(async () => {
+  await deleteJobs(createdJobs);
   await test.close();
 });
 
@@ -131,6 +175,10 @@ it('the same requests succeed for the tenant that owns the resource', async () =
   for (const [key, hostile] of Object.entries(HOSTILE_REQUESTS)) {
     const { method, url, payload } = hostile.request(fixtures);
     const res = await test.app.inject({ method, url, headers: bearer(victim), ...(payload ? { payload } : {}) });
+    // Any row this created is this file's to remove — see `createdJobs`.
+    if (res.statusCode === 201 && url === '/v1/jobs') {
+      createdJobs.push((res.json() as { id: string }).id);
+    }
     // Anything but 404: the owner can see their own resource. 200 unless the case says
     // otherwise — see `victimStatus`.
     expect(res.statusCode, key).toBe(hostile.victimStatus ?? 200);
