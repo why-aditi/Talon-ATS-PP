@@ -106,4 +106,16 @@ export interface IdentityProvider {
    * not compromise the swap. Flagged in the step-4 report.
    */
   refreshSession(refreshToken: string): Promise<AuthResult>;
+
+  /**
+   * Federated sign-in (spec 004 §11.5). The caller holds the tokens Cognito minted
+   * for a completed hosted-UI flow; this verifies the id token and returns a Talon
+   * session, exactly as `initiatePasswordAuth` does once a password is proven.
+   *
+   * Deliberately NOT folded into `verifyToken`. That answers "is this OUR access
+   * token", runs on every authenticated request via the `authenticate` hook, and must
+   * stay that narrow. An id token is minted for a client, not for an API — the
+   * confusion `aud` exists to prevent — so it gets its own door.
+   */
+  exchangeIdToken(idToken: string, refreshToken: string): Promise<AuthResult>;
 }

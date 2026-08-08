@@ -5,7 +5,7 @@
  * Transactions begin here (CLAUDE.md §3): the repository owns the mechanics, the
  * service decides when one opens.
  */
-import { ERROR_TYPES, type RefreshResponse, type SignInResponse } from '@talon/contracts';
+import { ERROR_TYPES, type RefreshResponse, type SignInResponse, type SsoRequest, type SsoResponse } from '@talon/contracts';
 import { scopesFor } from '@talon/domain';
 import { HttpProblem } from '../../errors.js';
 import type { AuthenticatedUser, TenantTransaction } from '../../request-context.js';
@@ -162,6 +162,28 @@ export class IdentityService {
   async refresh(input: { refreshToken: string }): Promise<RefreshResponse> {
     const result = await this.#run(() => this.#provider.refreshSession(input.refreshToken));
     if (result.status === 'mfa_required') {
+      throw new HttpProblem(401, ERROR_TYPES.MFA_REQUIRED, 'MFA required');
+    }
+    return { ...result.tokens, user: result.user };
+  }
+
+  /**
+   * Federated sign-in (spec 004 §11.4). `#run` maps `IdentityFailure` to problem+json,
+   * so the failure table in §11.6 needs no per-call handling — including the row that
+   * matters most: a verified Google identity with no `users` row answers
+   * `user_not_provisioned`, not a generic failure. "Your Google sign-in worked; this
+   * workspace has no account for you" and "sign-in failed" send a person to do
+   * completely different things, and only one of them can succeed.
+   */
+  async signInWithSso(input: SsoRequest): Promise<SsoResponse> {
+    const result = await this.#run(() =>
+      this.#provider.exchangeIdToken(input.idToken, input.refreshToken),
+    );
+    if (result.status === 'mfa_required') {
+      // Unreachable today: MFA is enforced at the IdP for a federated identity and
+      // Cognito does not re-challenge one. Handled rather than asserted away, because
+      // `AuthResult` is a union and narrowing it by assertion is how the branch that
+      // eventually happens goes unnoticed.
       throw new HttpProblem(401, ERROR_TYPES.MFA_REQUIRED, 'MFA required');
     }
     return { ...result.tokens, user: result.user };

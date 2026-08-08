@@ -1,7 +1,8 @@
 # Spec 004 — Google SSO
 
-**Status:** web half built behind a flag. The api and infra halves are specified
-in **Part II** (§10-§12) as work orders, and not started.
+**Status:** web and api halves built. **Infra is not started, and nothing works without it** —
+there is no Cognito domain and no Google IdP, so no hosted-UI flow can be started at all.
+The §10 work order is the remaining piece.
 **Milestone:** M0b. Follows `002-identity.md`, which named SSO as the thing it blocks.
 **Depends on:** spec 002 (`CognitoIdentityProvider`, the JWKS verifier, `users.external_id`)
 **Blocks:** SAML SSO, and PRD §5.1's SSO-discovery-by-email-domain
@@ -45,7 +46,7 @@ The flow crosses all three streams. Nothing below works until all three land.
 | Piece | Owner | State |
 |---|---|---|
 | `aws_cognito_user_pool_domain`, `aws_cognito_identity_provider` (Google), callback URL allow-list, `supported_identity_providers` on the app client | infra | **not started** — confirmed against AWS on 2026-08-08: no domain, no Google IdP, no OAuth flows on the client. Full work order with the Terraform in **§10** |
-| `POST /v1/auth/sso` — verify a Cognito id token, resolve `users` by `external_id`, mint the §6.2 session | api | **not started** — confirmed 404 against a running API on 2026-08-08; `apps/api/src/modules/identity/routes.ts` registers only `/auth/sign-in` and `/auth/refresh`. Full work order in **§11** |
+| `POST /v1/auth/sso` — verify a Cognito id token, resolve `users` by `external_id`, mint the §6.2 session | api | **BUILT** 2026-08-08. `exchangeIdToken` on the provider seam, `signInWithSso` on the service, the route in `identityRoutes` and in `PUBLIC_ROUTES`. Eight tests in `apps/api/test/sso.test.ts`, verified to fail when token verification is bypassed. See §11.8 for the one deviation |
 | The two route handlers, the button, the states | web | **built, flag-off, unit-tested** (2026-08-08) |
 
 The off state is the shipped state and was verified live, not reasoned about: with
@@ -674,3 +675,34 @@ E2E cannot cover this without a Google test account (§8). The manual pass, once
    yet."*
 6. Cancel at Google's chooser: expect *"Google sign-in was cancelled."*, not a
    generic failure.
+
+---
+
+## 11.8 Deviation from §11.2 — the request carries the refresh token too
+
+§11.2 specified `SsoRequestSchema = { idToken }`. **That cannot work**, and it was found by building it:
+
+`SsoResponseSchema` is `SignInResponseSchema`, whose `refreshToken` is **required** — the web callback sets it as an httpOnly cookie the moment the response lands. An id token carries no refresh token, and the api has no way to obtain one: the password path gets its refresh token from `AdminInitiateAuth`, and that call is precisely the step the federated flow skips.
+
+Cognito already issues one in the same `/oauth2/token` response the callback was reading `id_token` from — it was simply discarding it. So the contract is:
+
+```ts
+SsoRequestSchema = z.object({ idToken: ..., refreshToken: ... }).strict()
+```
+
+Both are minted by the same exchange, both travel server to server, and neither reaches the browser. Taking the refresh token from Cognito rather than minting one keeps the long-lived half of the session under Cognito's control — which is the property that makes `AdminUserGlobalSignOut` or disabling a user actually end a federated session, instead of leaving it alive until a token we issued expires. That is the same choice `initiatePasswordAuth` and `refreshSession` already make.
+
+The web callback now forwards both, asserted in `apps/web/src/test/sso.test.ts`.
+
+## 11.9 What is still not true
+
+The api half is done and tested; **Google sign-in still does not work end to end**, and the reason is entirely §10:
+
+- No `aws_cognito_user_pool_domain`, so there is no hosted UI to redirect to.
+- No `aws_cognito_identity_provider` for Google, so the pool cannot federate.
+- No OAuth flows or callback URLs on the app client.
+- No Google Cloud OAuth client — that needs a Google project, a client id and a secret, which are credentials rather than code.
+
+`ssoConfig()` returns null without `COGNITO_DOMAIN`, so both web routes 404 and the button stays disabled. **That off state is correct and deliberate** — turning the flag on before §10 lands produces a round trip that fails at its first step rather than its last.
+
+Local verification is against the Cognito stub, which substitutes the network and not the class: the JWKS fetch, the RS256 signature check, the `aud`/`iss`/`token_use` checks and the `external_id` join all run for real. What the stub cannot cover is the hosted-UI round trip itself, and no amount of test infrastructure can — it needs a real pool and a real Google client.
