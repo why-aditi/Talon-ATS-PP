@@ -78,3 +78,50 @@ export function useAssignableUsers(role: 'recruiter' | 'hiring_manager'): Unbuil
   });
   return { data: query.data ?? [], unavailable: query.data === null, isPending: query.isPending };
 }
+
+/**
+ * POST /v1/jobs — spec 005 §4.2.
+ *
+ * Not a `useMutation`: the wizard needs the created job to navigate to it and
+ * has one submit path, so the extra state machine would be ceremony. What it
+ * does need is the failure distinguished, which `JobCreateError` carries.
+ */
+export class JobCreateError extends Error {
+  constructor(
+    readonly type: string,
+    readonly status: number,
+    readonly detail?: string,
+  ) {
+    super(detail ?? type);
+    this.name = 'JobCreateError';
+  }
+}
+
+export async function createJob(
+  payload: unknown,
+  accessToken: string | undefined,
+): Promise<{ id: string; reqCode: string }> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/v1/jobs`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json',
+        ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    // Genuinely offline — the one failure where retrying the same request is
+    // the right advice, so it must not read as "the job was rejected".
+    throw new JobCreateError('urn:talon:client:network', 0);
+  }
+
+  const body: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const problem = (body ?? {}) as { type?: string; detail?: string };
+    throw new JobCreateError(problem.type ?? 'urn:talon:error:internal', response.status, problem.detail);
+  }
+  return body as { id: string; reqCode: string };
+}

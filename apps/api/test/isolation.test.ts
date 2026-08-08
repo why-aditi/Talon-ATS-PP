@@ -14,6 +14,7 @@ import { afterAll, beforeAll, expect, it } from 'vitest';
 import { ERROR_TYPES } from '@talon/contracts';
 import {
   bearer,
+  deleteJobs,
   loadFixtures,
   signIn,
   startApp,
@@ -146,7 +147,16 @@ beforeAll(async () => {
   attacker = await signIn(test, fixtures.acme.admin); // tenant B, an admin at home
 });
 
+/*
+  The POST case creates a real job for the owner, which is what proves the route
+  is visible to them. It is removed here for the same reason job-create.test.ts
+  removes its own: jobs-list.test.ts asserts the exact set of departments, and a
+  leftover row makes which file fails depend on vitest's run order.
+*/
+const createdJobs: string[] = [];
+
 afterAll(async () => {
+  await deleteJobs(createdJobs);
   await test.close();
 });
 
@@ -165,6 +175,10 @@ it('the same requests succeed for the tenant that owns the resource', async () =
   for (const [key, hostile] of Object.entries(HOSTILE_REQUESTS)) {
     const { method, url, payload } = hostile.request(fixtures);
     const res = await test.app.inject({ method, url, headers: bearer(victim), ...(payload ? { payload } : {}) });
+    // Any row this created is this file's to remove — see `createdJobs`.
+    if (res.statusCode === 201 && url === '/v1/jobs') {
+      createdJobs.push((res.json() as { id: string }).id);
+    }
     // Anything but 404: the owner can see their own resource. 200 unless the case says
     // otherwise — see `victimStatus`.
     expect(res.statusCode, key).toBe(hostile.victimStatus ?? 200);

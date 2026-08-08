@@ -13,7 +13,7 @@ import {
   ListUsersResponseSchema,
 } from '@talon/contracts';
 import { afterAll, beforeAll, expect, it } from 'vitest';
-import { bearer, loadFixtures, signIn, startApp, type Fixtures, type TestApp } from './helpers.js';
+import { bearer, deleteJobs, loadFixtures, signIn, startApp, type Fixtures, type TestApp } from './helpers.js';
 
 let test: TestApp;
 let fixtures: Fixtures;
@@ -27,7 +27,18 @@ beforeAll(async () => {
   member = bearer(await signIn(test, fixtures.talon.member));
 });
 
+/**
+ * Every job this file creates, removed at the end.
+ *
+ * The suite shares one seeded database and `jobs-list.test.ts` asserts the exact
+ * set of departments. Leaving these behind breaks that file, and which file
+ * fails depends on run order — so this is not tidiness, it is the difference
+ * between a deterministic suite and a coin toss.
+ */
+const created: string[] = [];
+
 afterAll(async () => {
+  await deleteJobs(created);
   await test.close();
 });
 
@@ -46,8 +57,13 @@ const body = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-const post = (headers: Record<string, string>, payload: Record<string, unknown>) =>
-  test.app.inject({ method: 'POST', url: '/v1/jobs', headers, payload });
+async function post(headers: Record<string, string>, payload: Record<string, unknown>) {
+  const res = await test.app.inject({ method: 'POST', url: '/v1/jobs', headers, payload });
+  // Recorded here rather than at each call site: a test that forgets is a test
+  // that pollutes, and there is no reason for that to be opt-in.
+  if (res.statusCode === 201) created.push((res.json() as { id: string }).id);
+  return res;
+}
 
 it('creates a draft, returns the full resource, and addresses it in Location', async () => {
   const res = await post(recruiter, body());
@@ -61,14 +77,14 @@ it('creates a draft, returns the full resource, and addresses it in Location', a
 });
 
 it('copies the template into job_stages, so the new job has a board', async () => {
-  const created = JobSchema.parse((await post(recruiter, body())).json());
+  const job = JobSchema.parse((await post(recruiter, body())).json());
 
   // Read through the board endpoint rather than the database: a job whose stages
   // were not written is one whose board cannot render, and this is the assertion
   // that would have caught it.
   const board = await test.app.inject({
     method: 'GET',
-    url: `/v1/jobs/${created.id}/board`,
+    url: `/v1/jobs/${job.id}/board`,
     headers: recruiter,
   });
   expect(board.statusCode).toBe(200);
@@ -76,7 +92,7 @@ it('copies the template into job_stages, so the new job has a board', async () =
 });
 
 it('applies an SLA override, including an override to no SLA', async () => {
-  const created = JobSchema.parse(
+  const job = JobSchema.parse(
     (
       await post(
         recruiter,
@@ -90,7 +106,7 @@ it('applies an SLA override, including an override to no SLA', async () => {
 
   const board = await test.app.inject({
     method: 'GET',
-    url: `/v1/jobs/${created.id}/board`,
+    url: `/v1/jobs/${job.id}/board`,
     headers: recruiter,
   });
   const columns = (board.json() as { columns: { name: string; slaDays: number | null }[] }).columns;
@@ -116,7 +132,12 @@ it('never issues the same req code twice under concurrency', async () => {
     Array.from({ length: 5 }, () => post(recruiter, body({ department: 'Race' }))),
   );
 
-  expect(results.map((r) => r.statusCode)).toEqual([201, 201, 201, 201, 201]);
+  // The bodies are in the message: a bare status array turns any failure here
+  // into a guess about which layer refused.
+  expect(results.map((r) => `${r.statusCode} ${r.body.slice(0, 140)}`).filter((r) => !r.startsWith('201'))).toEqual(
+    [],
+  );
+
   const codes = results.map((r) => JobSchema.parse(r.json()).reqCode);
   expect(new Set(codes).size).toBe(5);
 });

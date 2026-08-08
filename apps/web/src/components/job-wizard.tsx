@@ -1,5 +1,6 @@
 'use client';
 
+import { useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
 import { useEffect, useId, useMemo, useReducer, useState } from 'react';
 import {
@@ -17,8 +18,31 @@ import {
   type StepIndex,
   type WizardState,
 } from '../lib/job-wizard';
-import { useAssignableUsers, useStageTemplates, type StageTemplate, type UserOption } from '../lib/job-wizard-query';
+import {
+  JobCreateError,
+  createJob,
+  useAssignableUsers,
+  useStageTemplates,
+  type StageTemplate,
+  type UserOption,
+} from '../lib/job-wizard-query';
+import { useSession } from '../lib/session';
+import { useJobTemplate } from './app-shell';
 import { Button, Select, cx } from './ui';
+
+/**
+ * Every failure `POST /v1/jobs` can answer with, as the person who filled in
+ * four steps should read it. Switching on `type` rather than status is what
+ * keeps "you may not set a band" from being rendered as "something went wrong",
+ * which would send them to retry the one thing that cannot work.
+ */
+const CREATE_FAILURES: Record<string, string> = {
+  'urn:talon:error:forbidden': 'You don’t have permission to set a compensation band. Remove it, or ask an admin.',
+  'urn:talon:error:not-found': 'That pipeline is no longer available. Go back to step 2 and pick another.',
+  'urn:talon:error:validation-failed': 'Something on an earlier step isn’t valid. Check the summary above.',
+  'urn:talon:client:network': 'We couldn’t reach the server. Your answers are still here — try again.',
+};
+const CREATE_FALLBACK = 'The job couldn’t be created. Your answers are still here — try again.';
 
 /*
   Spec 005 §6. Geometry measured off 09-new-job-wizard@2x.png by scanning the
@@ -544,6 +568,14 @@ export function JobWizard({
   managers?: UserOption[];
 } = {}) {
   const router = useRouter();
+  const queryClient = useQueryClient();
+  // The JD template modal, which used to be what "+ New job" opened. It is a
+  // copy-the-text tool rather than a creation path (spec 005 §2), and this is
+  // where someone writing a new req actually wants it.
+  const openJobTemplate = useJobTemplate();
+  const { session } = useSession();
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const templateQuery = useStageTemplates();
   const recruiterQuery = useAssignableUsers('recruiter');
   const managerQuery = useAssignableUsers('hiring_manager');
@@ -596,6 +628,25 @@ export function JobWizard({
     }
     setShowErrors(false);
     if (step < 3) setStep((step + 1) as StepIndex);
+  }
+
+  async function onCreate() {
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      const created = await createJob(toCreateJobPayload(state), session?.accessToken);
+      // The list is now stale in two places — the jobs screen and the sidebar
+      // badge — and both read the same key.
+      await queryClient.invalidateQueries({ queryKey: ['jobs'] });
+      router.push(`/jobs/${created.id}/pipeline`);
+    } catch (caught) {
+      setSubmitError(
+        caught instanceof JobCreateError ? (CREATE_FAILURES[caught.type] ?? CREATE_FALLBACK) : CREATE_FALLBACK,
+      );
+      // Re-enabled, and nothing cleared: four steps of typing must survive a
+      // failed submit, or the error becomes the more expensive event.
+      setSubmitting(false);
+    }
   }
 
   function onCancel() {
@@ -702,18 +753,27 @@ export function JobWizard({
             Continue →
           </Button>
         ) : (
-          <Button variant="primary" disabled title="POST /v1/jobs does not exist yet — spec 005 §12">
-            Create job
+          <Button variant="primary" onClick={() => void onCreate()} disabled={submitting}>
+            {submitting ? 'Creating…' : 'Create job'}
           </Button>
         )}
       </div>
 
-      {step === 3 ? (
-        <p className="mt-3 text-meta text-text-tertiary" role="status">
-          Creating is disabled: <code className="font-mono text-code">POST /v1/jobs</code> isn’t built yet (spec 005
-          §12). Everything up to this point is real.
+      {step === 0 ? (
+        <p className="mt-3 text-meta text-text-tertiary">
+          Writing the description?{' '}
+          <button type="button" onClick={openJobTemplate} className="text-text-link hover:underline">
+            Copy a job description template
+          </button>
+          .
         </p>
       ) : null}
+
+      {/* Non-blocking, above the buttons, with the form intact behind it. A
+          full-page error would discard four steps of typing to say "try again". */}
+      <p role="alert" className={cx('mt-3 text-body text-feedback-danger-fg', !submitError && 'sr-only')}>
+        {submitError ?? ''}
+      </p>
 
       {confirmDiscard ? (
         <div role="alertdialog" aria-modal="true" aria-labelledby={`${uid}-discard`} className="mt-4 rounded-md border border-border-default bg-bg-surface p-4">

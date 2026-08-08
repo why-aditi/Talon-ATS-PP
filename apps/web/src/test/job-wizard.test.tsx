@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render as rtlRender, screen, within } from '@testing-library/react';
+import { render as rtlRender, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import axe from 'axe-core';
 import { describe, expect, it } from 'vitest';
@@ -345,13 +345,37 @@ describe('step 4 — review', () => {
     expect(screen.getByLabelText('Job title')).toHaveValue('Senior Backend Engineer');
   });
 
-  it('cannot submit, and says why rather than looking broken', async () => {
+  it('creates the job and opens its board', async () => {
     const user = userEvent.setup();
+    route((url, init) =>
+      url.pathname === '/v1/jobs' && (init?.method ?? 'GET') === 'POST'
+        ? json({ id: 'created-job-id', reqCode: 'ENG-205' }, 201)
+        : undefined,
+    );
     render(populated());
     await toReview(user);
 
-    expect(screen.getByRole('button', { name: 'Create job' })).toBeDisabled();
-    expect(screen.getByRole('status')).toHaveTextContent(/POST \/v1\/jobs/);
+    await user.click(screen.getByRole('button', { name: 'Create job' }));
+    await waitFor(() => expect(routerPush).toHaveBeenCalledWith('/jobs/created-job-id/pipeline'));
+  });
+
+  it('keeps four steps of answers when the create fails, and names the reason', async () => {
+    const user = userEvent.setup();
+    route((url, init) =>
+      url.pathname === '/v1/jobs' && (init?.method ?? 'GET') === 'POST'
+        ? json({ type: 'urn:talon:error:forbidden', title: 'Forbidden', status: 403 }, 403)
+        : undefined,
+    );
+    render(populated());
+    await toReview(user);
+
+    await user.click(screen.getByRole('button', { name: 'Create job' }));
+
+    // A full-page error would discard four steps of typing to say "try again".
+    expect(await screen.findByRole('alert')).toHaveTextContent(/permission to set a compensation band/);
+    expect(screen.getByText('Senior Backend Engineer')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create job' })).toBeEnabled();
+    expect(routerPush).not.toHaveBeenCalled();
   });
 
   it('omits the band entirely without comp:read', async () => {
