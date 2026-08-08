@@ -16,6 +16,7 @@ it('up → down → up (run in global setup) left a fully migrated, seeded datab
       '0005_audit_authentication',
       '0006_outbox',
       '0007_definer_rls_exemption',
+      '0008_jobs_version',
     ]);
     // 0002 dropped users.avatar_color — the UI hashes the id over the avatar.1–8
     // token palette, so a stored hex has no reader (CLAUDE.md §4.8).

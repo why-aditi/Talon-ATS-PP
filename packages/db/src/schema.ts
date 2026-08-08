@@ -103,6 +103,8 @@ export const jobs = pgTable('jobs', {
   hiringManagerId: uuid('hiring_manager_id'),
   openings: integer('openings').notNull().default(1),
   stageTemplateId: uuid('stage_template_id').notNull(),
+  /** Optimistic concurrency for PATCH /v1/jobs/:id — migration 0008. */
+  version: integer('version').notNull().default(1),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });

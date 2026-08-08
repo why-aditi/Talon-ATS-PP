@@ -206,11 +206,13 @@ describe('states', () => {
 });
 
 describe('the pictured-but-unbuilt controls', () => {
-  it('disables them rather than leaving dead-end tab stops', async () => {
+  it('disables the ones with no endpoint, and enables the one that has one', async () => {
     renderBoard();
     await screen.findByText('Tess Bianchi');
 
-    expect(screen.getByRole('button', { name: 'Edit job' })).toBeDisabled();
+    // PATCH /v1/jobs/:id exists now, so this opens a real editor. The rest still
+    // have nothing behind them and stay out of the tab order.
+    expect(screen.getByRole('button', { name: 'Edit job' })).toBeEnabled();
     expect(screen.getByRole('button', { name: '+ Add candidate' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Job details' })).toBeDisabled();
     for (const button of screen.getAllByRole('button', { name: /^Add a candidate to/ })) {

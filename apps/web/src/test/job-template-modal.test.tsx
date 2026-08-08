@@ -1,29 +1,12 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShell } from '../components/app-shell';
 import { JobTemplateModal } from '../components/job-template-modal';
 import { SessionProvider } from '../lib/session';
 
-/*
-  jsdom ships HTMLDialogElement without showModal/close, so the component throws on
-  open without these. They are jsdom gaps rather than behaviour worth asserting: the
-  real focus trap, Escape handling and top-layer stacking are the platform's, and a
-  browser is the only place they can be verified.
-
-  `open` is set and cleared here because the tests query by role, and a <dialog>
-  without the attribute is hidden from the accessibility tree.
-*/
-beforeAll(() => {
-  HTMLDialogElement.prototype.showModal ??= function showModal(this: HTMLDialogElement) {
-    this.open = true;
-  };
-  HTMLDialogElement.prototype.close ??= function close(this: HTMLDialogElement) {
-    this.open = false;
-    this.dispatchEvent(new Event('close'));
-  };
-});
+// The <dialog> polyfill jsdom needs lives in setup.ts — two files open dialogs now.
 
 const writeText = vi.fn<(text: string) => Promise<void>>();
 

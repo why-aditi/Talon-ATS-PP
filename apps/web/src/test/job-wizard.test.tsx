@@ -1,3 +1,4 @@
+import type { StageTemplate, UserSummary } from '@talon/contracts';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render as rtlRender, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -228,22 +229,37 @@ describe('the wizard on screen', () => {
 
 /* ── Steps 2-4 with data ───────────────────────────────────────────────────── */
 
-const TEMPLATES = [
+/*
+  Shaped by the contract, not by hand. These fixtures used to carry only
+  { name, slaDays } and { id, name }, matching interfaces the query module had
+  declared locally — which is exactly how the envelope bug survived: the fixtures
+  agreed with a type nobody's API returned. Typing them as StageTemplate and
+  UserSummary means a contract change breaks this file instead of the browser.
+*/
+const TEMPLATES: StageTemplate[] = [
   {
     id: '0198f3a1-0100-7000-8000-000000000001',
     name: 'Standard engineering',
     stages: [
-      { name: 'Applied', slaDays: null },
-      { name: 'Screen', slaDays: 3 },
-      { name: 'Onsite', slaDays: 5 },
-      { name: 'Offer', slaDays: 2 },
+      { name: 'Applied', canonical: 'applied', slaDays: null, isTerminal: false },
+      { name: 'Screen', canonical: 'screen', slaDays: 3, isTerminal: false },
+      { name: 'Onsite', canonical: 'onsite', slaDays: 5, isTerminal: false },
+      { name: 'Offer', canonical: 'offer', slaDays: 2, isTerminal: false },
     ],
   },
-  { id: '0198f3a1-0100-7000-8000-000000000002', name: 'Executive', stages: [{ name: 'Applied', slaDays: null }] },
+  {
+    id: '0198f3a1-0100-7000-8000-000000000002',
+    name: 'Executive',
+    stages: [{ name: 'Applied', canonical: 'applied', slaDays: null, isTerminal: false }],
+  },
 ];
 
-const RECRUITERS = [{ id: '0198f3a1-0007-7000-8000-000000000001', name: 'Maya Reyes' }];
-const MANAGERS = [{ id: '0198f3a1-0007-7000-8000-000000000004', name: 'Sam Altmann' }];
+const RECRUITERS: UserSummary[] = [
+  { id: '0198f3a1-0007-7000-8000-000000000001', name: 'Maya Reyes', role: 'recruiter' },
+];
+const MANAGERS: UserSummary[] = [
+  { id: '0198f3a1-0007-7000-8000-000000000004', name: 'Sam Altmann', role: 'hiring_manager' },
+];
 
 const populated = () => (
   <JobWizard templates={TEMPLATES} recruiters={RECRUITERS} managers={MANAGERS} />

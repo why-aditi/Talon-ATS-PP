@@ -99,6 +99,9 @@ importers:
       '@talon/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@talon/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
       '@talon/tokens':
         specifier: workspace:*
         version: link:../../packages/tokens
