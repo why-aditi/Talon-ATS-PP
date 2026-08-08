@@ -7,6 +7,7 @@
  * the network instead of the class.
  */
 import type { AccessTokenClaims, SessionUser, AuthTokens } from '@talon/contracts';
+import { brandError, isBrandedError } from '../../branded-error.js';
 
 export interface VerifiedIdentity {
   sub: string;
@@ -69,6 +70,18 @@ export type IdentityFailureCode =
    */
   | 'not_implemented';
 
+const IDENTITY_FAILURE_BRAND = Symbol.for('talon.identityFailure');
+
+/**
+ * Checked instead of `instanceof` — `branded-error.ts` carries the reasoning.
+ * This one is load-bearing in the same way `isHttpProblem` is: `asProblem` in
+ * `service.ts` returns anything that fails this check unchanged, so a false
+ * negative turns every provider failure into a 500.
+ */
+export function isIdentityFailure(error: unknown): error is IdentityFailure {
+  return isBrandedError(error, IDENTITY_FAILURE_BRAND);
+}
+
 /**
  * Who the provider just authenticated, when this deployment has nobody for them
  * to be. Attached to a `user_not_provisioned` failure so the service can decide
@@ -114,6 +127,7 @@ export class IdentityFailure extends Error {
   ) {
     super(detail ?? code);
     this.name = 'IdentityFailure';
+    brandError(this, IDENTITY_FAILURE_BRAND);
   }
 }
 

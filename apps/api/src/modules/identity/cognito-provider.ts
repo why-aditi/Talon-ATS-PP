@@ -88,7 +88,7 @@ import {
 } from '@aws-sdk/client-cognito-identity-provider';
 import { AccessTokenClaimsSchema } from '@talon/contracts';
 import type { AuthConfig, CognitoConfig } from '../../config.js';
-import { JwtError, nowSeconds, verifyJwt } from './jwt.js';
+import { isJwtError, nowSeconds, verifyJwt, type JwtError } from './jwt.js';
 import { JwksVerifier } from './jwks.js';
 import {
   IdentityFailure,
@@ -227,7 +227,7 @@ export class CognitoIdentityProvider implements IdentityProvider {
         expLeewaySeconds: this.#config.expLeewaySeconds,
       });
     } catch (err) {
-      throw err instanceof JwtError ? failureFor(err) : err;
+      throw isJwtError(err) ? failureFor(err) : err;
     }
     const parsed = AccessTokenClaimsSchema.safeParse(claims);
     if (!parsed.success) {
@@ -518,7 +518,7 @@ export class CognitoIdentityProvider implements IdentityProvider {
     try {
       return await this.#idTokens.verify(idToken);
     } catch (err) {
-      throw err instanceof JwtError ? failureFor(err) : err;
+      throw isJwtError(err) ? failureFor(err) : err;
     }
   }
 
