@@ -13,6 +13,7 @@ it('up → down → up (run in global setup) left a fully migrated, seeded datab
       '0002_drop_avatar_color',
       '0003_local_identities',
       '0004_users_external_id',
+      '0005_audit_authentication',
       '0006_outbox',
     ]);
     // 0002 dropped users.avatar_color — the UI hashes the id over the avatar.1–8
@@ -24,14 +25,26 @@ it('up → down → up (run in global setup) left a fully migrated, seeded datab
     const [tables] = await sql`
       select count(*)::int as n from information_schema.tables
       where table_schema = 'public' and table_name <> '_migrations'`;
-    // 10 from 0001, plus local_identities from 0003 and outbox from 0005.
+    // 10 from 0001, plus local_identities from 0003 and outbox from 0006.
     expect(tables?.['n']).toBe(12);
-    // 0003's security definer bootstrap must survive down → up as well: it is
-    // the only way sign-in can read a users row (spec 001 §11b).
-    const definers = await sql`
-      select proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    // The security definer surface must survive down → up as well, and its size
+    // is the thing to watch: 0003's two readers are the only way sign-in can
+    // read a users row (spec 001 §11b), and 0005's writer is the only way it can
+    // record that it happened (CLAUDE.md §4). A fourth appearing here without a
+    // migration explaining itself is the finding, not the count.
+    const definers = await sql<{ proname: string; proconfig: string[] | null }[]>`
+      select proname, proconfig from pg_proc p join pg_namespace n on n.oid = p.pronamespace
       where n.nspname = 'public' and p.prosecdef order by proname`;
-    expect(definers.map((r) => r['proname'])).toEqual(['auth_user_by_email', 'auth_user_by_sub']);
+    expect(definers.map((r) => r.proname)).toEqual([
+      'audit_sign_in',
+      'auth_user_by_email',
+      'auth_user_by_sub',
+    ]);
+    for (const definer of definers) {
+      // An unpinned search_path on a definer function is the classic way to have
+      // it execute someone else's `users` — or write someone else's audit_log.
+      expect(definer.proconfig, definer.proname).toContain('search_path=pg_catalog, public');
+    }
     // 0004 retyped auth_user_by_sub's parameter uuid → text. Pinned here because
     // the signature is what the repository's cast has to agree with: while it was
     // uuid, a non-UUID subject raised 22P02 before the lookup ran.

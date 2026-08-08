@@ -13,7 +13,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { MoveFailure, boardKey, fetchBoard, useMoveStage, useReorder } from '../lib/board-query';
 import { SessionProvider } from '../lib/session';
 import { locate } from '../lib/board-state';
-import type { Board } from '../lib/pipeline-contract';
+import type { Board } from '@talon/contracts';
 import { route } from './fetch-stub';
 import { ENG204_JOB_ID, STAGE_IDS } from './pipeline-fixtures';
 import { resetPipelineState } from './pipeline-handlers';

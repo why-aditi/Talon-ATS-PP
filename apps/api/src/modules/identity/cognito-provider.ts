@@ -7,12 +7,12 @@
  * ── The design decision, and why ───────────────────────────────────────────
  *
  * §6.2 fixes one claim shape for every implementation, and says `tenant_id` and
- * `role` are never stored on the identity provider: locally the stub reads them
- * from `users` at sign-in, and in AWS the pre-token-generation Lambda does the
- * same. **That Lambda does not exist yet.** A raw Cognito token therefore
- * carries no `tenant_id` and no `role`, and CLAUDE.md §4 forbids the obvious
- * shortcut — a custom pool attribute is immutable, forces a pool replacement on
- * any schema diff, and destroys every user with it.
+ * `role` are never stored on the identity provider: the pre-token-generation
+ * Lambda is supposed to read them from `users` at sign-in. **That Lambda does
+ * not exist yet.** A raw Cognito token therefore carries no `tenant_id` and no
+ * `role`, and CLAUDE.md §4 forbids the obvious shortcut — a custom pool
+ * attribute is immutable, forces a pool replacement on any schema diff, and
+ * destroys every user with it.
  *
  * So: **Cognito is the credential authority, Talon is the session authority.**
  *
@@ -21,8 +21,8 @@
  *           → the verified `sub` selects our `users` row, via
  *             `users.external_id` (migration 0004)
  *           → we mint the §6.2 access token from that row, with `session.ts`,
- *             the same function the local provider calls, carrying the Cognito
- *             `sub` as its subject
+ *             the one function every provider mints through, carrying the
+ *             Cognito `sub` as its subject
  *
  * That last clause is load-bearing and cost a live-run failure to learn:
  * `auth_user_by_sub` resolves `users.id` only where `external_id is null`, so a
@@ -64,9 +64,10 @@
  *     `AuthConfig.audience`/`issuer` become provider-derived rather than fixed
  *     constants. The schema already permits it (`aud` is `z.string().min(1)`,
  *     not a literal), which was foresight worth keeping.
- *   - `AccessTokenClaimsSchema.sub` is `z.string().uuid()`. A Cognito sub is a
- *     UUID so that holds, but `users.external_id` is `text` for a future SAML
- *     NameID, and that contract has to loosen before a non-UUID subject works.
+ *   - `AccessTokenClaimsSchema.sub` is a bounded, non-blank, control-character-
+ *     free string rather than a UUID, matching `users.external_id`'s `text` and
+ *     its check constraint. A non-UUID subject — a SAML NameID — already signs
+ *     in and already serves requests; nothing here has to change for it.
  *
  * Scaffolding vs permanent, stated plainly:
  *   - PERMANENT: `JwksVerifier`, the provisioning order (Cognito allocates the
@@ -97,7 +98,7 @@ import {
   type VerifiedIdentity,
 } from './provider.js';
 import type { IdentityRepository, UserRecord } from './repository.js';
-import { issueAccessToken, toSessionUser } from './session.js';
+import { isIssuedBeforeInvalidation, issueAccessToken, toSessionUser } from './session.js';
 
 function failureFor(error: JwtError): IdentityFailure {
   switch (error.failure) {
@@ -121,17 +122,58 @@ function nameOf(error: unknown): string {
 
 /**
  * Sign-in failures that must be indistinguishable to the caller. `UserNotFound`
- * is in here for the same reason the local provider burns a hash verification on
- * an unknown email: anything else is an account-enumeration oracle. (The pool
- * also sets `PreventUserExistenceErrors`, but that only covers the unauthenticated
- * `InitiateAuth`; the admin flows answer honestly and we have to not pass it on.)
+ * is in here because anything else is an account-enumeration oracle: an unknown
+ * address and a wrong password must be one answer, indistinguishable in status,
+ * type and detail. (The pool also sets `PreventUserExistenceErrors`, but that
+ * only covers the unauthenticated `InitiateAuth`; the admin flows answer
+ * honestly and we have to not pass it on.)
  */
 const CREDENTIAL_FAILURES = new Set([
   'NotAuthorizedException',
   'UserNotFoundException',
   'UserNotConfirmedException',
   'PasswordResetRequiredException',
+  // Per-ACCOUNT attempt limits, and they belong here rather than with the
+  // throttling below. "This account has been locked out" is account state, and
+  // account state is only reachable for an account that exists — answering it
+  // with a distinguishable status turns lockout into an enumeration oracle.
+  // Cognito normally expresses password lockout as `NotAuthorizedException:
+  // Password attempts exceeded`, which is already in this set; these two are
+  // here so a different pool configuration cannot open the hole quietly.
+  'LimitExceededException',
+  'TooManyFailedAttemptsException',
 ]);
+
+/**
+ * SERVICE-level throttling: the pool is rate-limiting this deployment, which
+ * says nothing about any particular account. 429 with `Retry-After`.
+ *
+ * The SDK retries these itself with backoff (three attempts by default), so a
+ * transient throttle never reaches us — only a sustained one does, which is why
+ * the answer is "back off", not "retry immediately".
+ */
+const THROTTLE_FAILURES = new Set(['TooManyRequestsException', 'ThrottlingException']);
+
+/** Floor and ceiling for `Retry-After`, in seconds. */
+const RETRY_AFTER_DEFAULT = 5;
+const RETRY_AFTER_MIN = 1;
+const RETRY_AFTER_MAX = 300;
+
+/**
+ * Honours the service's own `Retry-After` when it sends one, and refuses to
+ * repeat a number it cannot justify: a header of `86400` handed straight to a
+ * client takes the sign-in screen out for a day, and a header of `0` invites the
+ * retry storm the throttle is trying to stop. Clamped, integer seconds only
+ * (RFC 9110 also permits an HTTP-date; Cognito does not send one, and guessing
+ * at a date format here would produce a header no client can parse).
+ */
+export function retryAfterOf(error: unknown): number {
+  const response = (error as { $response?: { headers?: Record<string, string> } }).$response;
+  const raw = response?.headers?.['retry-after'];
+  const seconds = raw === undefined ? Number.NaN : Number.parseInt(raw, 10);
+  if (!Number.isFinite(seconds)) return RETRY_AFTER_DEFAULT;
+  return Math.min(Math.max(Math.trunc(seconds), RETRY_AFTER_MIN), RETRY_AFTER_MAX);
+}
 
 export class CognitoIdentityProvider implements IdentityProvider {
   readonly #repository: IdentityRepository;
@@ -171,8 +213,7 @@ export class CognitoIdentityProvider implements IdentityProvider {
   }
 
   /**
-   * Verifies OUR access token, identically to the local provider — see the
-   * header. Under the Lambda this becomes `this.#accessTokens.verify(token)`
+   * Verifies OUR access token — see the header for why we mint one at all. Under the Lambda this becomes `this.#accessTokens.verify(token)`
    * against the same JWKS machinery `#idTokens` already uses.
    */
   async verifyToken(token: string): Promise<VerifiedIdentity> {
@@ -201,9 +242,6 @@ export class CognitoIdentityProvider implements IdentityProvider {
    * needs either RLS bypass or a `security definer` *writer*, and neither
    * belongs in the request process (§11b). `scripts/seed-identities.ts` does it
    * over the owner connection, where operator provisioning belongs.
-   *
-   * `input.sub` is ignored. It is documented on `CreateUserInput` as local-only,
-   * and honouring it here would mean claiming a subject Cognito did not issue.
    */
   async createUser(input: CreateUserInput): Promise<{ sub: string }> {
     let sub: string;
@@ -229,9 +267,9 @@ export class CognitoIdentityProvider implements IdentityProvider {
       // `nameOf` states: one mechanism for every Cognito error, and an
       // `instanceof` also fails silently if two copies of the SDK are resolved.
       if (nameOf(err) !== 'UsernameExistsException') throw err;
-      // Re-provisioning an existing person is not an error — the local provider
-      // upserts on email for the same reason. Cognito keeps the original sub,
-      // which is exactly what `users.external_id` already points at.
+      // Re-provisioning an existing person is not an error: `seed:identities` is
+      // re-runnable by design. Cognito keeps the original sub, which is exactly
+      // what `users.external_id` already points at.
       const existing = await this.#client.send(
         new AdminGetUserCommand({
           UserPoolId: this.#cognito.userPoolId,
@@ -266,11 +304,28 @@ export class CognitoIdentityProvider implements IdentityProvider {
     // Talon's MFA policy lives in our table, not the pool (ARCHITECTURE §9.4:
     // TOTP is OPTIONAL at the pool level precisely so the application decides).
     // Reaching here with `mfa_enabled` set means Cognito did not challenge,
-    // i.e. nothing is enrolled — the same fail-closed branch the local provider
-    // takes when `local_identities.totp_secret` is null.
+    // i.e. nothing is enrolled. Fail closed: a password alone must not satisfy a
+    // policy that says it must not.
     if (user.mfaEnabled) {
       throw new IdentityFailure('mfa_not_enrolled', 'This account requires an authenticator app.');
     }
+
+    // Stamped once and used twice, deliberately: the check below and the token
+    // minted after it must be about the same instant, or the door is testing a
+    // token nobody issues.
+    const issuedAt = nowSeconds();
+    // `tokens_valid_after` was enforced on every request and at refresh, but not
+    // here — so an account whose cut-off is in the FUTURE (an admin suspending
+    // someone until Monday) signed in with a 200 and then 401'd on the very next
+    // call. Same "signed in, then session invalid" shape the `external_id` fix
+    // removed, same answer: fail at the door, with the exact predicate
+    // `resolveTenant` will apply to this token.
+    //
+    // Reachable only after Cognito has accepted the password, so naming the
+    // reason discloses nothing the caller did not already know. The detail
+    // deliberately omits WHEN the cut-off lifts: that is account state, and this
+    // response is the one place it would be visible.
+    this.#assertNotInvalidated(user, issuedAt);
 
     return {
       status: 'authenticated',
@@ -279,7 +334,7 @@ export class CognitoIdentityProvider implements IdentityProvider {
         // `external_id` and refuses `users.id` for an externally-provisioned
         // person. See `session.ts` — minting `user.id` here signs in cleanly and
         // then 401s on the next request.
-        accessToken: issueAccessToken(user, this.#config, nowSeconds(), sub),
+        accessToken: issueAccessToken(user, this.#config, issuedAt, sub),
         // Cognito's, not ours, and deliberately: the refresh token is the
         // long-lived half, so leaving it under Cognito's control is what makes
         // `AdminUserGlobalSignOut` or disabling a user actually end the session
@@ -325,10 +380,9 @@ export class CognitoIdentityProvider implements IdentityProvider {
         /*
          * Carried forward, because Cognito returns no new one here.
          *
-         * DEVIATION from spec 001 open question 2 ("30d refresh, sliding"). The
-         * local provider mints a fresh 30-day token on every exchange, so an
-         * active session never expires. Cognito only rotates when the app client
-         * has refresh token rotation enabled — and with rotation enabled BOTH
+         * DEVIATION from spec 001 open question 2 ("30d refresh, sliding"),
+         * whose 2026-08-08 amendment records this. Cognito only rotates when the
+         * app client has refresh token rotation enabled — and with rotation enabled BOTH
          * `AdminInitiateAuth` and `InitiateAuth` answer
          * `UnsupportedOperationException: This API does not support refresh
          * token rotation`. Verified against a real pool, both flows. Rotation is
@@ -385,11 +439,18 @@ export class CognitoIdentityProvider implements IdentityProvider {
    * `NotAuthorizedException` reaching a route handler would be a 500 on a wrong
    * password.
    *
-   * Throttling is deliberately NOT mapped: `IdentityFailureCode` has no
-   * `rate_limited`, so `TooManyRequestsException` propagates and surfaces as a
-   * 500. That is wrong — it should be a 429 with `Retry-After` — but inventing
-   * the code here would give the local provider, which cannot throttle at all,
-   * a failure mode it never produces. Flagged for the spec, not papered over.
+   * Two buckets, and which exception lands in which is a security decision, not
+   * a taxonomy exercise:
+   *
+   *   - CREDENTIAL_FAILURES → 401 `invalid-credentials`, one answer for "no such
+   *     account", "wrong password" and every account-state variant, including
+   *     per-account lockout.
+   *   - THROTTLE_FAILURES → 429 `rate-limited` with `Retry-After`. Service-level
+   *     only, so it describes this deployment and never an account.
+   *
+   * Anything else propagates and becomes a 500, which is correct: an error the
+   * adapter has no answer for is a bug or an outage, and dressing it as an
+   * authentication failure would send a user to retype a password that was fine.
    */
   async #authenticate(
     input: { AuthFlow: 'ADMIN_USER_PASSWORD_AUTH' | 'REFRESH_TOKEN_AUTH'; AuthParameters: Record<string, string> },
@@ -410,6 +471,13 @@ export class CognitoIdentityProvider implements IdentityProvider {
       );
     } catch (err) {
       if (CREDENTIAL_FAILURES.has(nameOf(err))) throw onRejected();
+      if (THROTTLE_FAILURES.has(nameOf(err))) {
+        throw new IdentityFailure(
+          'rate_limited',
+          'The identity provider is rate-limiting sign-in requests. Try again shortly.',
+          retryAfterOf(err),
+        );
+      }
       throw err;
     }
 
@@ -417,8 +485,8 @@ export class CognitoIdentityProvider implements IdentityProvider {
       switch (output.ChallengeName) {
         case 'SOFTWARE_TOKEN_MFA':
         case 'SELECT_MFA_TYPE':
-          // Mirrors the local provider exactly: the service turns this into a
-          // 401 `mfa-required`, because M0a has no screen to collect the code.
+          // The service turns this into a 401 `mfa-required`, because M0a has no
+          // screen to collect the code.
           return { status: 'challenge', answer: { status: 'mfa_required', challenge: 'totp' } };
         case 'MFA_SETUP':
           throw new IdentityFailure(
@@ -483,10 +551,27 @@ export class CognitoIdentityProvider implements IdentityProvider {
     return user;
   }
 
-  #assertNotInvalidated(user: UserRecord, authTime: unknown): void {
+  /**
+   * The `users.tokens_valid_after` gate, shared by sign-in and refresh.
+   *
+   * `at` is a number at sign-in (the `iat` about to be stamped) and comes off a
+   * verified id token at refresh (`auth_time`, the moment the SESSION began —
+   * `iat` there is always "now" and would defeat the switch entirely). A
+   * non-number means the id token did not carry what we asked for, which is a
+   * refusal, not a pass: this gate must never fail open.
+   *
+   * The predicate itself lives in `session.ts`, so this and `resolveTenant`
+   * cannot drift apart.
+   */
+  #assertNotInvalidated(user: UserRecord, at: unknown): void {
     if (!user.tokensValidAfter) return;
-    if (typeof authTime !== 'number' || authTime * 1000 < user.tokensValidAfter.getTime()) {
-      throw new IdentityFailure('invalid_token', 'This token was invalidated.');
+    if (typeof at !== 'number' || isIssuedBeforeInvalidation(user.tokensValidAfter, at)) {
+      throw new IdentityFailure(
+        'token_invalidated',
+        // No cut-off time, no "until": that is account state, and this is the
+        // one response where it would be visible.
+        'This session has been invalidated. Sign in again, or contact an administrator.',
+      );
     }
   }
 }

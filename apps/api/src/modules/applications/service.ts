@@ -53,7 +53,15 @@ export class ApplicationsService {
 
     return {
       job,
-      columns: stages.map((stage) => ({
+      // Rejected and withdrawn are OUTCOMES, not columns. They are real `job_stages`
+      // rows — an application has to land somewhere when it is rejected — but the
+      // reference board shows Applied through Hired and nothing else, because a
+      // rejected candidate has left the pipeline rather than moved along it. Serving
+      // them would put two permanently empty columns on every board and push Hired off
+      // the right edge.
+      columns: stages
+        .filter((stage) => stage.canonical !== 'rejected' && stage.canonical !== 'withdrawn')
+        .map((stage) => ({
         stageId: stage.stageId,
         name: stage.name,
         canonical: stage.canonical,

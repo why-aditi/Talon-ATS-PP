@@ -11,6 +11,7 @@ import { HttpProblem } from '../../errors.js';
 import type { AuthenticatedUser, TenantTransaction } from '../../request-context.js';
 import { IdentityFailure, type IdentityProvider, type VerifiedIdentity } from './provider.js';
 import type { IdentityRepository } from './repository.js';
+import { isIssuedBeforeInvalidation } from './session.js';
 
 const PROBLEMS: Record<IdentityFailure['code'], { status: number; type: string; title: string }> = {
   invalid_credentials: {
@@ -31,7 +32,16 @@ const PROBLEMS: Record<IdentityFailure['code'], { status: number; type: string; 
     type: ERROR_TYPES.TOKEN_NOT_YET_VALID,
     title: 'Token not yet valid',
   },
-  // The one entry here that is not 401: nothing about the caller is wrong.
+  token_invalidated: {
+    status: 401,
+    type: ERROR_TYPES.TOKEN_INVALIDATED,
+    title: 'Token invalidated',
+  },
+  // The two entries here that are not 401. In both, nothing about the caller's
+  // credential is wrong, so a 401 would send them to retype a password that was
+  // fine — and in the throttling case it would also hide an operational problem
+  // behind a user-facing one.
+  rate_limited: { status: 429, type: ERROR_TYPES.RATE_LIMITED, title: 'Too many requests' },
   not_implemented: {
     status: 501,
     type: ERROR_TYPES.NOT_IMPLEMENTED,
@@ -39,10 +49,39 @@ const PROBLEMS: Record<IdentityFailure['code'], { status: number; type: string; 
   },
 };
 
+/** Only used if a provider raises `rate_limited` without one. RFC 9110 §10.2.3. */
+const DEFAULT_RETRY_AFTER_SECONDS = 5;
+
+/**
+ * What the audit row records about the caller rather than the credential
+ * (CLAUDE.md §4: actor, before, after, IP, request id). Passed in from the route
+ * because a service must not reach for a Fastify request — and because being an
+ * explicit parameter is what stops a new caller forgetting it.
+ */
+export interface AuditContext {
+  ip: string | undefined;
+  requestId: string | undefined;
+}
+
 function asProblem(error: unknown): unknown {
   if (!(error instanceof IdentityFailure)) return error;
   const problem = PROBLEMS[error.code];
-  return new HttpProblem(problem.status, problem.type, problem.title, error.detail);
+  if (error.code !== 'rate_limited') {
+    return new HttpProblem(problem.status, problem.type, problem.title, error.detail);
+  }
+  const seconds = error.retryAfterSeconds ?? DEFAULT_RETRY_AFTER_SECONDS;
+  return new HttpProblem(
+    problem.status,
+    problem.type,
+    problem.title,
+    error.detail,
+    // In the body as well as the header. `Retry-After` is not CORS-safelisted,
+    // so a browser calling the api cross-origin cannot read it without an
+    // explicit `Access-Control-Expose-Headers` — and a 429 whose backoff the
+    // client cannot see is a 429 the client retries immediately.
+    { retryAfter: seconds },
+    { 'Retry-After': String(seconds) },
+  );
 }
 
 export class IdentityService {
@@ -60,21 +99,63 @@ export class IdentityService {
     this.#repository = identityRepository;
   }
 
-  async signIn(input: { email: string; password: string }): Promise<SignInResponse> {
-    const result = await this.#run(() =>
-      this.#provider.initiatePasswordAuth(input.email, input.password),
-    );
-    if (result.status === 'mfa_required') {
-      // No MFA challenge endpoint in M0a — there is no screen for it and
-      // inventing the exchange now would fix a contract nobody has specced. The
-      // seeded users have mfa_enabled = false; this is the fail-closed branch.
-      throw new HttpProblem(
-        401,
-        ERROR_TYPES.MFA_REQUIRED,
-        'MFA required',
-        'This account requires a one-time code, which this release cannot collect.',
+  /**
+   * Sign-in, and the one audit_log row it produces (CLAUDE.md §4).
+   *
+   * The audit write is deliberately NOT inside a `try`. Every mutation writes to
+   * `audit_log`, and a sign-in that cannot be recorded must not mint a session:
+   * an attacker who can break the audit path must not thereby get an unlogged
+   * one. On the success path the token has already been minted when the write
+   * runs, but it has not been *returned* — a JWT nobody was handed is inert.
+   *
+   * The failure path writes first and then rethrows the original problem, so a
+   * broken audit path turns every 401 into a 500 rather than some of them. That
+   * uniformity is the point: nothing in the audit call depends on whether the
+   * address exists, so it cannot become the enumeration oracle `signIn` itself
+   * is careful not to be.
+   */
+  async signIn(
+    input: { email: string; password: string },
+    context: AuditContext,
+  ): Promise<SignInResponse> {
+    let result;
+    try {
+      result = await this.#run(() =>
+        this.#provider.initiatePasswordAuth(input.email, input.password),
       );
+      if (result.status === 'mfa_required') {
+        // No MFA challenge endpoint in M0a — there is no screen for it and
+        // inventing the exchange now would fix a contract nobody has specced.
+        // The seeded users have mfa_enabled = false; this is the fail-closed
+        // branch, and an incomplete sign-in is a failed one for audit purposes.
+        throw new HttpProblem(
+          401,
+          ERROR_TYPES.MFA_REQUIRED,
+          'MFA required',
+          'This account requires a one-time code, which this release cannot collect.',
+        );
+      }
+    } catch (err) {
+      await this.#auditSignIn('failed', input.email, context, {
+        // The `type` the caller is about to receive, and nothing beyond it. A
+        // log that knows more about why a sign-in failed than the response did
+        // is the oracle the response was written to avoid.
+        reason: err instanceof HttpProblem ? err.type : ERROR_TYPES.INTERNAL,
+        tenantId: null,
+        actorId: null,
+      });
+      throw err;
     }
+
+    await this.#auditSignIn('succeeded', input.email, context, {
+      reason: null,
+      // Only a successful sign-in names a tenant and an actor. Attributing a
+      // failed attempt to an account would assert an identity nobody proved,
+      // and resolving one would mean an existence-dependent lookup on the
+      // failure path.
+      tenantId: result.user.tenantId,
+      actorId: result.user.id,
+    });
     return { ...result.tokens, user: result.user };
   }
 
@@ -109,17 +190,12 @@ export class IdentityService {
         'This identity is authenticated but has no user record in this deployment.',
       );
     }
-    if (
-      user.tokensValidAfter !== null &&
-      identity.claims.iat * 1000 < user.tokensValidAfter.getTime()
-    ) {
+    if (isIssuedBeforeInvalidation(user.tokensValidAfter, identity.claims.iat)) {
       // Claims are embedded in the token, so revoking a role cannot wait for
-      // expiry. `tokens_valid_after` is the pre-expiry invalidation switch.
-      //
-      // `iat` has second resolution and the comparison is strict, so a cut-off
-      // with a sub-second component also kills a token issued during that same
-      // second. That is the fail-closed direction and it heals itself: the next
-      // sign-in, a second later, works.
+      // expiry. `tokens_valid_after` is the pre-expiry invalidation switch, and
+      // the predicate lives in `session.ts` so that sign-in, refresh and this
+      // hook cannot drift apart — they did, and the result was a 200 followed
+      // immediately by a 401.
       throw new HttpProblem(
         401,
         ERROR_TYPES.TOKEN_INVALIDATED,
@@ -151,15 +227,16 @@ export class IdentityService {
   }
 
   /**
-   * Creates or replaces a local credential. There is no self-service sign-up in
-   * M0a; this exists for provisioning and for the E2E/test fixtures that need a
-   * seeded person to be able to sign in.
+   * Creates or replaces the credential at the identity provider and returns the
+   * subject it allocated. There is no self-service sign-up in M0a; this exists
+   * for operator provisioning (`scripts/seed-identities.ts`) and for the test
+   * fixtures that need a seeded person to be able to sign in.
+   *
+   * The caller is responsible for the second half — writing the returned subject
+   * to `users.external_id`. That write is deliberately not here: it needs RLS
+   * bypass, and the request process must not have it (spec 001 §11b).
    */
-  async provisionCredential(input: {
-    email: string;
-    password: string;
-    sub?: string;
-  }): Promise<{ sub: string }> {
+  async provisionCredential(input: { email: string; password: string }): Promise<{ sub: string }> {
     return this.#run(() => this.#provider.createUser(input));
   }
 
@@ -169,5 +246,20 @@ export class IdentityService {
     } catch (err) {
       throw asProblem(err);
     }
+  }
+
+  async #auditSignIn(
+    outcome: 'succeeded' | 'failed',
+    email: string,
+    context: AuditContext,
+    attribution: { reason: string | null; tenantId: string | null; actorId: string | null },
+  ): Promise<void> {
+    await this.#repository.recordSignIn({
+      outcome,
+      email,
+      ip: context.ip ?? null,
+      requestId: context.requestId ?? null,
+      ...attribution,
+    });
   }
 }

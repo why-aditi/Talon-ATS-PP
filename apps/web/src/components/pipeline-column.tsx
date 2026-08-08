@@ -3,7 +3,7 @@
 import { useDroppable } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import type { CanonicalStage } from '@talon/contracts';
-import type { BoardColumn } from '../lib/pipeline-contract';
+import type { BoardColumn } from '@talon/contracts';
 import { PlusIcon } from './icons';
 import { PipelineCard } from './pipeline-card';
 import { cx } from './ui';

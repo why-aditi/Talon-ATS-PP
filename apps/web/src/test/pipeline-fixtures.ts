@@ -29,7 +29,7 @@
  * chosen. All nine match the screen exactly: Tess red, Omar green, Jordan and Priya
  * amber, Elena and Ana violet, Marcus and David blue, Sofia green.
  */
-import type { Board, BoardColumn } from '../lib/pipeline-contract';
+import type { ApplicationCard, Board, BoardColumn } from '@talon/contracts';
 
 export const ENG204_JOB_ID = '0198f3a2-0001-7000-8000-000000000001';
 
@@ -101,9 +101,9 @@ function card(
   name: string,
   currentTitle: string,
   currentCompany: string,
-  rest: Pick<import('../lib/pipeline-contract').ApplicationCard, 'source' | 'skills' | 'daysInStage' | 'nextAction'> &
-    Partial<Pick<import('../lib/pipeline-contract').ApplicationCard, 'status' | 'scoreAvg'>>,
-): import('../lib/pipeline-contract').ApplicationCard {
+  rest: Pick<ApplicationCard, 'source' | 'daysInStage' | 'nextAction'> &
+    Partial<Pick<ApplicationCard, 'status'>>,
+): ApplicationCard {
   return {
     id: APPLICATION_IDS[who],
     candidateId: CANDIDATES[who],
@@ -111,7 +111,6 @@ function card(
     currentTitle,
     currentCompany,
     status: 'active',
-    scoreAvg: null,
     version: 1,
     ...rest,
   };
@@ -133,25 +132,21 @@ export function eng204Board(): Board {
       cards: [
         card('tess', 'Tess Bianchi', 'Frontend Engineer', 'Halo', {
           source: 'agency',
-          skills: [],
           daysInStage: 4,
           nextAction: 'Review',
         }),
         card('omar', 'Omar Haddad', 'Platform Engineer', 'Trellis', {
           source: 'careers_page',
-          skills: [],
           daysInStage: 3,
           nextAction: 'Review',
         }),
         card('jordan', 'Jordan Cole', 'Fullstack', 'Beacon', {
           source: 'careers_page',
-          skills: [],
           daysInStage: 2,
           nextAction: 'Review',
         }),
         card('priya', 'Priya Nair', 'SWE II', 'Loft', {
           source: 'referral',
-          skills: [],
           daysInStage: 1,
           nextAction: 'Review',
         }),
@@ -170,7 +165,6 @@ export function eng204Board(): Board {
         // 8d against a 5d SLA — the only stalled card on the board.
         card('elena', 'Elena Ruiz', 'Backend Engineer', 'Cove', {
           source: 'outbound',
-          skills: ['Go'],
           daysInStage: 8,
           nextAction: 'Call Tue',
         }),
@@ -178,7 +172,6 @@ export function eng204Board(): Board {
         // strict `>` threshold; changing its dwell silently changes the rule.
         card('marcus', 'Marcus Webb', 'SWE', 'Northwind', {
           source: 'outbound',
-          skills: ['TypeScript'],
           daysInStage: 5,
           nextAction: 'Call Mon',
         }),
@@ -196,10 +189,8 @@ export function eng204Board(): Board {
       cards: [
         card('ana', 'Ana Petrova', 'Senior SWE', 'Meridian', {
           source: 'referral',
-          skills: ['React', 'Go'],
           daysInStage: 3,
           nextAction: 'Loop Thu',
-          scoreAvg: 4.2,
         }),
       ],
     },
@@ -215,10 +206,8 @@ export function eng204Board(): Board {
       cards: [
         card('sofia', 'Sofia Lindqvist', 'Staff Eng', 'Polar', {
           source: 'outbound',
-          skills: ['Platform'],
           daysInStage: 1,
           nextAction: 'Offer out',
-          scoreAvg: 4.6,
         }),
       ],
     },
@@ -234,7 +223,6 @@ export function eng204Board(): Board {
       cards: [
         card('david', 'David Kim', 'Sr SWE', 'Argo', {
           source: 'referral',
-          skills: [],
           daysInStage: 0,
           nextAction: 'Starts Sep 1',
           status: 'hired',

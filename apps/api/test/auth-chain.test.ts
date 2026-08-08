@@ -27,11 +27,19 @@ let session: Session;
 const auth = testConfig().auth;
 const now = () => Math.floor(Date.now() / 1000);
 
-/** Mints a token the api will accept the signature of, with claims we choose. */
+/**
+ * Mints a token the api will accept the signature of, with claims we choose.
+ *
+ * `sub` defaults to the subject the identity provider allocated, NOT
+ * `users.id`: `auth_user_by_sub` matches `users.id` only where `external_id is
+ * null` (migration 0004), and provisioning against Cognito sets it. Minting
+ * `users.id` here would produce a token that fails `user-not-provisioned` for
+ * the wrong reason and quietly weaken every assertion below.
+ */
 function mint(claims: Record<string, unknown>): string {
   return signJwt(
     {
-      sub: fixtures.talon.recruiter.id,
+      sub: session.sub,
       email: fixtures.talon.recruiter.email,
       tenant_id: fixtures.talon.tenantId,
       role: 'recruiter',
@@ -96,15 +104,16 @@ it.each([
 });
 
 it('a token signed with the wrong key is 401 invalid-token, not expired', async () => {
-  const forged = signJwt({ sub: fixtures.talon.recruiter.id }, 'not-the-signing-key');
+  const forged = signJwt({ sub: session.sub }, 'not-the-signing-key');
   const res = await get(forged);
   expect(res.statusCode).toBe(401);
   expect(res.json<{ type: string }>().type).toBe(ERROR_TYPES.INVALID_TOKEN);
 });
 
 it('a refresh token is not a bearer token', async () => {
-  // Different audience, same signature — the check that stops a 30-day token
-  // being used as an access token for 30 days.
+  // Under Cognito the refresh token is the pool's opaque string, not a JWT of
+  // ours — so it cannot be verified as one, and the 30-day half of the session
+  // can never be presented as the 1-hour half.
   const res = await get(session.refreshToken);
   expect(res.statusCode).toBe(401);
   expect(res.json<{ type: string }>().type).toBe(ERROR_TYPES.INVALID_TOKEN);
@@ -175,7 +184,9 @@ it('a token issued before users.tokens_valid_after is refused while still unexpi
       payload: { email: fixtures.talon.recruiter.email, password: TEST_PASSWORD },
     });
     expect(fresh.statusCode).toBe(200);
-    expect((await get(fresh.json<Session>().accessToken)).statusCode).toBe(200);
+    expect(
+      (await get(fresh.json<{ accessToken: string }>().accessToken)).statusCode,
+    ).toBe(200);
   } finally {
     await sql`update users set tokens_valid_after = null where id = ${fixtures.talon.recruiter.id}::uuid`;
     await sql.end();
@@ -223,7 +234,11 @@ it('sign-in rejects unknown fields rather than ignoring them', async () => {
   expect(res.statusCode).toBe(400);
 });
 
-it('refresh returns a new access token and a new refresh token (sliding)', async () => {
+it('refresh returns a fresh access token and carries the refresh token forward', async () => {
+  // NOT sliding, and that is spec 001 open question 2's 2026-08-08 amendment
+  // rather than a defect: Cognito only rotates a refresh token when rotation is
+  // enabled on the app client, and with it enabled AdminInitiateAuth answers
+  // `UnsupportedOperationException`. The 30-day window is absolute from sign-in.
   const res = await test.app.inject({
     method: 'POST',
     url: '/v1/auth/refresh',
@@ -232,7 +247,7 @@ it('refresh returns a new access token and a new refresh token (sliding)', async
   expect(res.statusCode).toBe(200);
   const body = res.json<{ accessToken: string; refreshToken: string; expiresIn: number }>();
   expect(body.expiresIn).toBe(3600);
-  expect(body.refreshToken).not.toBe(session.refreshToken);
+  expect(body.refreshToken).toBe(session.refreshToken);
   expect((await get(body.accessToken)).statusCode).toBe(200);
 });
 

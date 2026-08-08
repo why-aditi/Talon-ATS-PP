@@ -1,8 +1,10 @@
 /**
- * The IdentityProvider seam (spec 001 §6.1). `LocalIdentityProvider` and
- * `CognitoIdentityProvider` both implement it. Nothing outside this folder may
- * import either concrete class — code is written against this interface, which
- * is what makes the AWS swap a container registration rather than a rewrite.
+ * The IdentityProvider seam (spec 001 §6.1). `CognitoIdentityProvider` is the
+ * only implementation (spec 002 open question 1). Nothing outside this folder
+ * may import the concrete class — code is written against this interface, which
+ * is what keeps a second provider (spec 003's per-tenant SAML) a container
+ * registration rather than a rewrite, and what lets the test suite substitute
+ * the network instead of the class.
  */
 import type { AccessTokenClaims, SessionUser, AuthTokens } from '@talon/contracts';
 
@@ -17,21 +19,18 @@ export interface VerifiedIdentity {
   claims: AccessTokenClaims;
 }
 
+/**
+ * Provisioning order is: `createUser` → the provider allocates a subject → point
+ * `users.external_id` (migration 0004) at what came back.
+ *
+ * There is deliberately no caller-supplied `sub`. It existed for the local
+ * provider, whose subject WAS `users.id`; asking an IdP to adopt a subject we
+ * chose means claiming an identity it never issued, and every provider that
+ * remains allocates its own.
+ */
 export interface CreateUserInput {
   email: string;
   password: string;
-  /**
-   * Local only, and ignored by every other implementation.
-   *
-   * Provisioning order is: createUser → point the `users` row at the returned
-   * sub. Locally the subject IS `users.id`, so an already-provisioned person
-   * (the seed) hands their id in and `users.external_id` stays null —
-   * `auth_user_by_sub` resolves them by primary key. Cognito allocates the sub
-   * itself, so there the returned value is written to `users.external_id`
-   * (migration 0004) and this field is meaningless: honouring it would mean
-   * claiming a subject the IdP never issued.
-   */
-  sub?: string;
 }
 
 export type AuthResult =
@@ -46,6 +45,23 @@ export type IdentityFailureCode =
   | 'invalid_token'
   | 'token_expired'
   | 'token_not_yet_valid'
+  /**
+   * `users.tokens_valid_after` refuses this session. Distinct from
+   * `invalid_token` because nothing is wrong with the token: it was issued, or
+   * would be issued, before a cut-off somebody set deliberately. Only reachable
+   * after authentication has already succeeded, so naming it discloses nothing
+   * the caller did not already know.
+   */
+  | 'token_invalidated'
+  /**
+   * The identity provider is throttling us. 429, not 401 and not 500: nothing
+   * about the caller's credential is wrong, and nothing about ours is broken.
+   *
+   * SERVICE-level throttling only. A per-account attempt limit is account
+   * state, so it is reported as `invalid_credentials` — see
+   * `CREDENTIAL_FAILURES` in cognito-provider.ts.
+   */
+  | 'rate_limited'
   /**
    * The operation is part of the interface but this provider cannot perform it
    * — Cognito's TOTP enrolment is session-scoped and `enrollTotp(sub)` has no
@@ -62,6 +78,13 @@ export class IdentityFailure extends Error {
   constructor(
     readonly code: IdentityFailureCode,
     readonly detail?: string,
+    /**
+     * Seconds the caller should wait before retrying. Meaningful only for
+     * `rate_limited`, where it becomes the `Retry-After` header; a 429 without
+     * one leaves every client to invent its own backoff, and the ones that
+     * invent "immediately" are what turns a throttle into an outage.
+     */
+    readonly retryAfterSeconds?: number,
   ) {
     super(detail ?? code);
     this.name = 'IdentityFailure';

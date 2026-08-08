@@ -18,8 +18,9 @@ import { useEffect, useState } from 'react';
 import { TOKENS } from '@talon/tokens';
 import { MoveFailure, useBoard, useMoveStage, useReorder, type MoveInput } from '../lib/board-query';
 import { boardCoordinateGetter, locate, neighboursFor, prefersReducedMotion } from '../lib/board-state';
+import { SOURCE_LABELS } from '../lib/labels';
 import { CardBody } from './pipeline-card';
-import { SOURCE_LABELS, SourceSchema, type ApplicationCard, type Board, type BoardColumn } from '../lib/pipeline-contract';
+import { SourceSchema, type ApplicationCard, type Board, type BoardColumn } from '@talon/contracts';
 import { ChevronDownIcon, SearchIcon } from './icons';
 import { PipelineColumn } from './pipeline-column';
 import { Button, StatusPill, buttonClass, cx } from './ui';
@@ -52,12 +53,9 @@ const SORTS = {
   // column in descending dwell.
   time: { label: 'time in stage', compare: (a: ApplicationCard, b: ApplicationCard) => b.daysInStage - a.daysInStage },
   recent: { label: 'recency', compare: (a: ApplicationCard, b: ApplicationCard) => a.daysInStage - b.daysInStage },
-  // Unscored cards sort last rather than as zero — a candidate nobody has scored is
-  // not a candidate who scored badly.
-  score: {
-    label: 'score',
-    compare: (a: ApplicationCard, b: ApplicationCard) => (b.scoreAvg ?? -1) - (a.scoreAvg ?? -1),
-  },
+  // No `score` sort: `scoreAvg` left the contract with the scorecards table it never
+  // had. Offering a sort over a field the server does not send would order every
+  // column identically and look broken rather than absent.
   manual: { label: 'manual', compare: null },
 } as const;
 

@@ -13,6 +13,13 @@ export class HttpProblem extends Error {
     readonly detail?: string,
     /** RFC 9457 §3.2 extension members, e.g. field-level validation errors. */
     readonly extensions?: Record<string, unknown>,
+    /**
+     * Response headers this problem requires to be actionable — `Retry-After`
+     * on a 429 being the case that forced this parameter to exist. A status code
+     * whose protocol-level companion header is missing is a status code the
+     * client has to guess at.
+     */
+    readonly headers?: Record<string, string>,
   ) {
     super(detail ?? title);
     this.name = 'HttpProblem';
@@ -99,11 +106,16 @@ function render(error: unknown, request: FastifyRequest): Problem {
 export function problemErrorHandler(error: unknown, request: FastifyRequest, reply: FastifyReply): void {
   const problem = render(error, request);
   if (problem.status >= 500) request.log.error({ err: error }, 'unhandled error');
-  sendProblem(reply, problem);
+  sendProblem(reply, problem, error instanceof HttpProblem ? error.headers : undefined);
 }
 
-export function sendProblem(reply: FastifyReply, problem: Problem): void {
+export function sendProblem(
+  reply: FastifyReply,
+  problem: Problem,
+  headers?: Record<string, string>,
+): void {
   // A 401 without a challenge is not a 401 anyone can act on (RFC 9110 §11.6.1).
   if (problem.status === 401) void reply.header('WWW-Authenticate', 'Bearer');
+  for (const [name, value] of Object.entries(headers ?? {})) void reply.header(name, value);
   void reply.code(problem.status).type('application/problem+json').send(problem);
 }

@@ -138,11 +138,20 @@ describe('card content', () => {
     expect(screen.queryByText('LinkedIn')).not.toBeInTheDocument();
   });
 
-  it('shows a score chip only where a score exists', async () => {
+  /**
+   * Both left with the move to the real endpoint: nothing stores candidate skills
+   * (spec 003 OQ-2) and there is no scorecards table, so the fixture was the only
+   * thing that ever produced "Go" or "4.2". Asserted as absent rather than deleted,
+   * so the day either table lands this test fails and someone re-reads the spec
+   * instead of the tag quietly reappearing unstyled.
+   */
+  it('renders no skill tag and no score chip — neither has a source yet', async () => {
     renderBoard();
-    expect(await screen.findByText('4.2')).toBeInTheDocument();
-    expect(screen.getByText('4.6')).toBeInTheDocument();
-    expect(screen.queryAllByText(/^\d\.\d$/)).toHaveLength(2);
+    await screen.findByText('Ana Petrova');
+    for (const skill of ['Go', 'React', 'TypeScript', 'Platform']) {
+      expect(screen.queryByText(skill)).not.toBeInTheDocument();
+    }
+    expect(screen.queryAllByText(/^\d\.\d$/)).toHaveLength(0);
   });
 });
 

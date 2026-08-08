@@ -158,7 +158,7 @@ describe('users.external_id constraints', () => {
 
 // Declared last on purpose: it takes the schema down to 0003 and back, so it must
 // not run between the assertions above.
-describe('0004 down → up (peeling 0006 off first)', () => {
+describe('0004 down → up', () => {
   async function subFn() {
     const rows = await owner<{ args: string; secdef: boolean; lang: string; cfg: string[] }[]>`
       select pg_get_function_arguments(p.oid) as args,
@@ -179,10 +179,11 @@ describe('0004 down → up (peeling 0006 off first)', () => {
   }
 
   it('down restores 0003’s uuid-typed function exactly, then up restores the text one', async () => {
-    // 0006 sits on top of 0004 now, so one step down no longer lands on 0004. Peel it
-    // off first and put it back at the end — what this test pins is that 0004's own
-    // down/up is exact, not that it happens to be the newest migration.
+    // `down` steps back exactly one migration, so everything stacked above 0004 has
+    // to come off first. Asserted rather than looped: a down that quietly took two
+    // would be worth knowing about here, in the file that tests reversibility.
     expect(await migrate('down', OWNER_URL)).toEqual(['0006_outbox']);
+    expect(await migrate('down', OWNER_URL)).toEqual(['0005_audit_authentication']);
     expect(await migrate('down', OWNER_URL)).toEqual(['0004_users_external_id']);
 
     const [reverted] = await subFn();
@@ -201,7 +202,11 @@ describe('0004 down → up (peeling 0006 off first)', () => {
     expect(await owner`select * from auth_user_by_sub(${localUser.id}::uuid)`).toHaveLength(1);
     expect(await externalIdColumn()).toHaveLength(0);
 
-    expect(await migrate('up', OWNER_URL)).toEqual(['0004_users_external_id', '0006_outbox']);
+    expect(await migrate('up', OWNER_URL)).toEqual([
+      '0004_users_external_id',
+      '0005_audit_authentication',
+      '0006_outbox',
+    ]);
 
     const [reapplied] = await subFn();
     expect(reapplied?.['args']).toBe('p_sub text');
