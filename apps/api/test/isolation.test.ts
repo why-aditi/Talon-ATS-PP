@@ -91,6 +91,40 @@ const HOSTILE_REQUESTS: Record<string, HostileCase> = {
   // first Applied card to the bottom permanently, and `board.test.ts` asserts Applied's
   // exact order — a race decided by which file vitest happened to run first. Same trap
   // the stage case above was already fixed for; `/rank` just has no version to stale.
+  // Collections: they name no resource to be wrong about, so the hostile answer
+  // is 200 over the attacker's OWN rows. The body assertion below is what proves
+  // none of tenant A's data came back.
+  'GET /v1/stage-templates': {
+    request: () => ({ method: 'GET', url: '/v1/stage-templates' }),
+    hostileStatus: 200,
+  },
+  'GET /v1/users': {
+    request: () => ({ method: 'GET', url: '/v1/users' }),
+    hostileStatus: 200,
+  },
+  /*
+    The body is valid and names TENANT A's stage template, which is the whole
+    point: the attacker is refused because that template is invisible under RLS,
+    not because the schema rejected them. A body with their own template id would
+    succeed and prove nothing.
+
+    The owner gets 201 and a real job — this is the one case that writes. It uses
+    a department of its own so the req code cannot collide with a seeded one, and
+    nothing else asserts on a job created here.
+  */
+  'POST /v1/jobs': {
+    request: (f) => ({
+      method: 'POST',
+      url: '/v1/jobs',
+      payload: {
+        title: 'Isolation probe',
+        department: 'Isolation',
+        location: 'Remote (US)',
+        stageTemplateId: f.talon.stageTemplateId,
+      },
+    }),
+    victimStatus: 201,
+  },
   'PATCH /v1/applications/:id/rank': {
     request: (f) => ({
       method: 'PATCH',

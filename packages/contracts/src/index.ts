@@ -24,6 +24,18 @@ export {
   // Envelope
   ListJobsResponseSchema,
   type ListJobsResponse,
+
+  // Stage templates + create (spec 005)
+  TemplateStageSchema,
+  type TemplateStage,
+  StageTemplateSchema,
+  type StageTemplate,
+  ListStageTemplatesResponseSchema,
+  type ListStageTemplatesResponse,
+  StageOverrideSchema,
+  type StageOverride,
+  CreateJobRequestSchema,
+  type CreateJobRequest,
 } from './jobs.js';
 
 export {
@@ -52,6 +64,14 @@ export {
   type SignInResponse,
   RefreshResponseSchema,
   type RefreshResponse,
+
+  // Users (spec 005 §6.4)
+  UserSummarySchema,
+  type UserSummary,
+  ListUsersQuerySchema,
+  type ListUsersQuery,
+  ListUsersResponseSchema,
+  type ListUsersResponse,
 } from './auth.js';
 
 export {

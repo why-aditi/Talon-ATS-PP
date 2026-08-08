@@ -156,3 +156,33 @@ export type SignInResponse = z.infer<typeof SignInResponseSchema>;
 
 export const RefreshResponseSchema = AuthTokensSchema.extend({ user: SessionUserSchema });
 export type RefreshResponse = z.infer<typeof RefreshResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// GET /v1/users — spec 005 §6.4, and §15 OQ7 which noted nobody had counted it
+//
+// The people a job can be assigned to. Deliberately NOT SessionUserSchema: that
+// carries an email and a tenant id, and a picker needs neither. Sending them
+// would put every colleague's address into a dropdown on a screen that only
+// ever renders names.
+// ---------------------------------------------------------------------------
+
+export const UserSummarySchema = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  role: RoleSchema,
+});
+export type UserSummary = z.infer<typeof UserSummarySchema>;
+
+export const ListUsersQuerySchema = z
+  .object({
+    /** Repeatable, so one request can fetch recruiters and admins together. */
+    role: z.union([RoleSchema, z.array(RoleSchema)]).optional(),
+  })
+  .strict();
+export type ListUsersQuery = z.infer<typeof ListUsersQuerySchema>;
+
+/** No cursor: a tenant's assignable staff is a list a picker shows whole. */
+export const ListUsersResponseSchema = z.object({
+  data: z.array(UserSummarySchema),
+});
+export type ListUsersResponse = z.infer<typeof ListUsersResponseSchema>;

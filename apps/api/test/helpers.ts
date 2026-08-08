@@ -120,6 +120,7 @@ export interface Fixtures {
     applicationId: string;
     stageId: string;
     nextStageId: string;
+    stageTemplateId: string;
   };
   acme: { tenantId: string; admin: Person; jobId: string };
 }
@@ -149,7 +150,14 @@ export async function loadFixtures(): Promise<Fixtures> {
       order by a.board_rank collate "C" limit 1`;
     const [talonNextStage] = await sql<{ id: string }[]>`
       select id from job_stages where job_id = ${talonJob?.id ?? null} and canonical = 'screen'`;
-    if (!talonTenant || !acmeTenant || !talonJob || !acmeJob || !talonApplication || !talonNextStage) {
+    // Tenant A's pipeline. The POST /v1/jobs hostile case names it, so the
+    // attacker sends a body that VALIDATES and is refused on tenancy alone.
+    const [talonTemplate] = await sql<{ id: string }[]>`
+      select id from stage_templates where tenant_id = ${talonTenant?.id ?? null} limit 1`;
+    if (
+      !talonTenant || !acmeTenant || !talonJob || !acmeJob || !talonApplication || !talonNextStage ||
+      !talonTemplate
+    ) {
       throw new Error('seed is incomplete');
     }
     return {
@@ -162,6 +170,7 @@ export async function loadFixtures(): Promise<Fixtures> {
         applicationId: talonApplication.id,
         stageId: talonApplication.current_stage_id,
         nextStageId: talonNextStage.id,
+        stageTemplateId: talonTemplate.id,
       },
       acme: { tenantId: acmeTenant.id, admin: find('beth@acme.test'), jobId: acmeJob.id },
     };
