@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest';
 import { AppShell } from '../components/app-shell';
 import { SessionProvider } from '../lib/session';
 import { json, route } from './fetch-stub';
+import { pathname } from './setup';
 
 const SESSION = {
   accessToken: 'test-access-token',
@@ -36,9 +37,22 @@ const appDir = ['src/app/(app)', 'apps/web/src/app/(app)']
 /** `/jobs` → `app/(app)/jobs/page.tsx`. Dynamic segments are not linked from the nav. */
 const hasPage = (href: string) => existsSync(`${appDir}${href}/page.tsx`);
 
+/*
+  The shell renders a breadcrumb on the nested routes only, so a check that runs at one
+  pathname never sees it — `onLoop` and `onJobPipeline` are both false at `/jobs`, which is
+  how a breadcrumb `Link` to the non-existent `/scheduling` index sat outside this guard.
+  The nested pathnames are listed rather than derived: the point is to render the trail.
+*/
+const PATHNAMES = [
+  '/jobs',
+  '/jobs/0198f3a5-0001-7000-8000-000000000001/pipeline',
+  '/scheduling/0198f3a7-0001-7000-8000-000000000001',
+];
+
 describe('sidebar navigation', () => {
-  it('renders no link to a route that has no page', async () => {
+  it.each(PATHNAMES)('renders no link to a route that has no page, at %s', async (at) => {
     route((url) => (url.pathname === '/api/auth/refresh' ? json(SESSION) : undefined));
+    pathname.current = at;
 
     render(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
@@ -50,7 +64,9 @@ describe('sidebar navigation', () => {
       </QueryClientProvider>,
     );
 
-    await waitFor(() => expect(screen.getByRole('link', { name: /jobs/i })).toBeInTheDocument());
+    // getAll, not get: on the pipeline route the breadcrumb adds a second "Jobs" link,
+    // and this wait is only here to say the shell has rendered past the session fetch.
+    await waitFor(() => expect(screen.getAllByRole('link', { name: /jobs/i }).length).toBeGreaterThan(0));
 
     const dead = screen
       .getAllByRole('link')

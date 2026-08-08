@@ -452,7 +452,16 @@ export function SchedulingScreen({
       cells: loop.week.map((d) => {
         const daySpans = rowSpans(rowsForDay(loop, d.dayUtc));
         const span = daySpans[rowIndex] as { startUtc: string; endUtc: string };
-        const busyHere = loop.panelists.filter((p) => busyDuring(d.busy, p.id, span.startUtc, span.endUtc));
+        /*
+          Through `busyForDay`, never `d.busy` — the week array carries its own copy of the
+          loop's day, and the scenarios that make a calendar unreadable (§12.1) edit only
+          `loop.busy`. Reading the week's copy served the un-edited one, so the same day
+          said "Availability didn't load" in the Day view and offered 11:00 as "All free"
+          in the Week view. Non-negotiable 6 has a direction: absent reads as busy in both
+          views or the screen is offering a slot it cannot stand behind.
+        */
+        const dayBusy = busyForDay(loop, d.dayUtc);
+        const busyHere = loop.panelists.filter((p) => busyDuring(dayBusy, p.id, span.startUtc, span.endUtc));
         const free = busyHere.length === 0;
         return {
           state: free ? ('free' as const) : ('busy' as const),
