@@ -40,7 +40,15 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   // exposeHeadRoutes off: auto-generated HEAD twins would show up in the route
   // manifest as unlisted public routes.
-  const app = fastify({ exposeHeadRoutes: false });
+  // Logging on by default. `problemErrorHandler` logs every 5xx with the real
+  // error, and with the logger off that call was a no-op — a wrong password
+  // returned an opaque 500 and the cause was discarded, which is how a one-line
+  // rendering bug survived long enough to look like a Cognito outage. Silent
+  // under test, where a thrown error is already the assertion.
+  const app = fastify({
+    exposeHeadRoutes: false,
+    logger: process.env['NODE_ENV'] === 'test' ? false : { level: process.env['LOG_LEVEL'] ?? 'info' },
+  });
   app.decorate('container', container);
   app.setErrorHandler(problemErrorHandler);
   app.setNotFoundHandler((request, reply) => {
