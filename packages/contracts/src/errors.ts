@@ -68,6 +68,13 @@ export const ERROR_TYPES = {
   STAGE_MOVED: 'urn:talon:error:stage-moved',
   /** A move to a terminal stage with no reason (PRD §5.4). */
   REASON_REQUIRED: 'urn:talon:error:reason-required',
+  /**
+   * The destination is a real stage but not one the board moves cards into —
+   * `rejected` and `withdrawn` are reached by their own flows, which carry more than
+   * a stage id. Distinct from REASON_REQUIRED on purpose: a client switching on that
+   * would prompt for a reason, and no reason can ever satisfy this branch.
+   */
+  NOT_A_BOARD_MOVE: 'urn:talon:error:not-a-board-move',
   INTERNAL: 'urn:talon:error:internal',
 } as const;
 

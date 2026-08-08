@@ -338,24 +338,38 @@ describe('a stage move', () => {
       afterId: null,
     });
     expect(res.statusCode).toBe(422);
+    // Its own type, not REASON_REQUIRED: a client switching on that would prompt for a
+    // reason, and no reason can satisfy this branch.
+    expect(res.json().type).toBe(ERROR_TYPES.NOT_A_BOARD_MOVE);
     expect(card(await getBoard(), 'Elena Ruiz')).toMatchObject({ status: 'active', version: elena.version });
   });
 
-  it('does not 500 when the named neighbours are no longer adjacent', async () => {
-    // Two recruiters dragging in one column: the client names a pair it read earlier,
-    // and by the time the write lands they are neither adjacent nor ordered. Spec §8.3
-    // says never a 500 — `between` throws on an inverted pair, so the service has to
-    // fall back rather than propagate it.
+  /**
+   * Two recruiters dragging in one column: the client names a pair it read earlier, and
+   * by the time the write lands they are neither adjacent nor ordered. Spec §8.3 says
+   * never a 500, and `between` throws on an inverted pair.
+   *
+   * The FIRST version of this test was not inverted. `beforeId` is the UPPER bound in
+   * this codebase — "the card this one goes above" — so naming the last card as
+   * `beforeId` and the first as `afterId` is the correctly-ordered happy path, and the
+   * test returned 200 against the unfixed code too. A blocking fix guarded by a test
+   * that cannot fail is an unverified fix.
+   */
+  it('does not 500 when the named neighbours are inverted or identical', async () => {
     const before = await getBoard();
     const applied = column(before, 'Applied');
-    const res = await test.app.inject({
-      method: 'PATCH',
-      url: `/v1/applications/${card(before, 'Tess Bianchi').id}/rank`,
-      headers: auth,
-      // Deliberately inverted: `beforeId` is the LAST card and `afterId` the first.
-      payload: { beforeId: applied.cards.at(-1)!.id, afterId: applied.cards[0]!.id },
-    });
-    expect(res.statusCode).toBe(200);
+    const tess = card(before, 'Tess Bianchi').id;
+
+    const rank = (payload: object) =>
+      test.app.inject({ method: 'PATCH', url: `/v1/applications/${tess}/rank`, headers: auth, payload });
+
+    // Genuinely inverted: the upper bound is the FIRST card and the lower the last, so
+    // `after > before` and `between` would throw.
+    expect((await rank({ beforeId: applied.cards[0]!.id, afterId: applied.cards.at(-1)!.id })).statusCode).toBe(200);
+
+    // The contract still permits both fields to name the same card, which collapses to
+    // `after === before` — also not an ordered pair.
+    expect((await rank({ beforeId: applied.cards[0]!.id, afterId: applied.cards[0]!.id })).statusCode).toBe(200);
   });
 
   it('places the card between the neighbours it was given', async () => {
