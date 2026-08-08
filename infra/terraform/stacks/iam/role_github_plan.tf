@@ -71,6 +71,35 @@ data "aws_iam_policy_document" "github_plan_guardrails" {
       "${local.state_bucket_arn}/*",
     ]
   }
+
+  # Object BODIES were denied above; object NAMES were not, and for candidate
+  # files the name is most of the disclosure. Resumes land in the quarantine
+  # bucket (§9.10) under keys that are routinely
+  # `firstname-lastname-resume.pdf`, so `aws s3 ls` from a pull-request workflow
+  # reads out a list of who has applied to this company — without ever fetching
+  # a byte the statement above covers.
+  #
+  # Same inversion, same reason: deny bucket listing everywhere, except the state
+  # bucket, which the S3 backend genuinely lists to find the state object. The
+  # exception is the BUCKET ARN, not `${bucket}/*` — ListBucket is authorized
+  # against the bucket, and an exception written with a trailing `/*` would match
+  # nothing and take state reads down with it.
+  #
+  # s3:ListAllMyBuckets is deliberately not here: it returns bucket names only,
+  # `terraform plan` uses it, and bucket names in this account are already public
+  # knowledge from every other policy document in this stack.
+  statement {
+    sid    = "DenyListingBucketContentsExceptTerraformState"
+    effect = "Deny"
+    actions = [
+      "s3:ListBucket",
+      "s3:ListBucketVersions",
+      "s3:ListBucketMultipartUploads",
+    ]
+    not_resources = [
+      local.state_bucket_arn,
+    ]
+  }
 }
 
 resource "aws_iam_role_policy" "github_plan_guardrails" {
