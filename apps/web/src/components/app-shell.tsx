@@ -72,8 +72,16 @@ function NavRow({ item, active }: { item: NavItem; active: boolean }) {
   );
 }
 
+/**
+ * A job's board lives at `/jobs/:id/pipeline` but belongs to Pipeline in the nav. The
+ * reference shows exactly that split — the sidebar lights Pipeline while the breadcrumb
+ * sits under Jobs — so a longest-prefix match would light the wrong row.
+ */
+const JOB_PIPELINE = /^\/jobs\/[^/]+\/pipeline$/;
+
 function Sidebar() {
   const pathname = usePathname();
+  const activeHref = JOB_PIPELINE.test(pathname) ? '/pipeline' : pathname;
   return (
     <div className="flex h-full flex-col border-r border-border-default bg-bg-surface">
       <div className="flex h-[var(--layout-topbar-height)] items-center gap-2 px-4">
@@ -100,7 +108,7 @@ function Sidebar() {
             <Eyebrow className="px-3 pb-2">{section.label}</Eyebrow>
             <ul>
               {section.items.map((item) => (
-                <NavRow key={item.href} item={item} active={pathname === item.href} />
+                <NavRow key={item.href} item={item} active={activeHref === item.href} />
               ))}
             </ul>
           </div>
@@ -144,10 +152,21 @@ function Topbar() {
   const pathname = usePathname();
   // Breadcrumb per DESIGN_SYSTEM §4: the trail sits at `meta`, the current page at
   // `bodyStrong`. Only one level exists so far, so only the current page renders.
-  const title = NAV_ITEMS.find((item) => item.href === pathname)?.label ?? 'Talon';
+  const onJobPipeline = JOB_PIPELINE.test(pathname);
+  const title = onJobPipeline ? 'Pipeline' : (NAV_ITEMS.find((item) => item.href === pathname)?.label ?? 'Talon');
   return (
     <header className="flex h-[var(--layout-topbar-height)] shrink-0 items-center gap-4 border-b border-border-default bg-bg-surface px-6">
+      {/*
+        The reference trail reads "Jobs / Senior Product Engineer". The shell has no way
+        to know the job's title — it would need the board's response, which is fetched a
+        component away — so the trail names the section and the job title sits in the
+        page header immediately below, where the reference also puts it. A shell-level
+        breadcrumb that nested routes can fill is spec 003 §9; not worth a context for
+        one screen.
+      */}
       <p className="flex-1 text-meta text-text-tertiary">
+        {onJobPipeline ? <Link href="/jobs" className="hover:text-text-link">Jobs</Link> : null}
+        {onJobPipeline ? ' / ' : null}
         <span className="text-body-strong text-text-primary">{title}</span>
       </p>
       {/*
