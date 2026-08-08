@@ -123,6 +123,13 @@
         "careersPage": { "$value": "{color.primitive.blue.500}" },
         "agency":      { "$value": "{color.primitive.amber.500}" }
       },
+
+      "chart": {
+        "_note": "Interviews-per-week trend on Reports. barIdle is measured off 08-reports@2x.png (solid fill, single mode over 2176 samples) and is deliberately NOT indigo.200 (#C2C6F1) — the ramp between the measured 50 and 600 anchors is interpolated, so it misses this value. barCurrent sampled as exactly #4C56C8 and so references the primitive rather than restating it, which is the evidence the PNG carries no colour shift. Never the only carrier of meaning — every bar is labelled with its value.",
+        "barIdle":    { "$value": "#C9CCF3", "$description": "measured - Reports trend, prior weeks" },
+        "barCurrent": { "$value": "{color.primitive.indigo.600}", "$description": "measured - Reports trend, current week" }
+      },
+
       "feedback": {
         "successBg": { "$value": "{color.primitive.green.50}" },
         "successFg": { "$value": "{color.primitive.green.700}" },
