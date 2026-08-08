@@ -73,6 +73,9 @@ export interface MovableApplication {
   status: ApplicationStatus;
   currentStageId: string;
   currentStageName: string;
+  /** The rank before the write, so a reorder's audit row can answer "where was it?"
+   *  — which is the only question a reorder audit exists to answer. */
+  boardRank: string;
   currentStageCanonical: CanonicalStage;
   daysInStage: number;
   version: number;
@@ -178,7 +181,11 @@ export class ApplicationsRepository {
              case when total.n = 0 then 0
                   else round(100.0 * coalesce(reach.reached, 0) / total.n)::int
              end as pass_rate_pct,
-             round(dwell.median_seconds / 86400)::int as median_days
+             -- Cast to numeric first: percentile_cont returns double precision, and
+             -- round() on a double is banker's rounding — a true 2.5-day median would
+             -- report 2 and a 3.5 would report 4. Half-away-from-zero is what the
+             -- board's "median 3d" means to a recruiter.
+             round((dwell.median_seconds / 86400)::numeric)::int as median_days
       from job_stages js
       cross join total
       left join live  on live.stage_id  = js.id
@@ -280,13 +287,14 @@ export class ApplicationsRepository {
         status: ApplicationStatus;
         current_stage_id: string;
         stage_name: string;
+        board_rank: string;
         canonical: CanonicalStage;
         days_in_stage: number;
         version: number;
       }[]
     >`
       select a.id, a.job_id, a.candidate_id, c.name, c.current_title, c.current_company,
-             a.source, a.status, a.current_stage_id, a.version,
+             a.source, a.status, a.current_stage_id, a.version, a.board_rank,
              js.name as stage_name, js.canonical,
              floor(extract(epoch from (now() - a.stage_entered_at)) / 86400)::int as days_in_stage
       from applications a
@@ -306,6 +314,7 @@ export class ApplicationsRepository {
       status: row.status,
       currentStageId: row.current_stage_id,
       currentStageName: row.stage_name,
+      boardRank: row.board_rank,
       currentStageCanonical: row.canonical,
       daysInStage: row.days_in_stage,
       version: row.version,

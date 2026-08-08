@@ -52,4 +52,11 @@ export const TENANT_TABLES = [
   'stage_transitions',
   'activities',
   'audit_log',
+  // `outbox` (migration 0006) is deliberately NOT here, and it is worth saying why
+  // rather than leaving it looking forgotten. The sweep asserts that tenant A sees
+  // rows and none of tenant B's — it needs SEEDED DATA to mean anything, and an empty
+  // table passes it vacuously. The seed writes no outbox rows because nothing mutates
+  // during seeding. `test/outbox.test.ts` covers the same policy directly by inserting
+  // its own rows in both tenants, which is stronger than a vacuous sweep entry.
+  // Add it here the day the seed produces a row.
 ] as const;
