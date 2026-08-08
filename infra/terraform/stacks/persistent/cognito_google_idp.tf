@@ -14,7 +14,11 @@
 variable "google_sso_secret_id" {
   description = "Secrets Manager id holding {client_id, client_secret} for the Google OAuth client. Empty disables Google federation entirely. The secret is READ, never declared — a client secret in a .tf is a client secret in git history, and rotating it would mean a commit."
   type        = string
-  default     = ""
+
+  # Checked in for the same reason as user_pool_domain_prefix: a `-var` does not
+  # persist, and the next plan proposed destroying this IdP. This is a secret
+  # NAME, not a secret — the value is read from Secrets Manager at plan time.
+  default = "talon-dev/sso/google"
 }
 
 data "aws_secretsmanager_secret_version" "google_sso" {
@@ -36,6 +40,24 @@ resource "aws_cognito_identity_provider" "google" {
     # flow exchanges for a Talon session. `email` is what the mapping below reads, and
     # without it the mapping silently yields nothing rather than failing.
     authorize_scopes = "openid email profile"
+
+    # Cognito FILLS THESE IN ITSELF for a Google provider, and that is why they are
+    # written out here rather than left off. Omitted, the API returns six keys the
+    # config does not declare, and every subsequent plan proposes removing them:
+    # `0 to add, 1 to change, 0 to destroy`, forever, on a resource nobody touched.
+    # A plan that is never clean is a plan people stop reading, and this stack's
+    # whole protection model is someone reading the plan (CLAUDE.md #17).
+    #
+    # These are Google's published, stable endpoints, so declaring them pins nothing
+    # that moves. `lifecycle { ignore_changes = [provider_details] }` would also
+    # silence the diff, but it would silence a client_id or client_secret change too
+    # — which is the one thing in this map that must never drift unnoticed.
+    attributes_url                = "https://people.googleapis.com/v1/people/me?personFields="
+    attributes_url_add_attributes = "true"
+    authorize_url                 = "https://accounts.google.com/o/oauth2/v2/auth"
+    oidc_issuer                   = "https://accounts.google.com"
+    token_request_method          = "POST"
+    token_url                     = "https://www.googleapis.com/oauth2/v4/token"
   }
 
   attribute_mapping = {

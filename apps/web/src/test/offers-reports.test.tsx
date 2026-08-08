@@ -96,7 +96,7 @@ describe('offer builder', () => {
   });
 
   it('replaces the whole terms card when the role may not see comp', async () => {
-    serve('interviewer');
+    serve('member');
     renderWith(<OfferDetail offerId={OFFER_ID} />);
 
     expect(await screen.findByText('Compensation is not visible to your role.')).toBeInTheDocument();
