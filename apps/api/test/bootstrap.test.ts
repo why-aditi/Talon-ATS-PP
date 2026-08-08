@@ -51,7 +51,7 @@ it('the bootstrap function returns exactly the one row sign-in needs', async () 
 it('the bootstrap functions expose no password material and no other columns', async () => {
   const columns = Object.keys(
     (await sql<Record<string, unknown>[]>`
-      select * from auth_user_by_sub(${fixtures.talon.recruiter.id}::uuid)`)[0] ?? {},
+      select * from auth_user_by_sub(${fixtures.talon.recruiter.id}::text)`)[0] ?? {},
   ).sort();
   expect(columns).toEqual([
     'email',

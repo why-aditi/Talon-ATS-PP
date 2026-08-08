@@ -5,14 +5,14 @@
  * Concrete class: importable only from inside `modules/identity/`. Everything
  * else resolves `identityProvider` from the container and sees the interface.
  *
- * The claim shape it emits (§6.2) is the shape Cognito's pre-token-generation
- * Lambda will emit, read from the same `users` row — the swap is a container
- * registration, not a rewrite.
+ * The claim shape it emits (§6.2) comes from `session.ts`, which
+ * `CognitoIdentityProvider` also calls — "identical in both implementations" is
+ * one function, not two files that agree today.
  */
 import { randomUUID } from 'node:crypto';
-import { AccessTokenClaimsSchema, type AuthTokens, type SessionUser } from '@talon/contracts';
+import { AccessTokenClaimsSchema } from '@talon/contracts';
 import type { AuthConfig } from '../../config.js';
-import { JwtError, newJti, nowSeconds, signJwt, verifyJwt } from './jwt.js';
+import { JwtError, verifyJwt } from './jwt.js';
 import { burnVerification, hashPassword, verifyPassword } from './password.js';
 import {
   IdentityFailure,
@@ -22,18 +22,8 @@ import {
   type VerifiedIdentity,
 } from './provider.js';
 import type { IdentityRepository, UserRecord } from './repository.js';
+import { issueTokens, toSessionUser } from './session.js';
 import { generateTotpSecret, totpUri, verifyTotpCode } from './totp.js';
-
-function toSessionUser(user: UserRecord): SessionUser {
-  return {
-    id: user.id,
-    tenantId: user.tenantId,
-    email: user.email,
-    name: user.name,
-    role: user.role,
-    timezone: user.timezone,
-  };
-}
 
 function failureFor(error: JwtError): IdentityFailure {
   switch (error.failure) {
@@ -103,7 +93,18 @@ export class LocalIdentityProvider implements IdentityProvider {
       throw new IdentityFailure('invalid_credentials', 'Email or password is incorrect.');
     }
 
-    const user = await this.#requireUser(() => this.#repository.findUserByEmail(email));
+    const byEmail = await this.#requireUser(() => this.#repository.findUserByEmail(email));
+    // Resolve again by SUBJECT, which is the lookup the request chain actually
+    // uses. `auth_user_by_email` finds anyone; `auth_user_by_sub` matches
+    // `users.id` only where `external_id is null` (migration 0004), so a person
+    // currently provisioned against Cognito is NOT reachable by their id.
+    //
+    // Without this, flipping TALON_IDENTITY_PROVIDER back to local without
+    // re-running the identity seed mints a token that signs in perfectly and
+    // then 401s on every subsequent request — the user sees "signed in",
+    // immediately followed by "session invalid", with nothing naming the cause.
+    // One extra query on the sign-in path buys failing at the door instead.
+    const user = await this.#requireUser(() => this.#repository.findUserBySub(byEmail.id));
 
     if (user.mfaEnabled) {
       if (!identity.totpSecret) {
@@ -115,7 +116,11 @@ export class LocalIdentityProvider implements IdentityProvider {
       return { status: 'mfa_required', challenge: 'totp' };
     }
 
-    return { status: 'authenticated', tokens: this.#issue(user), user: toSessionUser(user) };
+    return {
+      status: 'authenticated',
+      tokens: issueTokens(user, this.#config),
+      user: toSessionUser(user),
+    };
   }
 
   async refreshSession(refreshToken: string): Promise<AuthResult> {
@@ -141,7 +146,11 @@ export class LocalIdentityProvider implements IdentityProvider {
     // for the life of a 30-day token.
     const user = await this.#requireUser(() => this.#repository.findUserBySub(sub));
     this.#assertNotInvalidated(user, claims['iat']);
-    return { status: 'authenticated', tokens: this.#issue(user), user: toSessionUser(user) };
+    return {
+      status: 'authenticated',
+      tokens: issueTokens(user, this.#config),
+      user: toSessionUser(user),
+    };
   }
 
   async enrollTotp(sub: string): Promise<{ secretUri: string }> {
@@ -176,43 +185,5 @@ export class LocalIdentityProvider implements IdentityProvider {
     if (typeof iat !== 'number' || iat * 1000 < user.tokensValidAfter.getTime()) {
       throw new IdentityFailure('invalid_token', 'This token was invalidated.');
     }
-  }
-
-  #issue(user: UserRecord): AuthTokens {
-    const iat = nowSeconds();
-    const accessToken = signJwt(
-      {
-        sub: user.id,
-        email: user.email,
-        tenant_id: user.tenantId,
-        role: user.role,
-        iss: this.#config.issuer,
-        aud: this.#config.audience,
-        iat,
-        exp: iat + this.#config.accessTtlSeconds,
-        jti: newJti(),
-      },
-      this.#config.secret,
-    );
-    // Sliding: every refresh returns a new 30-day token, so an active session
-    // never expires and an idle one dies on schedule (open question 2).
-    const refreshToken = signJwt(
-      {
-        sub: user.id,
-        email: user.email,
-        iss: this.#config.issuer,
-        aud: this.#config.refreshAudience,
-        iat,
-        exp: iat + this.#config.refreshTtlSeconds,
-        jti: newJti(),
-      },
-      this.#config.secret,
-    );
-    return {
-      accessToken,
-      refreshToken,
-      tokenType: 'Bearer',
-      expiresIn: this.#config.accessTtlSeconds,
-    };
   }
 }

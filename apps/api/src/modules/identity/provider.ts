@@ -1,9 +1,8 @@
 /**
- * The IdentityProvider seam (spec 001 §6.1). `LocalIdentityProvider` implements
- * it today; `CognitoIdentityProvider` implements it in spec 002. Nothing outside
- * this folder may import either concrete class — code is written against this
- * interface, which is what makes the AWS swap a container registration rather
- * than a rewrite.
+ * The IdentityProvider seam (spec 001 §6.1). `LocalIdentityProvider` and
+ * `CognitoIdentityProvider` both implement it. Nothing outside this folder may
+ * import either concrete class — code is written against this interface, which
+ * is what makes the AWS swap a container registration rather than a rewrite.
  */
 import type { AccessTokenClaims, SessionUser, AuthTokens } from '@talon/contracts';
 
@@ -22,11 +21,15 @@ export interface CreateUserInput {
   email: string;
   password: string;
   /**
-   * Local only. Provisioning order for a new person is: createUser → insert the
-   * `users` row keyed by the returned sub. `users` has no `external_id` column
-   * yet, so locally the subject IS `users.id` and an already-provisioned user
-   * (the seed) has to hand its id in. Cognito allocates the sub itself and
-   * ignores this — closing that gap is a spec 002 migration, not a local hack.
+   * Local only, and ignored by every other implementation.
+   *
+   * Provisioning order is: createUser → point the `users` row at the returned
+   * sub. Locally the subject IS `users.id`, so an already-provisioned person
+   * (the seed) hands their id in and `users.external_id` stays null —
+   * `auth_user_by_sub` resolves them by primary key. Cognito allocates the sub
+   * itself, so there the returned value is written to `users.external_id`
+   * (migration 0004) and this field is meaningless: honouring it would mean
+   * claiming a subject the IdP never issued.
    */
   sub?: string;
 }
@@ -42,7 +45,13 @@ export type IdentityFailureCode =
   | 'mfa_not_enrolled'
   | 'invalid_token'
   | 'token_expired'
-  | 'token_not_yet_valid';
+  | 'token_not_yet_valid'
+  /**
+   * The operation is part of the interface but this provider cannot perform it
+   * — Cognito's TOTP enrolment is session-scoped and `enrollTotp(sub)` has no
+   * session to give it. 501, not 401: an operator fact, not a credential one.
+   */
+  | 'not_implemented';
 
 /**
  * Provider-agnostic failure. Adapters translate their own errors into these;

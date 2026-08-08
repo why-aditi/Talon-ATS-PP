@@ -246,6 +246,12 @@ export async function seed(databaseUrl = process.env['DATABASE_URL'] ?? DEFAULT_
   const talon = uuidv7();
   tenantRows.push({ id: talon, name: 'Talon Inc.', slug: 'talon', createdAt: ago(365) });
 
+  // external_id is left null on every seeded user, here and for Acme below. These
+  // are local-provider people: their credentials live in local_identities and
+  // their token subject IS users.id, which is the branch auth_user_by_sub() takes
+  // for a null external_id (migration 0004). A seeded Cognito sub would be a
+  // fiction — Cognito allocates it at provisioning time — and would make every
+  // seeded user unresolvable by the local provider.
   const maya = uuidv7();
   const sam = uuidv7();
   const lin = uuidv7();

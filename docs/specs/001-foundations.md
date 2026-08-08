@@ -158,12 +158,14 @@ interface IdentityProvider {
 Two implementations: `LocalIdentityProvider` (dev/test — signs JWTs with a local key, stores password hashes in a `local_identities` table) and `CognitoIdentityProvider` (spec 002). **Nothing outside `modules/identity/` imports either concrete class.**
 
 Step-4 notes on the interface as built:
-- A **sixth method, `refreshSession(refreshToken)`**, was added. Open question 2 answered "30d refresh, sliding", and a refresh token nothing can redeem is worse than none; the exchange has to sit behind the same seam as the issue. Cognito implements it natively (`REFRESH_TOKEN_AUTH`).
+- A **sixth method, `refreshSession(refreshToken)`**, was added. Open question 2 answered "30d refresh, sliding", and a refresh token nothing can redeem is worse than none; the exchange has to sit behind the same seam as the issue. Cognito implements the exchange natively (`REFRESH_TOKEN_AUTH`), though not the *sliding* part — see open question 2's amendment.
 - `initiatePasswordAuth` returns a discriminated `AuthResult`, `authenticated` or `mfa_required`, mirroring Cognito's challenge flow. M0a has no screen for the challenge, so a user with `mfa_enabled` gets a 401 `urn:talon:error:mfa-required` — fail closed rather than inventing an unspecced exchange.
-- `CreateUserInput` carries an optional `sub` for the local provider only. `users` has **no `external_id` column**, so locally the token subject IS `users.id` and an already-provisioned person hands their id in. Cognito allocates the sub itself, so **spec 002 needs a `users.external_id` migration** before the swap is real. Flagged, not fixed here — step 4 was scoped to one migration.
+- `CreateUserInput` carries an optional `sub` for the local provider only. **Superseded by migration 0004 (spec 002):** `users.external_id` now exists, and `auth_user_by_sub` resolves it first, falling back to `users.id` **only where `external_id is null`**. That exclusivity is deliberate — a user reachable by both subjects is a user whose IdP revocation does nothing — and it means one person has exactly one sign-in method.
 - The concrete class is named in exactly one file (`modules/identity/container.ts`), and `no-restricted-imports` now bans every module-internal path outside its own folder, so the lint graph backs the rule rather than the convention.
 
 ### 6.2 Claim shape — identical in both implementations
+
+**One nuance, added by spec 002's Cognito adapter:** the *shape* is identical and every value except one is identical, but `sub` deliberately differs by provider — it names the **IdP's** subject, which is the key `auth_user_by_sub` resolves. Under the local provider that is `users.id`; under Cognito it is the pool-allocated sub stored in `users.external_id`. Minting `users.id` as the subject under Cognito produces a token that signs in perfectly and then 401s on every subsequent request; that was a real bug, found only against a live pool.
 
 ```json
 { "sub": "...", "email": "...", "tenant_id": "...", "role": "recruiter",
@@ -336,6 +338,17 @@ the ratios affects all nine screens. Width-derived sizes land ~8% below height-d
 ones, which says the display face is narrower than Inter and must be settled first
 (§2.1's letterform comparison against `01-sign-in@2x.png`). Nothing was applied;
 `_meta.confidence.typography` stays `LOW`. **Owner: design.**
+
+**Resolved 2026-08-08 (spec 003 step 6). The table above is superseded — read this instead.**
+
+The ramp is not stretched monotonically. **The two font families were wrong in different directions**, which is what produced the apparent monotonic climb:
+
+- **Body family (Inter) — ~25% too large across every token.** Multiplied by 0.80. Six independent long runs on `03-pipeline-kanban@2x` gave 0.755–0.817, and `code` independently implied 10.4px against its new 10px.
+- **Display family (Inter Tight) — already correct, unchanged.** `pageTitle` measures **0.99** against "Welcome back" (12 chars, `01-sign-in@2x`) and `sectionTitle` **1.03** against "Senior Product Engineer" (23 chars).
+
+The `pageTitle 0.73` row above is a **cap-height artifact**. Deriving it from ink extents, or from a 4-character sample ("Jobs" on the jobs list), reproduces that wrong figure reliably — which is why it looked credible. Measuring the rendered *width* of a long run instead puts it at 0.99: the endpoints of a long string are strong stems that survive anti-aliasing, and cap heights do not. The `cardTitle 0.80` row was right, and matches the new value exactly.
+
+The note above that "width-derived sizes land ~8% below height-derived ones" was the real clue and is still true — that residual is the family, not the sizes. Pin the family before `_meta.confidence.typography` goes to `HIGH`. `metricXl` and `eyebrow` remain unverified: no clean sample exists for either yet.
 
 #### Token findings
 
@@ -523,7 +536,7 @@ A gate is not "declared blocking" before its step: the script exists and the wor
 ## 11. Open questions
 
 1. **Can one email belong to two tenants?** **Answered 2026-08-07: no.** One tenant per email, enforced with a unique constraint. `tenant_id` stays in the token.
-2. **Session length and refresh?** **Answered 2026-08-07: confirmed** — 1h access token, 30d refresh, sliding.
+2. **Session length and refresh?** **Answered 2026-08-07: confirmed** — 1h access token, 30d refresh, sliding. **Amended 2026-08-08:** sliding holds for the local provider only. Under Cognito the 30-day window is **absolute from sign-in**, so an active user is signed out on day 30. Rotation requires it enabled on the app client, and with it enabled both `AdminInitiateAuth` and `InitiateAuth` return `UnsupportedOperationException: This API does not support refresh token rotation` — verified against a real pool, both flows. Rotation is only reachable through the hosted `/oauth2/token` endpoint, which needs a Cognito domain and OAuth flows (spec 003). Accepted divergence, not a defect to chase.
 3. **Does the jobs list need realtime counts?** Assumed no for M0a — refetch on focus. SSE arrives with the pipeline board.
 4. **Seed tenant name?** Screens don't show one. Using "Talon Inc." from the offer letter unless told otherwise.
 5. **ENG-204: jobs list says "18 in process", kanban pictures 8 non-terminal candidates.** **Answered 2026-08-07: the board is the truth.** Seed the nine pictured ENG-204 candidates and no filler; seed the other five jobs to their jobs-list counts. The jobs-list "in process" cell will read the board's count, not 18. Screen-derived percentages that the pictured population cannot produce are recorded as deltas in §11b, not manufactured.
