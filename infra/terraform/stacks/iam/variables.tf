@@ -57,6 +57,28 @@ variable "github_repo" {
   }
 }
 
+variable "github_owner_id" {
+  description = "Numeric GitHub owner id, used to build the id-qualified OIDC subject prefix (locals.tf). CI passes github.repository_owner_id, so a fork gets its own. The default is this repository's; empty disables the id-qualified claim entirely."
+  type        = string
+  default     = "130339327"
+
+  validation {
+    condition     = var.github_owner_id == "" || can(regex("^[0-9]+$", var.github_owner_id))
+    error_message = "github_owner_id must be numeric — it is an id, not a login. A login here silently produces a subject claim nothing matches."
+  }
+}
+
+variable "github_repository_id" {
+  description = "Numeric GitHub repository id, used to build the id-qualified OIDC subject prefix (locals.tf). CI passes github.repository_id. The default is this repository's; empty disables the id-qualified claim entirely."
+  type        = string
+  default     = "1326442505"
+
+  validation {
+    condition     = var.github_repository_id == "" || can(regex("^[0-9]+$", var.github_repository_id))
+    error_message = "github_repository_id must be numeric — it is an id, not a name."
+  }
+}
+
 variable "github_default_branch" {
   description = "Branch that is allowed to run terraform apply. ARCHITECTURE §9.5: plan on every PR, apply on merge."
   type        = string

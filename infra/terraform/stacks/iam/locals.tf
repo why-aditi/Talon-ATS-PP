@@ -62,14 +62,54 @@ locals {
   # but only once that environment has a deployment-branch policy configured in
   # GitHub. Without one, adding it re-opens exactly the hole described above.
   # -------------------------------------------------------------------------
+  # -------------------------------------------------------------------------
+  # The ID-QUALIFIED subject prefix, and why both forms are trusted.
+  #
+  # `repo:OWNER/REPO` is the documented sub prefix and it is NOT what every
+  # repository issues. GitHub can issue an immutable, id-qualified prefix
+  # instead — `repo:OWNER@<owner_id>/REPO@<repo_id>` — and this repository does:
+  #
+  #   GET /repos/why-aditi/Talon-ATS-PP/actions/oidc/customization/sub
+  #   { "use_default": true,
+  #     "sub_claim_prefix": "repo:why-aditi@130339327/Talon-ATS-PP@1326442505" }
+  #
+  # Note `use_default` is TRUE while the prefix is still id-qualified, so there
+  # is nothing to "turn off" and no customization to notice. A trust policy
+  # holding only the plain form is silently unmatchable, and the failure gives
+  # you nothing to work with: STS answers `Not authorized to perform
+  # sts:AssumeRoleWithWebIdentity` without ever saying which claim missed.
+  # That cost a red CI run on the first PR after the roles were applied.
+  #
+  # BOTH forms are trusted, deliberately. The ids are stable for the life of the
+  # repository, but a transfer changes the owner id and a delete-and-recreate
+  # changes the repo id — and if GitHub ever serves the plain prefix, the plain
+  # entry is what keeps CI working. Neither entry widens the other: both are
+  # exact strings, no wildcard, and the `:pull_request` / `:ref:` suffixes stay
+  # exactly as reasoned above.
+  #
+  # The ids come from the workflow context (`github.repository_owner_id`,
+  # `github.repository_id`), so a fork gets its own without editing this file.
+  # The defaults are this repository's, so a human-run plan matches CI's.
+  # -------------------------------------------------------------------------
+  sub_prefixes = compact([
+    "repo:${var.github_repo}",
+    var.github_owner_id != "" && var.github_repository_id != "" ? format(
+      "repo:%s@%s/%s@%s",
+      split("/", var.github_repo)[0], var.github_owner_id,
+      split("/", var.github_repo)[1], var.github_repository_id,
+    ) : "",
+  ])
+
   deploy_subject_claims = length(var.github_deploy_subject_claims) > 0 ? var.github_deploy_subject_claims : [
-    "repo:${var.github_repo}:ref:refs/heads/${var.github_default_branch}",
+    for prefix in local.sub_prefixes : "${prefix}:ref:refs/heads/${var.github_default_branch}"
   ]
 
-  plan_subject_claims = length(var.github_plan_subject_claims) > 0 ? var.github_plan_subject_claims : [
-    "repo:${var.github_repo}:pull_request",
-    "repo:${var.github_repo}:ref:refs/heads/${var.github_default_branch}",
-  ]
+  plan_subject_claims = length(var.github_plan_subject_claims) > 0 ? var.github_plan_subject_claims : flatten([
+    for prefix in local.sub_prefixes : [
+      "${prefix}:pull_request",
+      "${prefix}:ref:refs/heads/${var.github_default_branch}",
+    ]
+  ])
 
   state_bucket_name     = var.state_bucket_name != "" ? var.state_bucket_name : "${var.name_prefix}-tfstate-${local.account_id}"
   state_lock_table_name = var.state_lock_table_name != "" ? var.state_lock_table_name : "${var.name_prefix}-tfstate-lock"
