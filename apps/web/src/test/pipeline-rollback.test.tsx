@@ -7,17 +7,16 @@
  * and asserted the board went back. That is the whole requirement.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { HttpResponse, http } from 'msw';
-import { server } from '../mocks/node';
 import { renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { MoveFailure, boardKey, fetchBoard, useMoveStage, useReorder } from '../lib/board-query';
 import { SessionProvider } from '../lib/session';
 import { locate } from '../lib/board-state';
-import type { Board } from '../mocks/pipeline-contract';
-import { ENG204_JOB_ID, STAGE_IDS } from '../mocks/pipeline-fixtures';
-import { resetPipelineState } from '../mocks/pipeline-handlers';
+import type { Board } from '../lib/pipeline-contract';
+import { route } from './fetch-stub';
+import { ENG204_JOB_ID, STAGE_IDS } from './pipeline-fixtures';
+import { resetPipelineState } from './pipeline-handlers';
 
 const wrapper = (client: QueryClient) =>
   function Wrapper({ children }: { children: ReactNode }) {
@@ -103,9 +102,10 @@ describe('a failed reorder rolls back too', () => {
     // A REAL card whose write fails at the network. An unknown id was the first
     // attempt and proved nothing: `moveCardTo` cannot find it, so no optimistic
     // change happened and the test passed with the rollback deleted.
-    server.use(
-      http.patch('*/v1/applications/:id/rank', () => HttpResponse.error()),
-    );
+    route((url, init) => {
+      if ((init?.method ?? 'GET') === 'PATCH' && url.pathname.endsWith('/rank')) throw new TypeError('Failed to fetch');
+      return undefined;
+    });
 
     const { result } = renderHook(() => useReorder(ENG204_JOB_ID, undefined), { wrapper: wrapper(client) });
 

@@ -21,3 +21,6 @@ plan.json
 # opt in. See infra/terraform/stacks/iam/README.md.
 backend.tf
 next-env.d.ts
+
+# Playwright MCP scratch output (snapshots, console logs)
+.playwright-mcp/

@@ -239,6 +239,7 @@
     "notificationDotSize": { "$value": "6px", "$description": "unread dot on the topbar bell" },
     "stageDotSize": { "$value": "6px", "$description": "stage-hue square in the kanban column header (DESIGN_SYSTEM §4). Same 6px as the notification dot today and deliberately separate from it — they are unrelated elements, and one moving should not move the other" },
     "searchFieldWidth": { "$value": "290px",  "$description": "measured - topbar search field" },
+    "modalMaxHeight":  { "$value": "85vh",    "$description": "a modal never fills the viewport — the canvas behind it is what makes it read as a layer" },
     "filterFieldWidth": { "$value": "205px",  "$description": "measured on 03-pipeline-kanban@2x - the 'Filter candidates' field. Border box x=502..913 at 2x, so 251..456.5 CSS; its left edge sits on the board's own left edge" },
     "signIn": {
       "_note": "Measured on 01-sign-in@2x.png at 1440 CSS. The split is 747 hero / 693 form.",

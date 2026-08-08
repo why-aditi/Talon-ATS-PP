@@ -23,6 +23,12 @@ function Icon({ className, children }: IconProps & { children: React.ReactNode }
   );
 }
 
+export const CheckIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M3.25 8.5 6.4 11.65 12.75 5.3" />
+  </Icon>
+);
+
 export const BriefcaseIcon = (p: IconProps) => (
   <Icon {...p}>
     <rect x="1.75" y="4.75" width="12.5" height="8.5" rx="1.5" />

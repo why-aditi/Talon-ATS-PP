@@ -8,8 +8,8 @@ import axe from 'axe-core';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { PipelineBoard } from '../components/pipeline-board';
 import { SessionProvider } from '../lib/session';
-import { ENG204_JOB_ID } from '../mocks/pipeline-fixtures';
-import { resetPipelineState } from '../mocks/pipeline-handlers';
+import { ENG204_JOB_ID } from './pipeline-fixtures';
+import { resetPipelineState } from './pipeline-handlers';
 import { pathname, searchParams } from './setup';
 
 function renderBoard(state?: string) {
