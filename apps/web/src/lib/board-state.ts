@@ -1,6 +1,6 @@
 import type { KeyboardCoordinateGetter } from '@dnd-kit/core';
 import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
-import type { ApplicationCard, BoardColumn } from '../mocks/pipeline-contract';
+import type { ApplicationCard, BoardColumn } from './pipeline-contract';
 
 export type Located = { columnIndex: number; cardIndex: number; card: ApplicationCard; column: BoardColumn };
 
@@ -57,7 +57,7 @@ export function moveCardTo(
  * array on each side and the optimistic position would drift from the confirmed one by
  * one row on every same-column move downward.
  *
- * This is deliberately duplicated in `mocks/pipeline-handlers.ts` rather than shared:
+ * This is deliberately duplicated in `test/pipeline-handlers.ts` rather than shared:
  * one is the client's guess and one is the server's decision, and the real server will
  * own its own copy in another language of the stack. They have to agree, which is what
  * the tests check — they do not have to be the same function.

@@ -7,7 +7,7 @@ import {
   SOURCE_LABELS,
   STATUS_LABELS,
   type ApplicationCard,
-} from '../mocks/pipeline-contract';
+} from '../lib/pipeline-contract';
 import { GripIcon } from './icons';
 import { Avatar, cx } from './ui';
 

@@ -17,8 +17,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { PipelineBoard } from '../components/pipeline-board';
 import { boardCoordinateGetter, moveCardTo, neighboursFor, locate } from '../lib/board-state';
 import { SessionProvider } from '../lib/session';
-import { ENG204_JOB_ID, STAGE_IDS, eng204Board } from '../mocks/pipeline-fixtures';
-import { resetPipelineState } from '../mocks/pipeline-handlers';
+import { ENG204_JOB_ID, STAGE_IDS, eng204Board } from './pipeline-fixtures';
+import { resetPipelineState } from './pipeline-handlers';
 import { pathname } from './setup';
 
 /* ── The coordinate getter ─────────────────────────────────────────────────── */

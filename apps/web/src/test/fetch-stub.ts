@@ -1,5 +1,6 @@
 import { ListJobsResponseSchema } from '@talon/contracts';
 import { vi } from 'vitest';
+import { pipelineRoute } from './pipeline-handlers';
 import { SEEDED_JOBS } from './seeded-jobs';
 
 /**
@@ -53,6 +54,12 @@ export function installFetchStub(): void {
     }
 
     if (url.pathname === '/v1/jobs') return seededJobs(url);
+
+    // The board endpoints, which hold state across a test and so cannot be a
+    // per-test registration. Consulted after the per-test routes so a case can
+    // still override one of them.
+    const board = await pipelineRoute(url, init);
+    if (board) return board;
 
     throw new Error(`Unhandled request in test: ${init?.method ?? 'GET'} ${url.pathname}`);
   });

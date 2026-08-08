@@ -14,7 +14,7 @@
  * A stub that accepted everything would have made the screen easier to build and
  * wrong in exactly the ways that matter.
  */
-import { HttpResponse, delay, http } from 'msw';
+import { json, type Route } from './fetch-stub';
 import {
   type ApplicationCard,
   type Board,
@@ -24,7 +24,7 @@ import {
   MoveStageBodySchema,
   PIPELINE_ERROR_TYPES,
   ReorderBodySchema,
-} from './pipeline-contract';
+} from '../lib/pipeline-contract';
 import { emptyBoard, eng204Board } from './pipeline-fixtures';
 
 type Scenario = 'empty' | 'error' | 'slow' | 'forbidden' | 'conflict-version' | 'conflict-stage';
@@ -80,40 +80,53 @@ function conflict(type: string, title: string, detail: string, current: Applicat
   // Validated like every other response: §4.1's whole claim is that a fixture cannot
   // drift from the shape the screen is built against, and an unvalidated error body is
   // exactly where that drift hides.
-  return HttpResponse.json(
-    ConflictProblemSchema.parse({ type, title, status: 409, detail, current, currentStageName }),
-    { status: 409, headers: { 'content-type': 'application/problem+json' } },
-  );
+  return json(ConflictProblemSchema.parse({ type, title, status: 409, detail, current, currentStageName }), 409);
 }
 
 function notFound(detail: string) {
-  return HttpResponse.json(
-    { type: 'urn:talon:error:not-found', title: 'Application not found', status: 404, detail },
-    { status: 404, headers: { 'content-type': 'application/problem+json' } },
-  );
+  return json({ type: 'urn:talon:error:not-found', title: 'Application not found', status: 404, detail }, 404);
 }
 
-export const pipelineHandlers = [
-  http.get('*/v1/jobs/:jobId/board', async ({ request }) => {
+/*
+  Path matching, previously msw's job. The patterns are anchored on the full
+  pathname rather than left as `*`-prefixed globs, so `/v1/jobs` (the list) and
+  `/v1/jobs/:id/board` cannot answer for one another.
+*/
+const BOARD = /^\/v1\/jobs\/([^/]+)\/board$/;
+const STAGE = /^\/v1\/applications\/([^/]+)\/stage$/;
+const RANK = /^\/v1\/applications\/([^/]+)\/rank$/;
+
+/** The client always sends a JSON string body; msw used to parse this for us. */
+const body = (init: RequestInit | undefined): unknown =>
+  JSON.parse(typeof init?.body === 'string' ? init.body : '{}');
+
+/**
+ * One route rather than three handlers, because the fetch stub takes a single
+ * function per registration. `undefined` means "not mine" and the stub moves on.
+ */
+export const pipelineRoute: Route = async (url, init) => {
+  const method = (init?.method ?? 'GET').toUpperCase();
+
+  if (method === 'GET' && BOARD.test(url.pathname)) {
     // An empty `?_scenario=` is the same as no scenario at all. Treating '' as its own
     // key made a bare probe URL look like a scenario change and silently rebuild the
     // board mid-session.
-    const scenario = (new URL(request.url).searchParams.get('_scenario') || null) as Scenario | null;
+    const scenario = (url.searchParams.get('_scenario') || null) as Scenario | null;
 
     if (scenario === 'error') {
-      return HttpResponse.json(
+      return json(
         {
           type: 'urn:talon:error:internal',
           title: 'The pipeline could not be loaded',
           status: 500,
           detail: 'The pipeline service did not respond.',
         },
-        { status: 500, headers: { 'content-type': 'application/problem+json' } },
+        500,
       );
     }
 
     // Holds the loading state open so it can be screenshotted and axe-checked.
-    if (scenario === 'slow') await delay('infinite');
+    if (scenario === 'slow') await new Promise(() => {});
 
     const scenarioChanged = scenario !== servedScenario;
     if (scenarioChanged) {
@@ -146,15 +159,16 @@ export const pipelineHandlers = [
 
     // The mock validates its own response against the contract, so a fixture can never
     // drift out of the shape the screen is built against.
-    return HttpResponse.json(BoardSchema.parse(response));
-  }),
+    return json(BoardSchema.parse(response));
+  }
 
-  /**
+  /*
    * Stage move. Bumps `version`, resets `daysInStage`, and is the ONLY write that does.
    */
-  http.patch('*/v1/applications/:id/stage', async ({ request, params }) => {
-    const body = MoveStageBodySchema.parse(await request.json());
-    const found = findCard(params['id'] as string);
+  const stage = method === 'PATCH' ? STAGE.exec(url.pathname) : null;
+  if (stage) {
+    const move = MoveStageBodySchema.parse(body(init));
+    const found = findCard(stage[1] as string);
     if (!found) return notFound('That application is no longer on this board.');
     const { column: from, index, card } = found;
 
@@ -183,7 +197,7 @@ export const pipelineHandlers = [
     // Checked BEFORE the version, and answered regardless of it. Silently re-applying
     // a stage change when someone else has already moved the card corrupts the
     // append-only transition log, which is a worse outcome than a stale version.
-    if (body.fromStageId !== from.stageId) {
+    if (move.fromStageId !== from.stageId) {
       return conflict(
         PIPELINE_ERROR_TYPES.STAGE_MOVED,
         `${card.name} has already moved`,
@@ -193,7 +207,7 @@ export const pipelineHandlers = [
       );
     }
 
-    if (body.version !== card.version) {
+    if (move.version !== card.version) {
       return conflict(
         PIPELINE_ERROR_TYPES.STAGE_VERSION_CONFLICT,
         `${card.name} has changed`,
@@ -203,7 +217,7 @@ export const pipelineHandlers = [
       );
     }
 
-    const to = board.columns.find((c) => c.stageId === body.toStageId);
+    const to = board.columns.find((c) => c.stageId === move.toStageId);
     if (!to) return notFound('That stage is not on this board.');
 
     from.cards.splice(index, 1);
@@ -215,29 +229,32 @@ export const pipelineHandlers = [
       daysInStage: 0,
       status: to.canonical === 'hired' ? 'hired' : 'active',
     };
-    to.cards.splice(insertionIndex(to.cards, body.beforeId, body.afterId), 0, moved);
+    to.cards.splice(insertionIndex(to.cards, move.beforeId, move.afterId), 0, moved);
     syncCounts();
 
     // Writes return the full updated resource including its new version (CLAUDE.md §9).
-    return HttpResponse.json(ApplicationCardSchema.parse(moved));
-  }),
+    return json(ApplicationCardSchema.parse(moved));
+  }
 
-  /**
+  /*
    * Rank-only reorder. Last-write-wins, no version in, no version out.
    *
    * The absence of a version bump here is non-negotiable #18. Bumping it would make
    * user A's reorder invalidate user B's in-flight stage move on an unrelated card —
    * a 409 with no real conflict behind it, which reads as a race and isn't.
    */
-  http.patch('*/v1/applications/:id/rank', async ({ request, params }) => {
-    const body = ReorderBodySchema.parse(await request.json());
-    const found = findCard(params['id'] as string);
+  const rank = method === 'PATCH' ? RANK.exec(url.pathname) : null;
+  if (rank) {
+    const reorder = ReorderBodySchema.parse(body(init));
+    const found = findCard(rank[1] as string);
     if (!found) return notFound('That application is no longer on this board.');
     const { column, index, card } = found;
 
     column.cards.splice(index, 1);
-    column.cards.splice(insertionIndex(column.cards, body.beforeId, body.afterId), 0, card);
+    column.cards.splice(insertionIndex(column.cards, reorder.beforeId, reorder.afterId), 0, card);
 
-    return HttpResponse.json(ApplicationCardSchema.parse(card));
-  }),
-];
+    return json(ApplicationCardSchema.parse(card));
+  }
+
+  return undefined;
+};

@@ -5,7 +5,7 @@ import {
   PIPELINE_ERROR_TYPES,
   type Board,
   type ApplicationCard,
-} from '../mocks/pipeline-contract';
+} from './pipeline-contract';
 import { moveCardTo } from './board-state';
 import { useSession } from './session';
 
