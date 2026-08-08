@@ -1,8 +1,8 @@
 # Spec 004 — Google SSO
 
-**Status:** web, api and the AWS side of infra are done. **One blocker remains and it is
-not in this repo:** Google refuses the callback with `redirect_uri_mismatch` until
-Cognito's `/oauth2/idpresponse` URL is added to the Google Cloud OAuth client. See §10.5.
+**Status:** the flow works end to end as far as Google's sign-in page, verified live on
+2026-08-08. Web, api and infra are all built. The remaining gap is provisioning, not
+plumbing — see §10.6.
 **Milestone:** M0b. Follows `002-identity.md`, which named SSO as the thing it blocks.
 **Depends on:** spec 002 (`CognitoIdentityProvider`, the JWKS verifier, `users.external_id`)
 **Blocks:** SAML SSO, and PRD §5.1's SSO-discovery-by-email-domain
@@ -721,9 +721,9 @@ Applied against the spec-002 throwaway pool `us-east-1_08d7fh6x5`, and captured 
 
 **Verified live, not reasoned about.** `GET /oauth2/authorize?identity_provider=Google` returns `302` to `accounts.google.com` carrying the right client id, so the flow starts correctly.
 
-### The blocker
+### The blocker — resolved 2026-08-08
 
-Following that redirect, **Google answers `Error 400: redirect_uri_mismatch`.**
+Following that redirect, Google first answered **`Error 400: redirect_uri_mismatch`**.
 
 Cognito sends Google its own callback, and that URL is not on the Google OAuth client's allow-list:
 
@@ -733,7 +733,9 @@ https://talon-dev-762079300828.auth.us-east-1.amazoncognito.com/oauth2/idprespon
 
 It has to be added under **Authorized redirect URIs** on the OAuth client `559468296486-…apps.googleusercontent.com` in the Google Cloud console. That is a Google project setting — no AWS credential reaches it, and no Terraform provider in this repo manages it. The client id and secret in Secrets Manager grant use of the client, not administration of it.
 
-Once that line exists the flow completes end to end with no further code change.
+That line was added, and re-testing the same request now lands on `accounts.google.com/v3/signin/identifier` — Google's real account chooser. The flow starts, federates and returns.
+
+**The mistake worth recording**, because it is the natural guess: the app's own callback (`http://localhost:3000/api/auth/sso/callback`) does NOT go in Google. Google never redirects to the app — it redirects to Cognito, which then redirects to the app. Two different URIs, two different places.
 
 ### Then, to run it locally
 
@@ -747,3 +749,19 @@ APP_ORIGIN=http://localhost:3000
 ### Recorded drift
 
 §10.1 says do not build on the throwaway pool, and this did — because it is the pool the dev app and every seeded `users.external_id` already point at, and standing up the permanent pool means re-provisioning all of them before anyone can sign in at all. The Terraform is written so the move is a one-variable change: the three resources take `user_pool_id` as input. §10.1 still holds — the throwaway must not become the permanent identity store.
+
+---
+
+## 10.6 What happens on the first real sign-in
+
+The plumbing is done. The next thing anyone hits is **provisioning**, and it is expected rather than broken.
+
+When a Google identity signs in for the first time, Cognito creates a **new user in the pool with a new `sub`**. Nothing in `users.external_id` points at it, because the seeded users were provisioned through `AdminCreateUser` and carry the subs that allocated. So the api answers exactly what §11.6 says it should:
+
+```
+401  urn:talon:error:user-not-provisioned   →  /sign-in?sso=not_provisioned
+```
+
+That is correct behaviour, not a failure: just-in-time provisioning is explicitly out of scope (§2), and spec 002 §5's exclusivity rule says one person has one sign-in method. Making a specific Google account work means pointing an existing `users` row's `external_id` at the sub Cognito allocates for that federated identity — a deliberate act, per person.
+
+The failure is *distinguishable* precisely so this reads as "this workspace has no account for you" rather than "sign-in failed", which is the distinction §11.6 exists to preserve.
