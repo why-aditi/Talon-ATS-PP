@@ -14,6 +14,9 @@ tfplan.binary
 plan.json
 *.tfstate
 *.tfstate.*
+# simulate.py writes its request here because ReadOnlyAccess is too long to pass
+# as a command-line flag on Windows. Removed on a clean run, left behind on a crash.
+infra/terraform/stacks/iam/simulate/.request.json
 
 # Backend configuration is per-operator and opt-in: the checked-in default is
 # local state, so `terraform init` works on a clean clone before the state bucket
