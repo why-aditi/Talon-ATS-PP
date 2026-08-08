@@ -15,7 +15,12 @@
  *     is seeded `outbound` and renders "Outbound". The enum is not widened for a pixel.
  *  3. `Hired` on David Kim is `application.status`, not a tag. It renders from status
  *     in terminal columns.
- *  4. "Starts Sep 1" is a reconstruction — the reference clips it at "Starts S…".
+ *  4. `nextAction` carries the bare verb the server derives from the canonical stage
+ *     (spec 004 §5) — "Call", not "Call Tue"; "Hired", not "Starts Sep 1". The
+ *     qualifier belongs to scheduling and offers, which do not exist. These were the
+ *     reference's own strings until the endpoint landed; keeping them would have left
+ *     the ui suite green against text the real screen can never render, which is
+ *     precisely the drift the migration existed to end.
  *
  * ⚠ FIXTURE-ONLY INVENTIONS, with no schema, seed or contract behind them:
  *    • `skills` — nothing stores candidate skills. Spec 003 OQ-2 files the real
@@ -29,7 +34,7 @@
  * chosen. All nine match the screen exactly: Tess red, Omar green, Jordan and Priya
  * amber, Elena and Ana violet, Marcus and David blue, Sofia green.
  */
-import type { Board, BoardColumn } from '../lib/pipeline-contract';
+import type { ApplicationCard, Board, BoardColumn } from '@talon/contracts';
 
 export const ENG204_JOB_ID = '0198f3a2-0001-7000-8000-000000000001';
 
@@ -101,9 +106,9 @@ function card(
   name: string,
   currentTitle: string,
   currentCompany: string,
-  rest: Pick<import('../lib/pipeline-contract').ApplicationCard, 'source' | 'skills' | 'daysInStage' | 'nextAction'> &
-    Partial<Pick<import('../lib/pipeline-contract').ApplicationCard, 'status' | 'scoreAvg'>>,
-): import('../lib/pipeline-contract').ApplicationCard {
+  rest: Pick<ApplicationCard, 'source' | 'daysInStage' | 'nextAction'> &
+    Partial<Pick<ApplicationCard, 'status'>>,
+): ApplicationCard {
   return {
     id: APPLICATION_IDS[who],
     candidateId: CANDIDATES[who],
@@ -111,7 +116,6 @@ function card(
     currentTitle,
     currentCompany,
     status: 'active',
-    scoreAvg: null,
     version: 1,
     ...rest,
   };
@@ -133,25 +137,21 @@ export function eng204Board(): Board {
       cards: [
         card('tess', 'Tess Bianchi', 'Frontend Engineer', 'Halo', {
           source: 'agency',
-          skills: [],
           daysInStage: 4,
           nextAction: 'Review',
         }),
         card('omar', 'Omar Haddad', 'Platform Engineer', 'Trellis', {
           source: 'careers_page',
-          skills: [],
           daysInStage: 3,
           nextAction: 'Review',
         }),
         card('jordan', 'Jordan Cole', 'Fullstack', 'Beacon', {
           source: 'careers_page',
-          skills: [],
           daysInStage: 2,
           nextAction: 'Review',
         }),
         card('priya', 'Priya Nair', 'SWE II', 'Loft', {
           source: 'referral',
-          skills: [],
           daysInStage: 1,
           nextAction: 'Review',
         }),
@@ -170,17 +170,15 @@ export function eng204Board(): Board {
         // 8d against a 5d SLA — the only stalled card on the board.
         card('elena', 'Elena Ruiz', 'Backend Engineer', 'Cove', {
           source: 'outbound',
-          skills: ['Go'],
           daysInStage: 8,
-          nextAction: 'Call Tue',
+          nextAction: 'Call',
         }),
         // 5d against a 5d SLA — NOT stalled. This card is the whole evidence for the
         // strict `>` threshold; changing its dwell silently changes the rule.
         card('marcus', 'Marcus Webb', 'SWE', 'Northwind', {
           source: 'outbound',
-          skills: ['TypeScript'],
           daysInStage: 5,
-          nextAction: 'Call Mon',
+          nextAction: 'Call',
         }),
       ],
     },
@@ -196,10 +194,8 @@ export function eng204Board(): Board {
       cards: [
         card('ana', 'Ana Petrova', 'Senior SWE', 'Meridian', {
           source: 'referral',
-          skills: ['React', 'Go'],
           daysInStage: 3,
-          nextAction: 'Loop Thu',
-          scoreAvg: 4.2,
+          nextAction: 'Loop',
         }),
       ],
     },
@@ -215,10 +211,8 @@ export function eng204Board(): Board {
       cards: [
         card('sofia', 'Sofia Lindqvist', 'Staff Eng', 'Polar', {
           source: 'outbound',
-          skills: ['Platform'],
           daysInStage: 1,
           nextAction: 'Offer out',
-          scoreAvg: 4.6,
         }),
       ],
     },
@@ -234,9 +228,8 @@ export function eng204Board(): Board {
       cards: [
         card('david', 'David Kim', 'Sr SWE', 'Argo', {
           source: 'referral',
-          skills: [],
           daysInStage: 0,
-          nextAction: 'Starts Sep 1',
+          nextAction: 'Hired',
           status: 'hired',
         }),
       ],

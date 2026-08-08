@@ -56,6 +56,18 @@ export const ERROR_TYPES = {
   VALIDATION_FAILED: 'urn:talon:error:validation-failed',
   /** Also returned for another tenant's resource — never 403 (spec 001 §6.4). */
   NOT_FOUND: 'urn:talon:error:not-found',
+  /**
+   * Board moves. Two 409s, deliberately distinct (ARCHITECTURE §6.1): the card
+   * changed under you, versus the card is no longer where you thought. The ui shows
+   * different copy for each and refetches differently, so collapsing them would lose
+   * the only signal that someone else moved it.
+   */
+  STAGE_VERSION_CONFLICT: 'urn:talon:error:stage-version-conflict',
+  /** Answered regardless of version — re-applying a stage change over someone else's
+   *  move corrupts the append-only transition log. */
+  STAGE_MOVED: 'urn:talon:error:stage-moved',
+  /** A move to a terminal stage with no reason (PRD §5.4). */
+  REASON_REQUIRED: 'urn:talon:error:reason-required',
   INTERNAL: 'urn:talon:error:internal',
 } as const;
 

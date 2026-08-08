@@ -6,6 +6,7 @@
  * because §7.2 writes the query string that way and URLs are conventionally
  * snake. The database is snake_case throughout; the repository maps.
  */
+import { CANONICAL_STAGES } from '@talon/domain';
 import { z } from 'zod';
 
 // Mirrors packages/db jobs.status and jobStages.canonical. Drizzle owns the
@@ -13,15 +14,11 @@ import { z } from 'zod';
 export const JobStatusSchema = z.enum(['draft', 'active', 'on_hold', 'closing', 'closed']);
 export type JobStatus = z.infer<typeof JobStatusSchema>;
 
-export const CanonicalStageSchema = z.enum([
-  'applied',
-  'screen',
-  'onsite',
-  'offer',
-  'hired',
-  'rejected',
-  'withdrawn',
-]);
+// Derived from the domain list, the way RoleSchema derives from ROLES (auth.ts). The
+// literals used to live here as a second copy — spec 001 open question 9 already flags
+// that nothing catches drift between the SQL check constraint, the Drizzle column and
+// this enum, and a third copy would have been one more place to drift from.
+export const CanonicalStageSchema = z.enum(CANONICAL_STAGES);
 export type CanonicalStage = z.infer<typeof CanonicalStageSchema>;
 
 // ---------------------------------------------------------------------------

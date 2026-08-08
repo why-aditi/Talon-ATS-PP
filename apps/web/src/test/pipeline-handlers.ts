@@ -20,11 +20,11 @@ import {
   type Board,
   BoardSchema,
   ApplicationCardSchema,
-  ConflictProblemSchema,
+  StageConflictSchema,
   MoveStageBodySchema,
-  PIPELINE_ERROR_TYPES,
+  ERROR_TYPES,
   ReorderBodySchema,
-} from '../lib/pipeline-contract';
+} from '@talon/contracts';
 import { emptyBoard, eng204Board } from './pipeline-fixtures';
 
 type Scenario = 'empty' | 'error' | 'slow' | 'forbidden' | 'conflict-version' | 'conflict-stage';
@@ -80,7 +80,7 @@ function conflict(type: string, title: string, detail: string, current: Applicat
   // Validated like every other response: §4.1's whole claim is that a fixture cannot
   // drift from the shape the screen is built against, and an unvalidated error body is
   // exactly where that drift hides.
-  return json(ConflictProblemSchema.parse({ type, title, status: 409, detail, current, currentStageName }), 409);
+  return json(StageConflictSchema.parse({ type, title, status: 409, detail, current, currentStageName }), 409);
 }
 
 function notFound(detail: string) {
@@ -141,21 +141,12 @@ export const pipelineRoute: Route = async (url, init) => {
       armedConflict = scenario === 'conflict-version' || scenario === 'conflict-stage' ? scenario : null;
     }
 
-    // Out of scorecard scope: the field is OMITTED, not nulled, so a caller who cannot
-    // read scorecards sees a card indistinguishable from an unscored one and the board
-    // never leaks "there is a score you may not see" (spec 003 §7, non-negotiable #3).
-    // Projected onto the response rather than into `board` — a view of the state, not
-    // a mutation of it, so switching scenarios does not permanently lose the scores.
-    const response =
-      scenario === 'forbidden'
-        ? {
-            ...board,
-            columns: board.columns.map((column) => ({
-              ...column,
-              cards: column.cards.map(({ scoreAvg: _scoreAvg, ...card }) => card),
-            })),
-          }
-        : board;
+    // `forbidden` no longer changes the payload: the only scope-gated field on this
+    // screen was `scoreAvg`, and it left with the scorecards table it never had. The
+    // scenario is kept because scorecard blindness returns with them (non-negotiable
+    // #3), and the state it exercises — a card with nothing to hide — is the same one
+    // every card is in today.
+    const response = board;
 
     // The mock validates its own response against the contract, so a fixture can never
     // drift out of the shape the screen is built against.
@@ -175,7 +166,7 @@ export const pipelineRoute: Route = async (url, init) => {
     if (armedConflict === 'conflict-version') {
       armedConflict = null;
       return conflict(
-        PIPELINE_ERROR_TYPES.STAGE_VERSION_CONFLICT,
+        ERROR_TYPES.STAGE_VERSION_CONFLICT,
         `${card.name} has changed`,
         `${card.name} was updated while you were dragging.`,
         { ...card, version: card.version + 1 },
@@ -186,7 +177,7 @@ export const pipelineRoute: Route = async (url, init) => {
       armedConflict = null;
       const elsewhere = board.columns.find((c) => c.stageId !== from.stageId && !c.isTerminal);
       return conflict(
-        PIPELINE_ERROR_TYPES.STAGE_MOVED,
+        ERROR_TYPES.STAGE_MOVED,
         `${card.name} has already moved`,
         `${card.name} is now in ${elsewhere?.name ?? 'another stage'}.`,
         card,
@@ -199,7 +190,7 @@ export const pipelineRoute: Route = async (url, init) => {
     // append-only transition log, which is a worse outcome than a stale version.
     if (move.fromStageId !== from.stageId) {
       return conflict(
-        PIPELINE_ERROR_TYPES.STAGE_MOVED,
+        ERROR_TYPES.STAGE_MOVED,
         `${card.name} has already moved`,
         `${card.name} is now in ${from.name}.`,
         card,
@@ -209,7 +200,7 @@ export const pipelineRoute: Route = async (url, init) => {
 
     if (move.version !== card.version) {
       return conflict(
-        PIPELINE_ERROR_TYPES.STAGE_VERSION_CONFLICT,
+        ERROR_TYPES.STAGE_VERSION_CONFLICT,
         `${card.name} has changed`,
         `${card.name} was updated while you were dragging.`,
         card,

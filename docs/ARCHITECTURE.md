@@ -390,8 +390,14 @@ The API sets `app.tenant_id` and `app.user_id` on every checked-out connection i
 
 ```
 PATCH /v1/applications/:id/stage
-{ toStageId, beforeId, afterId, version, reason? }
+{ fromStageId, toStageId, beforeId, afterId, version, reason? }
 ```
+
+`fromStageId` is the stage the CLIENT believed the card was in, and it is required. An
+earlier version of this block omitted it while the prose above required it — and
+without it the second 409 below is undetectable, because the server cannot know what
+the client believed and "someone else already moved it" collapses into the version
+check. Corrected 2026-08-08 (spec 004 §6.1).
 
 - Version mismatch → `409` with current state; the client rolls back its optimistic update and refetches that column.
 - `from_stage_id` mismatch (someone else already moved it) → `409` regardless of version, because silently re-applying a stage change corrupts the transition log.

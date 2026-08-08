@@ -6,6 +6,8 @@
     "node": ">=22"
   },
   "scripts": {
+    "dev": "turbo run dev",
+    "dev:api": "turbo run dev --filter=api",
     "build": "turbo run build",
     "test": "turbo run test",
     "test:routes": "pnpm --filter api test:routes",
