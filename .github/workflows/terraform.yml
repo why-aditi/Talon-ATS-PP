@@ -56,7 +56,7 @@ jobs:
       - name: tflint
         run: |
           set -euo pipefail
-          for stack in infra/terraform/stacks/*/; do
+          for stack in infra/terraform/stacks/*/ infra/terraform/global/state/; do
             echo "::group::tflint $stack"
             tflint --chdir="$stack" --init
             tflint --chdir="$stack" --minimum-failure-severity=error
@@ -80,7 +80,7 @@ jobs:
       - name: terraform validate
         run: |
           set -euo pipefail
-          for stack in infra/terraform/stacks/*/; do
+          for stack in infra/terraform/stacks/*/ infra/terraform/global/state/; do
             echo "::group::validate $stack"
             terraform -chdir="$stack" init -input=false -backend=false
             terraform -chdir="$stack" validate -no-color

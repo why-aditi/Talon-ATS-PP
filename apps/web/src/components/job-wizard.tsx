@@ -294,6 +294,7 @@ function Pipeline({
   errors,
   templates,
   unavailable,
+  failed,
   isPending,
 }: {
   state: WizardState;
@@ -302,6 +303,7 @@ function Pipeline({
   errors: Errors;
   templates: StageTemplate[];
   unavailable: boolean;
+  failed: boolean;
   isPending: boolean;
 }) {
   const chosen = templates.find((t) => t.id === state.stageTemplateId);
@@ -312,6 +314,22 @@ function Pipeline({
         {[0, 1].map((i) => (
           <div key={i} className="mb-3 h-16 animate-pulse rounded-md bg-bg-canvas" />
         ))}
+      </div>
+    );
+  }
+
+  /* Before the empty state, not after: a failed read leaves an empty list too, and
+     "ask an admin to add one" sends someone to chase a template that already
+     exists. Ordering these the other way is what made an expired token look like
+     an unconfigured tenant. */
+  if (failed) {
+    return (
+      <div role="alert">
+        <p className="text-body-strong text-text-primary">Couldn’t load pipelines.</p>
+        <p className="mt-1 text-body text-text-secondary">
+          The request for <code className="font-mono text-code">GET /v1/stage-templates</code> failed. This is not the
+          same as having none — reload, and sign in again if that doesn’t help.
+        </p>
       </div>
     );
   }
@@ -371,13 +389,16 @@ function Pipeline({
                 <div className="mt-2 grid grid-cols-2 gap-3">
                   {template.stages.map((stage, position) => (
                     <label key={stage.name} className="flex items-center gap-2 text-body text-text-secondary">
-                      <span className="flex-1 truncate">{stage.name}</span>
+                      {/* Fixed width, not flex-1: `truncate` zeroes the span's
+                          min-width, so against a w-full input it collapses to
+                          nothing and the stage name vanishes. */}
+                      <span className="w-24 shrink-0 truncate">{stage.name}</span>
                       <input
                         inputMode="numeric"
                         aria-label={`${stage.name} SLA in days`}
                         value={state.slaOverrides[position] ?? (stage.slaDays?.toString() ?? '')}
                         onChange={(e) => setSla(position, e.target.value)}
-                        className={cx(FIELD, 'border-border-default w-16 tabular-nums')}
+                        className={cx(FIELD, 'border-border-default tabular-nums')}
                       />
                     </label>
                   ))}
@@ -716,6 +737,7 @@ export function JobWizard({
             errors={errors}
             templates={templates}
             unavailable={templatesProp === undefined && templateQuery.unavailable}
+            failed={templatesProp === undefined && templateQuery.failed}
             isPending={templatesProp === undefined && templateQuery.isPending}
           />
         ) : null}

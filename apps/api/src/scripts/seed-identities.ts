@@ -29,6 +29,7 @@
  * one sign-in method, and re-provisioning is how it changes.
  */
 import postgres from 'postgres';
+import { SEED_TENANT_IDS } from '@talon/db/seed';
 import { loadConfig } from '../config.js';
 import { buildContainer } from '../container.js';
 
@@ -65,6 +66,7 @@ function resolvePassword(ownerUrl: string): string {
 
 interface SeededUser {
   id: string;
+  tenantId: string;
   email: string;
   name: string;
   role: string;
@@ -83,8 +85,16 @@ async function main(): Promise<void> {
   const container = buildContainer(config);
 
   try {
-    const users = await sql<SeededUser[]>`
-      select id, email, name, role from users order by email`;
+    const users: SeededUser[] = [];
+    const tenantIds = Object.values(SEED_TENANT_IDS);
+    for (const tenantId of tenantIds) {
+      users.push(...(await sql.begin(async (tx) => {
+        await tx`select set_config('app.tenant_id', ${tenantId}, true)`;
+        return tx<SeededUser[]>`
+          select id, tenant_id as "tenantId", email, name, role from users
+          where tenant_id = ${tenantId}::uuid order by email`;
+      })));
+    }
     // Zero is never "nothing to do": it means unmigrated, unseeded, the wrong
     // database, or — the one that will bite on Aurora — an owner role without
     // BYPASSRLS, which sees nothing through `force row level security`.
@@ -100,18 +110,17 @@ async function main(): Promise<void> {
       // without it Cognito authenticates the person and `auth_user_by_sub`
       // resolves nobody, so they sign in and 401 on the very next request.
       //
-      // Same `force row level security` exposure as the select above, and
-      // QUIETER: an owner without BYPASSRLS matches zero rows here, and an
-      // UPDATE that matches nothing is a success that changed nothing — the
-      // line below would then print a sub that was never stored. The select is
-      // the guard for both (it throws on zero users), which is why this stays a
-      // note and not a second check. Migration 0006 exempts the sign-in
-      // definers from that rule and deliberately not this script: a policy wide
-      // enough for an operator script to write `users` past the tenant policy
-      // is wider than anything the request path needs. Making this run on
-      // Aurora means setting `app.tenant_id` per row here, which is a change to
-      // this file when someone runs it there — not a change to the schema.
-      await sql`update users set external_id = ${sub} where id = ${user.id}::uuid`;
+      // FORCE RLS still applies to an RDS migration owner. Scope each write to
+      // the seeded tenant explicitly; no BYPASSRLS role or broad definer writer
+      // is needed merely to connect a Cognito subject to its own tenant row.
+      const updated = await sql.begin(async (tx) => {
+        await tx`select set_config('app.tenant_id', ${user.tenantId}, true)`;
+        return tx`update users set external_id = ${sub}
+          where id = ${user.id}::uuid returning id`;
+      });
+      if (updated.length !== 1) {
+        throw new Error(`identity update for ${user.email} matched ${updated.length} rows`);
+      }
       console.log(`  ${user.email.padEnd(22)} ${user.role.padEnd(15)} sub=${sub}`);
     }
     // Echoed only when it is the published default. An operator-supplied

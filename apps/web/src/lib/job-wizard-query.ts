@@ -45,6 +45,14 @@ export interface Unbuilt<T> {
   data: T[];
   /** True when the route 404s — the step says which endpoint it is waiting for. */
   unavailable: boolean;
+  /**
+   * True when the read failed for any other reason — 401, 500, offline. Without
+   * this the step cannot tell a broken read from an empty tenant: a thrown query
+   * leaves `data` undefined and `isPending` false, which is byte-for-byte the
+   * shape of a healthy tenant with no templates. That is how an expired token
+   * came to render as "No stage templates yet. Ask an admin to add one."
+   */
+  failed: boolean;
   isPending: boolean;
 }
 
@@ -81,7 +89,12 @@ export function useStageTemplates(): Unbuilt<StageTemplate> {
     // sit on a spinner for three round trips before showing its empty state.
     retry: false,
   });
-  return { data: query.data ?? [], unavailable: query.data === null, isPending: query.isPending };
+  return {
+    data: query.data ?? [],
+    unavailable: query.data === null,
+    failed: query.isError,
+    isPending: query.isPending,
+  };
 }
 
 /**
@@ -97,7 +110,12 @@ export function useAssignableUsers(role: 'recruiter' | 'hiring_manager'): Unbuil
     enabled: ready && session !== null,
     retry: false,
   });
-  return { data: query.data ?? [], unavailable: query.data === null, isPending: query.isPending };
+  return {
+    data: query.data ?? [],
+    unavailable: query.data === null,
+    failed: query.isError,
+    isPending: query.isPending,
+  };
 }
 
 /**
