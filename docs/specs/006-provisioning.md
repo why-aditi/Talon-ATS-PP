@@ -1,6 +1,14 @@
 # Spec 006 — Single-command provisioning (`up.sh` / `down.sh`)
 
-**Status:** not started — written from the approved plan of 2026-08-08.
+**Status:** step 1 done (this PR); steps 2–5 not started. Written from the
+approved plan of 2026-08-08.
+
+Step 1 closed §4.3 in full: the pool is under Terraform, the Google redirect URI
+is registered, `talon-throwaway-spec002` is deleted, and
+`vars.AWS_DEPLOY_ROLE_ARN` is set to the **deploy** role
+(`arn:aws:iam::762079300828:role/talon-dev-github-deploy`) — so a merge to `main`
+now applies `stacks/persistent`. Both stacks plan clean, so the first such merge
+applies nothing.
 
 ## 1. Context and goal
 
