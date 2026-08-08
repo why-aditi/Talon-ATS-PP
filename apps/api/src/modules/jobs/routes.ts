@@ -8,10 +8,12 @@
  * absence invisible on the next route someone adds (CLAUDE.md §4).
  */
 import {
+  CreateJobRequestSchema,
   GetJobParamsSchema,
   JobSchema,
   ListJobsQuerySchema,
   ListJobsResponseSchema,
+  ListStageTemplatesResponseSchema,
 } from '@talon/contracts';
 import type { FastifyPluginAsync } from 'fastify';
 import { requireTx, requireUser, services } from '../../context.js';
@@ -39,5 +41,24 @@ export const jobsRoutes: FastifyPluginAsync = async (app) => {
     // anything the schema does not declare, so a field added to a record later
     // cannot leak through this route without a contract change.
     return reply.send(JobSchema.parse(job));
+  });
+
+  /* ── spec 005 ──────────────────────────────────────────────────────────── */
+
+  app.get('/stage-templates', async (request, reply) => {
+    const list = await services(request).jobsService.listStageTemplates(requireTx(request));
+    return reply.send(ListStageTemplatesResponseSchema.parse(list));
+  });
+
+  app.post('/jobs', async (request, reply) => {
+    const body = parseOrThrow(CreateJobRequestSchema, request.body, 'body');
+    const job = await services(request).jobsService.createJob(
+      requireTx(request),
+      requireUser(request),
+      body,
+    );
+    // 201 with a Location header (CLAUDE.md §9): writes return the full
+    // resource, and the header is what makes it addressable without parsing it.
+    return reply.code(201).header('location', `/v1/jobs/${job.id}`).send(JobSchema.parse(job));
   });
 };

@@ -158,11 +158,12 @@ describe('empty states', () => {
     // The empty state carries no action of its own. "+ New job" lives in the shell
     // and the jobs header, and both open one modal (spec 003, one path per action) —
     // a third trigger here would be a second path to the same intent.
-    expect(within(placeholder).queryByRole('button', { name: '+ New job' })).not.toBeInTheDocument();
+    expect(within(placeholder).queryByRole('link', { name: '+ New job' })).not.toBeInTheDocument();
     expect(screen.getByText(/Jobs will appear here/)).toBeInTheDocument();
-    // And it does not send the reader somewhere: every "+ New job" on screen works.
-    for (const trigger of screen.getAllByRole('button', { name: '+ New job' })) {
-      expect(trigger).toBeEnabled();
+    // And it does not send the reader somewhere dead: every "+ New job" on
+    // screen goes to the wizard, which exists and can submit.
+    for (const trigger of screen.getAllByRole('link', { name: '+ New job' })) {
+      expect(trigger).toHaveAttribute('href', '/jobs/new');
     }
     await expectNoAxeViolations(container);
   });

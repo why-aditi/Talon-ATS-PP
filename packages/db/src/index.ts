@@ -18,3 +18,14 @@ export function createDb(connectionString: string, options: CreateDbOptions = {}
   const db: Db = drizzle(client, { schema });
   return { db, client };
 }
+
+/**
+ * Primary keys, for the repositories that write rows.
+ *
+ * UUIDv7 is not interchangeable with v4 here. `id` carries creation order —
+ * `jobs` pages on `first_value(id) over (partition by department order by id)`,
+ * and `applications` breaks board-rank ties on `id` — so a random uuid would
+ * shuffle the jobs list and the kanban. Every table's `id()` uses this; a raw
+ * INSERT in a repository must too, because the column has no database default.
+ */
+export { uuidv7 as newId } from 'uuidv7';

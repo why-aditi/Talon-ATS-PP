@@ -159,7 +159,6 @@ const JOB_PIPELINE = /^\/jobs\/[^/]+\/pipeline$/;
 function Sidebar() {
   const pathname = usePathname();
   const activeHref = JOB_PIPELINE.test(pathname) ? '/pipeline' : pathname;
-  const openJobTemplate = useJobTemplate();
   const { session } = useSession();
 
   // A tenant-wide count, so it is deliberately the UNFILTERED query. React Query
@@ -207,13 +206,16 @@ function Sidebar() {
         ))}
 
         {/*
-          A button, not a Link: it opens the template modal rather than navigating.
-          /jobs/new is the wizard's route (screen 09) and does not exist yet, so the
-          link this replaces was a 404 — see spec 003.
+          A Link now, not a button. This opened the JD template modal while
+          /jobs/new did not exist; the wizard is real and POST /v1/jobs answers,
+          so "+ New job" means what it says.
+
+          The template modal is still reachable — it is a copy-the-JD-text tool,
+          not a creation path, and conflating the two put two intents behind one
+          control (#5).
         */}
-        <button
-          type="button"
-          onClick={openJobTemplate}
+        <Link
+          href="/jobs/new"
           className={cx(
             'mt-6 flex h-[var(--control-height-md)] w-full items-center justify-center rounded-md',
             'border border-dashed border-border-strong text-body text-text-secondary',
@@ -221,7 +223,7 @@ function Sidebar() {
           )}
         >
           + New job
-        </button>
+        </Link>
       </nav>
 
       {/*

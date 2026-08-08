@@ -626,7 +626,7 @@ extents and halving. **The design is 1440×900 CSS at 2×.**
 | Department | chip group: Engineering, Design, People, Sales | single-select |
 | Location | chip group: Remote (US), Remote (EU), SF / Hybrid, New York, London | single-select |
 | Band min (k) / Band max (k) | two numeric inputs, 286 each | **k**, converted per §4.1 |
-| **Currency** | **select, beside the band** | **Not on the reference.** Added under §11 open question 1 |
+| **Currency** | **select, beside the band** | **Not on the reference.** §15 OQ1, answered: beside the band |
 
 The chip groups are `role="radiogroup"` with `role="radio"` children, not
 buttons: they are single-select, arrow keys must move between them, and a button
@@ -641,6 +641,29 @@ for the first customer with a "Customer Success" department.
 **Currency** has **no default** and Continue is blocked until it is chosen *if a
 band was entered*. With no band, currency is not required and not shown as an
 error. This is the #9 rule expressed in the UI: the currency is never guessed.
+
+### 6.2a The band row, with currency
+
+The reference row is two 286px fields with a 21px gutter across the 593px content
+width. Currency joins them as a third control rather than as a prefix inside the
+minimum — a prefix reads as decoration, and a currency nobody consciously chose
+is exactly what #9 is about.
+
+```
+| Band min (k) | Band max (k) | Currency |
+|    226px     |    226px     |  100px   |     226 + 21 + 226 + 21 + 100 = 594
+```
+
+One pixel over the measured 593 and that is fine: the row is a 3-column grid with
+a `--space-md` (21px measured → 20px token) gap, so the tracks resolve from the
+container rather than from these constants. They are recorded because someone
+will compare the screenshot to the reference and should know the two numbers that
+changed and why.
+
+Currency is a `Select` — the same Radix component the jobs filter uses, so the
+option list is token-styled rather than an unstyleable native popup. It is
+**empty by default**, with a placeholder of `Currency`, and it is the only
+control on this step with no initial value.
 
 ### 6.3 Step 2 — Pipeline *(no reference — specified from the data model)*
 
@@ -973,15 +996,15 @@ Keyed to the acceptance criteria in §14.
 
 ## 15. Open questions
 
-1. **Currency on step 1 — approved, but where exactly?** Adding a control the
-   reference does not show changes measured geometry: the card grows and the band
-   row becomes three fields, not two. Options: a third field on the band row
-   (287 + 21 + 143 + 21 + 143), or a currency prefix inside the min field.
-   **Owner: Aditi.** Needs answering before the wizard is built, not before the
-   API is.
-2. **Steps 2–4 have no reference design.** §6.3–§6.5 are specified from the data
-   model and are the most likely part of this spec to be wrong. Worth a design
-   pass before build. **Owner: Aditi.**
+1. ~~**Currency on step 1 — where exactly?**~~ **Answered 2026-08-08: beside the
+   band.** The band row becomes three controls sharing the 593px content width.
+   Geometry in §6.2a. The alternative — a currency prefix inside the min field —
+   is rejected by the same answer: a prefix reads as decoration, and #9 wants the
+   currency to be a choice somebody made, not a glyph they skimmed.
+2. ~~**Steps 2–4 have no reference design.**~~ **Answered 2026-08-08: build
+   §6.3–§6.5 as specified.** They remain the least-evidenced part of this spec —
+   derived from the data model, not measured from a screen — so treat a later
+   design pass as expected rather than as rework.
 3. **`People → PPL`, not `PEO`.** The seed uses `PPL`. Is the prefix a lookup
    table, a per-department stored field, or a rule with exceptions? A stored
    `jobs.req_prefix` on a departments table is the honest answer if departments
