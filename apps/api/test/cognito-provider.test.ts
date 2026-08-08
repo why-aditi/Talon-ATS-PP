@@ -25,6 +25,7 @@ import { buildContainer } from '../src/container.js';
 import type { Cradle } from '../src/context.js';
 import { ERROR_TYPES } from '@talon/contracts';
 import { retryAfterOf } from '../src/modules/identity/cognito-provider.js';
+import { signJwt } from '../src/modules/identity/jwt.js';
 import { IdentityFailure, type AuthResult } from '../src/modules/identity/provider.js';
 import { CognitoStub, type IdTokenOverrides } from './cognito-stub.js';
 import { APP_URL, OWNER_URL } from './urls.js';
@@ -440,6 +441,80 @@ it('refuses a sign-in whose subject our users table does not point at', async ()
   await expect(
     cognito.cradle.identityProvider.initiatePasswordAuth(EMAIL, PASSWORD),
   ).resolves.toMatchObject({ status: 'authenticated' });
+});
+
+// ── a non-UUID subject (spec 002 open question 2) ───────────────────
+
+/**
+ * `users.external_id` is `text` rather than `uuid` on purpose (migration 0004):
+ * a SAML persistent `NameID` is opaque and case-sensitive, and is not a UUID.
+ * `AccessTokenClaimsSchema.sub` used to be `z.string().uuid()`, which would have
+ * refused one at `verifyToken` — i.e. the SAML work would have found out in the
+ * file that validates every bearer token, under time pressure.
+ *
+ * Driven end to end rather than through the schema, because the schema is only
+ * one of three places the subject has to survive: the id token, the mint, and
+ * `auth_user_by_sub`.
+ */
+it('signs in and serves a request for a subject that is not a UUID', async () => {
+  const samlSubject = 'urn:oasis:names:tc:SAML:2.0:nameid-format:persistent!Talon!aB3-x_9~Z';
+  stub.addUser(EMAIL, PASSWORD, samlSubject);
+  await setExternalId(samlSubject);
+
+  const app = await buildApp({ config: cognito.config, container: cognito.container });
+  try {
+    const signedIn = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/sign-in',
+      payload: { email: EMAIL, password: PASSWORD },
+    });
+    expect(signedIn.statusCode).toBe(200);
+    const { accessToken } = signedIn.json<{ accessToken: string }>();
+    expect(decode(accessToken)['sub']).toBe(samlSubject);
+
+    // The half a schema test cannot cover: the subject has to survive the mint,
+    // `verifyToken`, and `auth_user_by_sub`'s exact-match lookup.
+    const jobs = await app.inject({
+      method: 'GET',
+      url: '/v1/jobs',
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    expect(jobs.statusCode).toBe(200);
+  } finally {
+    await app.close();
+  }
+});
+
+it.each([
+  ['empty', ''],
+  ['whitespace only', '   '],
+  ['a tab and a newline', ' \t\n '],
+  ['longer than users_external_id_ck allows', 'a'.repeat(1025)],
+  ['carrying a NUL', 'sub\u0000injected'],
+  ['carrying a newline', 'sub\nSet-Cookie: x=1'],
+])('refuses a bearer token whose subject is %s', async (_label, subject) => {
+  // Loosening `sub` must not mean accepting anything. A blank subject would make
+  // `external_id = ''` resolvable, an unbounded one is an attacker-controlled
+  // string travelling further into the system than it can ever match, and a
+  // control character in a value that reaches audit rows and log lines is a
+  // classic injection vector.
+  const token = signJwt(
+    {
+      sub: subject,
+      email: EMAIL,
+      tenant_id: tenantId,
+      role: 'recruiter',
+      iss: cognito.config.auth.issuer,
+      aud: cognito.config.auth.audience,
+      iat: Math.floor(Date.now() / 1000),
+      exp: Math.floor(Date.now() / 1000) + 3600,
+      jti: 'subject-probe',
+    },
+    cognito.config.auth.secret,
+  );
+  await expect(cognito.cradle.identityProvider.verifyToken(token)).rejects.toMatchObject({
+    code: 'invalid_token',
+  });
 });
 
 // ── sign-in failure mapping ────────────────────────────────────────────────

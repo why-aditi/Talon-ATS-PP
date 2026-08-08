@@ -32,10 +32,9 @@ export {
   type Role,
 
   // Token claims (spec 001 §6.2)
+  SubjectSchema,
   AccessTokenClaimsSchema,
   type AccessTokenClaims,
-  RefreshTokenClaimsSchema,
-  type RefreshTokenClaims,
 
   // Requests
   SignInRequestSchema,

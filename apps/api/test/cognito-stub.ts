@@ -123,7 +123,12 @@ export class CognitoStub {
     return `${this.issuer}/.well-known/jwks.json`;
   }
 
-  addUser(email: string, password: string, sub = randomUUID()): StubUser {
+  // `sub: string`, not the inferred `${string}-${string}-…` that `randomUUID`'s
+  // return type would impose. A pool subject is an opaque string — a SAML
+  // NameID is not a UUID — and letting the default narrow the parameter would
+  // make the type system enforce the very assumption spec 002 open question 2
+  // removed.
+  addUser(email: string, password: string, sub: string = randomUUID()): StubUser {
     const user: StubUser = { sub, email, password };
     this.users.set(email.toLowerCase(), user);
     return user;

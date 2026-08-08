@@ -100,7 +100,15 @@ The Cognito boundary is stubbed at the **network** layer — the SDK is pointed 
 ## 10. Open questions
 
 1. **Does `LocalIdentityProvider` stay?** **Answered "Cognito only" and implemented 2026-08-08.** `local-provider.ts` is deleted, along with `password.ts` and `totp.ts` (both had no other caller — Cognito holds the credential, and its TOTP enrolment is session-scoped and returns 501, see §8.2), the local credential-store methods on `IdentityRepository`, `issueTokens`/`issueRefreshToken` (Talon never mints a refresh token; Cognito's is opaque and Cognito owns the exchange), and `AuthConfig.refreshAudience`/`refreshTtlSeconds` with them. `CreateUserInput.sub` went too. `local_identities` and `auth_user_by_email` stay in the database with no readers — see §2. The cost is recorded in spec 001 §5.4, §6.1, §10 and §12.
-2. **`AccessTokenClaimsSchema.sub` is `z.string().uuid()`.** A Cognito sub satisfies it; a SAML `NameID` will not. Must loosen before per-tenant SAML. Owner: Aditi.
+2. **`AccessTokenClaimsSchema.sub` is `z.string().uuid()`.** **Answered and implemented 2026-08-08.** Loosened to `SubjectSchema`: a bounded, non-blank, control-character-free string mirroring `users.external_id` and its `users_external_id_ck` check. Doing it now rather than at the start of the SAML work matters, because the alternative was loosening the validator for every bearer token under time pressure, in the file that decides whether a token is a token.
+
+   What is deliberately **kept**: non-empty after trimming (`external_id = ''` in the lookup would resolve a real user for an empty subject, and the database refuses to store one); a 1024-character bound, the same as the check constraint, since a longer value can never match a stored subject and accepting it only carries an unbounded attacker-controlled string further in; and no C0/C1 control characters, because a subject travels into log lines and audit rows. It is checked, never trimmed — the subject is matched byte-for-byte against `external_id`, and a schema that silently rewrote it would make the token's `sub` and the lookup key two different values.
+
+   What is **not** loosened: `tenant_id`, and `SessionUserSchema.id`/`tenantId`. Those name our own rows, whose type we control; loosening them would weaken a real check rather than remove a false one.
+
+   Proven end to end, not at the schema: a SAML-shaped subject signs in and then serves `GET /v1/jobs`, because the subject has to survive the id token, the mint, `verifyToken` and `auth_user_by_sub`'s exact-match lookup — four places, of which the schema is one.
+
+   `RefreshTokenClaimsSchema` was **removed** in the same change rather than loosened alongside it. Talon mints no refresh token; Cognito's is an opaque string, not a JWT with claims, so the schema described a token nobody issues — and the next person to read it would have written a verifier against it. `RefreshRequestSchema` (a bounded opaque string) is the real contract. Nothing imported it.
 3. **No client secret on the app client.** Fine for admin flows from a trusted server, but `SECRET_HASH` is unimplemented, so adding one later is a code change. Decide before Terraform owns the pool. Owner: infra.
 4. **The pool is hand-built and throwaway** (`us-east-1_08d7fh6x5`). Terraform does not know about it. Owner: infra.
 

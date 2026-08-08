@@ -64,9 +64,10 @@
  *     `AuthConfig.audience`/`issuer` become provider-derived rather than fixed
  *     constants. The schema already permits it (`aud` is `z.string().min(1)`,
  *     not a literal), which was foresight worth keeping.
- *   - `AccessTokenClaimsSchema.sub` is `z.string().uuid()`. A Cognito sub is a
- *     UUID so that holds, but `users.external_id` is `text` for a future SAML
- *     NameID, and that contract has to loosen before a non-UUID subject works.
+ *   - `AccessTokenClaimsSchema.sub` is a bounded, non-blank, control-character-
+ *     free string rather than a UUID, matching `users.external_id`'s `text` and
+ *     its check constraint. A non-UUID subject — a SAML NameID — already signs
+ *     in and already serves requests; nothing here has to change for it.
  *
  * Scaffolding vs permanent, stated plainly:
  *   - PERMANENT: `JwksVerifier`, the provisioning order (Cognito allocates the
