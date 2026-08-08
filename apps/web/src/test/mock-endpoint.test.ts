@@ -86,15 +86,22 @@ describe('mock endpoint', () => {
     });
 
     it('withholds comp from a role that does not, as null rather than absent', async () => {
-      const profile = await (await call(['candidates', CANDIDATE_IDS.ana], 'interviewer')).json();
+      const profile = await (await call(['candidates', CANDIDATE_IDS.ana], 'member')).json();
       expect(profile.details.compExpectation).toBeNull();
       // Present-and-null, not deleted: the screen distinguishes "withheld" from
       // "never stated" and only this shape lets it (§7.3).
       expect('compExpectation' in profile.details).toBe(true);
 
-      const offer = await (await call(['offers', OFFER_ID], 'coordinator')).json();
+      const offer = await (await call(['offers', OFFER_ID], 'member')).json();
       expect(offer.comp).toBeNull();
       expect('comp' in offer).toBe(true);
+
+      // A role the system cannot issue is also unscoped — `isRole` rejects it before
+      // `hasScope` is asked. The previous version of these tests used exactly such a
+      // string ('interviewer') for the whole unscoped case, so it passed by accident
+      // rather than by exercising a real role.
+      const bogus = await (await call(['offers', OFFER_ID], 'recruiting_lead')).json();
+      expect(bogus.comp).toBeNull();
     });
 
     it('fails closed on a malformed token instead of erroring', async () => {
@@ -109,7 +116,7 @@ describe('mock endpoint', () => {
     });
 
     it('never carries comp on the offer list, whatever the role', async () => {
-      for (const role of ['admin', 'interviewer']) {
+      for (const role of ['admin', 'member']) {
         const list = await (await call(['offers'], role)).json();
         expect(list.items.length).toBeGreaterThan(0);
         for (const item of list.items) expect('comp' in item).toBe(false);
