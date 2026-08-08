@@ -89,6 +89,45 @@ export class IdentityRepository {
     return toUser(rows[0]);
   }
 
+  // ── the sign-in audit row (CLAUDE.md §4) ──────────────────────────────────
+
+  /**
+   * Records one sign-in attempt, successful or not.
+   *
+   * Outside any transaction, and it has to be: sign-in runs before tenant
+   * context exists, so there is no `openTenantTransaction` to enlist in, and a
+   * failed attempt never acquires a tenant at all. It goes through
+   * `audit_sign_in` (migration 0005), a `security definer` writer granted only
+   * this one row shape — see that migration for why a second owner-privileged
+   * connection was refused.
+   *
+   * Not wrapped in a try/catch anywhere down this path. A sign-in that cannot be
+   * audited does not happen (CLAUDE.md §4), and swallowing the failure would
+   * make the guarantee a hope. It is also uniform: nothing here depends on
+   * whether the address exists, so a broken audit path cannot become the
+   * enumeration oracle the sign-in path refuses to be.
+   */
+  async recordSignIn(input: {
+    outcome: 'succeeded' | 'failed';
+    /** The RFC 9457 `type` the caller was given. Never more than that. */
+    reason: string | null;
+    email: string;
+    /** Non-null only on success — a failure proves no identity to attribute. */
+    tenantId: string | null;
+    actorId: string | null;
+    ip: string | null;
+    requestId: string | null;
+  }): Promise<void> {
+    await this.#sql`select audit_sign_in(
+      ${input.outcome}::text,
+      ${input.reason}::text,
+      ${input.email}::text,
+      ${input.tenantId}::uuid,
+      ${input.actorId}::uuid,
+      ${input.ip}::text,
+      ${input.requestId}::text)`;
+  }
+
   // ── the request transaction (spec 001 §6.3) ───────────────────────────────
 
   /**

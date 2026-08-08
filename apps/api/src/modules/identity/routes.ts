@@ -12,7 +12,11 @@ import { parseOrThrow } from '../../errors.js';
 export const identityRoutes: FastifyPluginAsync = async (app) => {
   app.post('/auth/sign-in', async (request, reply) => {
     const body = parseOrThrow(SignInRequestSchema, request.body, 'body');
-    return reply.send(await services(request).identityService.signIn(body));
+    // `request.ip` is the socket peer: Fastify only trusts a forwarded header
+    // when `trustProxy` is configured, and it is not. An attacker-settable
+    // X-Forwarded-For in an audit trail is worse than no address at all.
+    const audit = { ip: request.ip, requestId: request.id };
+    return reply.send(await services(request).identityService.signIn(body, audit));
   });
 
   app.post('/auth/refresh', async (request, reply) => {

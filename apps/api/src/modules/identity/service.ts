@@ -39,6 +39,17 @@ const PROBLEMS: Record<IdentityFailure['code'], { status: number; type: string; 
   },
 };
 
+/**
+ * What the audit row records about the caller rather than the credential
+ * (CLAUDE.md §4: actor, before, after, IP, request id). Passed in from the route
+ * because a service must not reach for a Fastify request — and because being an
+ * explicit parameter is what stops a new caller forgetting it.
+ */
+export interface AuditContext {
+  ip: string | undefined;
+  requestId: string | undefined;
+}
+
 function asProblem(error: unknown): unknown {
   if (!(error instanceof IdentityFailure)) return error;
   const problem = PROBLEMS[error.code];
@@ -60,21 +71,63 @@ export class IdentityService {
     this.#repository = identityRepository;
   }
 
-  async signIn(input: { email: string; password: string }): Promise<SignInResponse> {
-    const result = await this.#run(() =>
-      this.#provider.initiatePasswordAuth(input.email, input.password),
-    );
-    if (result.status === 'mfa_required') {
-      // No MFA challenge endpoint in M0a — there is no screen for it and
-      // inventing the exchange now would fix a contract nobody has specced. The
-      // seeded users have mfa_enabled = false; this is the fail-closed branch.
-      throw new HttpProblem(
-        401,
-        ERROR_TYPES.MFA_REQUIRED,
-        'MFA required',
-        'This account requires a one-time code, which this release cannot collect.',
+  /**
+   * Sign-in, and the one audit_log row it produces (CLAUDE.md §4).
+   *
+   * The audit write is deliberately NOT inside a `try`. Every mutation writes to
+   * `audit_log`, and a sign-in that cannot be recorded must not mint a session:
+   * an attacker who can break the audit path must not thereby get an unlogged
+   * one. On the success path the token has already been minted when the write
+   * runs, but it has not been *returned* — a JWT nobody was handed is inert.
+   *
+   * The failure path writes first and then rethrows the original problem, so a
+   * broken audit path turns every 401 into a 500 rather than some of them. That
+   * uniformity is the point: nothing in the audit call depends on whether the
+   * address exists, so it cannot become the enumeration oracle `signIn` itself
+   * is careful not to be.
+   */
+  async signIn(
+    input: { email: string; password: string },
+    context: AuditContext,
+  ): Promise<SignInResponse> {
+    let result;
+    try {
+      result = await this.#run(() =>
+        this.#provider.initiatePasswordAuth(input.email, input.password),
       );
+      if (result.status === 'mfa_required') {
+        // No MFA challenge endpoint in M0a — there is no screen for it and
+        // inventing the exchange now would fix a contract nobody has specced.
+        // The seeded users have mfa_enabled = false; this is the fail-closed
+        // branch, and an incomplete sign-in is a failed one for audit purposes.
+        throw new HttpProblem(
+          401,
+          ERROR_TYPES.MFA_REQUIRED,
+          'MFA required',
+          'This account requires a one-time code, which this release cannot collect.',
+        );
+      }
+    } catch (err) {
+      await this.#auditSignIn('failed', input.email, context, {
+        // The `type` the caller is about to receive, and nothing beyond it. A
+        // log that knows more about why a sign-in failed than the response did
+        // is the oracle the response was written to avoid.
+        reason: err instanceof HttpProblem ? err.type : ERROR_TYPES.INTERNAL,
+        tenantId: null,
+        actorId: null,
+      });
+      throw err;
     }
+
+    await this.#auditSignIn('succeeded', input.email, context, {
+      reason: null,
+      // Only a successful sign-in names a tenant and an actor. Attributing a
+      // failed attempt to an account would assert an identity nobody proved,
+      // and resolving one would mean an existence-dependent lookup on the
+      // failure path.
+      tenantId: result.user.tenantId,
+      actorId: result.user.id,
+    });
     return { ...result.tokens, user: result.user };
   }
 
@@ -170,5 +223,20 @@ export class IdentityService {
     } catch (err) {
       throw asProblem(err);
     }
+  }
+
+  async #auditSignIn(
+    outcome: 'succeeded' | 'failed',
+    email: string,
+    context: AuditContext,
+    attribution: { reason: string | null; tenantId: string | null; actorId: string | null },
+  ): Promise<void> {
+    await this.#repository.recordSignIn({
+      outcome,
+      email,
+      ip: context.ip ?? null,
+      requestId: context.requestId ?? null,
+      ...attribution,
+    });
   }
 }

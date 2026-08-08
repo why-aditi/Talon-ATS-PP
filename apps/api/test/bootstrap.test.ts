@@ -94,13 +94,20 @@ it('the bootstrap is an exact-match lookup, not a query surface', async () => {
   ).toHaveLength(1);
 });
 
-it('these two functions are the only SECURITY DEFINER surface, and their search_path is pinned', async () => {
+it('the SECURITY DEFINER surface is three functions, and their search_path is pinned', async () => {
   const rows = await sql<{ proname: string; proconfig: string[] | null }[]>`
     select p.proname, p.proconfig
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
     where n.nspname = 'public' and p.prosecdef
     order by p.proname`;
-  expect(rows.map((r) => r.proname)).toEqual(['auth_user_by_email', 'auth_user_by_sub']);
+  // Two readers (0003/0004) and one writer (0005). Every one of them exists
+  // because sign-in runs before app.tenant_id does; anything else appearing in
+  // this list is a privilege escalation waiting to be found by someone else.
+  expect(rows.map((r) => r.proname)).toEqual([
+    'audit_sign_in',
+    'auth_user_by_email',
+    'auth_user_by_sub',
+  ]);
   for (const row of rows) {
     // An unpinned search_path on a definer function is the classic way to have
     // it execute someone else's `users`.

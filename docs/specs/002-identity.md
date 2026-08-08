@@ -98,3 +98,45 @@ The Cognito boundary is stubbed at the **network** layer — the SDK is pointed 
 - [ ] Reviewed per CLAUDE.md §8
 - [x] Open question 1 answered and reflected in code (2026-08-08)
 - [ ] Pool owned by Terraform, not the CLI
+
+## 12. Sign-in writes to `audit_log` (added 2026-08-08)
+
+CLAUDE.md §4 says every mutation writes `audit_log` with actor, before, after, IP and request id. Sign-in — the mutation with the largest security value and the smallest state change — wrote nothing.
+
+### 12.1 Why it could not just use the tenant transaction
+
+Sign-in runs **before** tenant context exists. There is no `openTenantTransaction` to enlist in, because the tenant is only known once the credential has been checked, and for a failed attempt it is never known at all. `audit_log.tenant_id` is nullable for exactly this case (ARCHITECTURE §5, "system-level events"), and 0001's own comment says such rows are writable only by "the owner (migration role / **system writer**)": under the table's RLS policy a null tenant makes the `WITH CHECK` expression evaluate to `NULL`, and only `TRUE` passes, so `talon_app` cannot insert one.
+
+### 12.2 The three options, and the decision
+
+1. **A second, owner-privileged connection in the api process.** Rejected on spec 001 §11b's reasoning, unchanged: a connection is granted a *table*, so it can write anything to anything for as long as it is held, and `beginTenantTransaction` deliberately refuses to serve a request on a role that bypasses RLS. Handing the request process owner credentials to buy a log line inverts the guarantee that check exists to make.
+2. **Audit only what a tenant transaction can reach** — successes, plus failures for known addresses after a lookup. Rejected, and this is the important one: it drops failed attempts for **unknown** addresses, which is precisely the shape of a credential-stuffing sweep, and it makes the audit path branch on whether an account exists. A branch there is a timing oracle, and if the null-tenant insert then raises it is an error-shaped one — a 500 for unknown addresses against a 401 for known ones, which is the enumeration leak the sign-in path is otherwise careful to avoid.
+3. **A `security definer` writer, granted narrowly.** Taken. Migration `0005_audit_authentication` adds `audit_sign_in(...)`: `volatile`, `security definer`, `set search_path = pg_catalog, public`, `execute` revoked from `public` and granted only to `talon_app`. This is the same shape §11b settled on for the two bootstrap *readers*, and the same argument — `talon_app` is granted a **result**, not a table.
+
+**Narrow means narrow.** The function can only ever produce one of two rows: `auth.sign_in.succeeded` or `auth.sign_in.failed`, `entity_type` fixed to `authentication`, no caller-chosen action, no caller-chosen entity, no `before` state, and every column the caller has no legitimate say in decided inside the function. An outcome that is neither value raises; a `succeeded` without a tenant and an actor raises, because it would be written with a null tenant and vanish from the trail its own tenant would read.
+
+### 12.3 What is recorded, and what deliberately is not
+
+| Field | Value |
+|---|---|
+| `action` | `auth.sign_in.succeeded` / `auth.sign_in.failed` |
+| `entity_type` | `authentication`; `entity_id` null — no entity changed |
+| `tenant_id`, `actor_id` | **Only on success.** Null on every failure |
+| `before` | Null. Authenticating changes no state |
+| `after` | `{ outcome, email, reason? }` |
+| `ip` | `request.ip`, the socket peer — `trustProxy` is off, so no attacker-settable `X-Forwarded-For` reaches the trail |
+| `request_id` | Fastify's, which is also the `requestId` in the problem document the caller received |
+
+**Never the password. Never the token.** And never a `reason` beyond the RFC 9457 `type` the caller was already given: a log that knows more about *why* a sign-in failed than the response did is the oracle the response was written not to be. An unknown address and a wrong password produce rows that are byte-identical apart from the string the caller typed.
+
+**Failures carry no tenant and no actor even when the address is real.** Attributing a failed attempt to an account asserts an identity nobody proved, and resolving one would put an existence-dependent lookup on the failure path. The address as typed is kept, so correlation is still possible offline by someone entitled to do it. The cost, stated: a tenant admin reading their own audit trail will not see failed attempts against their users, because those rows are null-tenant and invisible under RLS. When there is a screen for that, the answer is a reader on the owner side, not attribution at write time.
+
+### 12.4 Fail-closed
+
+The write is not wrapped in a `try`. A sign-in that cannot be audited does not happen: on success the token has been minted but not returned when the write runs, and a JWT nobody was handed is inert. On failure the row is written first and the original problem rethrown, so a broken audit path turns **every** 401 into a 500 rather than some of them — uniformity being the point, since nothing in the audit call depends on whether the address exists.
+
+The trade is deliberate and worth naming: `audit_sign_in` is now a hard dependency of sign-in, and rolling migration 0005 back under a running api breaks every login. That is written into `0005_audit_authentication.down.sql`. The alternative — swallow the error and serve the session — makes CLAUDE.md §4 a hope, and hands anyone who can break the audit path an unlogged way in.
+
+### 12.5 Not covered
+
+`POST /v1/auth/refresh` writes no audit row. It is an authentication event and should have one, but its "attempted identity" is a token that must not be logged, and the failure case carries nothing but an IP — a different design question, deliberately not answered in the same change. **Owner: api.** Sign-out does not exist server-side yet (spec 001 §7b: the web BFF clears its cookie), so there is nothing to record.
