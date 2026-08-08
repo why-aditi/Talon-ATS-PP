@@ -1,7 +1,8 @@
 # Spec 004 — Google SSO
 
-**Status:** web half built behind a flag. The api and infra halves are specified
-in **Part II** (§10-§12) as work orders, and not started.
+**Status:** the flow works end to end as far as Google's sign-in page, verified live on
+2026-08-08. Web, api and infra are all built. The remaining gap is provisioning, not
+plumbing — see §10.6.
 **Milestone:** M0b. Follows `002-identity.md`, which named SSO as the thing it blocks.
 **Depends on:** spec 002 (`CognitoIdentityProvider`, the JWKS verifier, `users.external_id`)
 **Blocks:** SAML SSO, and PRD §5.1's SSO-discovery-by-email-domain
@@ -45,7 +46,7 @@ The flow crosses all three streams. Nothing below works until all three land.
 | Piece | Owner | State |
 |---|---|---|
 | `aws_cognito_user_pool_domain`, `aws_cognito_identity_provider` (Google), callback URL allow-list, `supported_identity_providers` on the app client | infra | **not started** — confirmed against AWS on 2026-08-08: no domain, no Google IdP, no OAuth flows on the client. Full work order with the Terraform in **§10** |
-| `POST /v1/auth/sso` — verify a Cognito id token, resolve `users` by `external_id`, mint the §6.2 session | api | **not started** — confirmed 404 against a running API on 2026-08-08; `apps/api/src/modules/identity/routes.ts` registers only `/auth/sign-in` and `/auth/refresh`. Full work order in **§11** |
+| `POST /v1/auth/sso` — verify a Cognito id token, resolve `users` by `external_id`, mint the §6.2 session | api | **BUILT** 2026-08-08. `exchangeIdToken` on the provider seam, `signInWithSso` on the service, the route in `identityRoutes` and in `PUBLIC_ROUTES`. Eight tests in `apps/api/test/sso.test.ts`, verified to fail when token verification is bypassed. See §11.8 for the one deviation |
 | The two route handlers, the button, the states | web | **built, flag-off, unit-tested** (2026-08-08) |
 
 The off state is the shipped state and was verified live, not reasoned about: with
@@ -674,3 +675,112 @@ E2E cannot cover this without a Google test account (§8). The manual pass, once
    yet."*
 6. Cancel at Google's chooser: expect *"Google sign-in was cancelled."*, not a
    generic failure.
+
+---
+
+## 11.8 Deviation from §11.2 — the request carries the refresh token too
+
+§11.2 specified `SsoRequestSchema = { idToken }`. **That cannot work**, and it was found by building it:
+
+`SsoResponseSchema` is `SignInResponseSchema`, whose `refreshToken` is **required** — the web callback sets it as an httpOnly cookie the moment the response lands. An id token carries no refresh token, and the api has no way to obtain one: the password path gets its refresh token from `AdminInitiateAuth`, and that call is precisely the step the federated flow skips.
+
+Cognito already issues one in the same `/oauth2/token` response the callback was reading `id_token` from — it was simply discarding it. So the contract is:
+
+```ts
+SsoRequestSchema = z.object({ idToken: ..., refreshToken: ... }).strict()
+```
+
+Both are minted by the same exchange, both travel server to server, and neither reaches the browser. Taking the refresh token from Cognito rather than minting one keeps the long-lived half of the session under Cognito's control — which is the property that makes `AdminUserGlobalSignOut` or disabling a user actually end a federated session, instead of leaving it alive until a token we issued expires. That is the same choice `initiatePasswordAuth` and `refreshSession` already make.
+
+The web callback now forwards both, asserted in `apps/web/src/test/sso.test.ts`.
+
+## 11.9 What is still not true
+
+The api half is done and tested; **Google sign-in still does not work end to end**, and the reason is entirely §10:
+
+- No `aws_cognito_user_pool_domain`, so there is no hosted UI to redirect to.
+- No `aws_cognito_identity_provider` for Google, so the pool cannot federate.
+- No OAuth flows or callback URLs on the app client.
+- No Google Cloud OAuth client — that needs a Google project, a client id and a secret, which are credentials rather than code.
+
+`ssoConfig()` returns null without `COGNITO_DOMAIN`, so both web routes 404 and the button stays disabled. **That off state is correct and deliberate** — turning the flag on before §10 lands produces a round trip that fails at its first step rather than its last.
+
+Local verification is against the Cognito stub, which substitutes the network and not the class: the JWKS fetch, the RS256 signature check, the `aud`/`iss`/`token_use` checks and the `external_id` join all run for real. What the stub cannot cover is the hosted-UI round trip itself, and no amount of test infrastructure can — it needs a real pool and a real Google client.
+
+---
+
+## 10.5 What was applied on 2026-08-08, and the one thing left
+
+Applied against the spec-002 throwaway pool `us-east-1_08d7fh6x5`, and captured in `infra/terraform/stacks/persistent/cognito_sso.tf`:
+
+| Change | State |
+|---|---|
+| `aws_cognito_user_pool_domain` — `talon-dev-762079300828` | **created** |
+| Google identity provider, credentials read from `talon-dev/sso/google` | **created**, mapping `email`→`email`, `username`→`sub` |
+| App client OAuth: `code` flow, `openid email profile`, callback + logout URLs, `COGNITO`+`Google` | **enabled** |
+
+**Verified live, not reasoned about.** `GET /oauth2/authorize?identity_provider=Google` returns `302` to `accounts.google.com` carrying the right client id, so the flow starts correctly.
+
+### The blocker — resolved 2026-08-08
+
+Following that redirect, Google first answered **`Error 400: redirect_uri_mismatch`**.
+
+Cognito sends Google its own callback, and that URL is not on the Google OAuth client's allow-list:
+
+```
+https://talon-dev-762079300828.auth.us-east-1.amazoncognito.com/oauth2/idpresponse
+```
+
+It has to be added under **Authorized redirect URIs** on the OAuth client `559468296486-…apps.googleusercontent.com` in the Google Cloud console. That is a Google project setting — no AWS credential reaches it, and no Terraform provider in this repo manages it. The client id and secret in Secrets Manager grant use of the client, not administration of it.
+
+That line was added, and re-testing the same request now lands on `accounts.google.com/v3/signin/identifier` — Google's real account chooser. The flow starts, federates and returns.
+
+**The mistake worth recording**, because it is the natural guess: the app's own callback (`http://localhost:3000/api/auth/sso/callback`) does NOT go in Google. Google never redirects to the app — it redirects to Cognito, which then redirects to the app. Two different URIs, two different places.
+
+### Then, to run it locally
+
+`apps/web` needs both, or `ssoConfig()` returns null and the routes 404 by design:
+
+```
+COGNITO_DOMAIN=https://talon-dev-762079300828.auth.us-east-1.amazoncognito.com
+APP_ORIGIN=http://localhost:3000
+```
+
+### Recorded drift
+
+§10.1 says do not build on the throwaway pool, and this did — because it is the pool the dev app and every seeded `users.external_id` already point at, and standing up the permanent pool means re-provisioning all of them before anyone can sign in at all. The Terraform is written so the move is a one-variable change: the three resources take `user_pool_id` as input. §10.1 still holds — the throwaway must not become the permanent identity store.
+
+---
+
+## 10.6 What happens on the first real sign-in
+
+The plumbing is done. The next thing anyone hits is **provisioning**, and it is expected rather than broken.
+
+When a Google identity signs in for the first time, Cognito creates a **new user in the pool with a new `sub`**. Nothing in `users.external_id` points at it, because the seeded users were provisioned through `AdminCreateUser` and carry the subs that allocated. So the api answers exactly what §11.6 says it should:
+
+```
+401  urn:talon:error:user-not-provisioned   →  /sign-in?sso=not_provisioned
+```
+
+That is correct behaviour, not a failure: just-in-time provisioning is explicitly out of scope (§2), and spec 002 §5's exclusivity rule says one person has one sign-in method. Making a specific Google account work means pointing an existing `users` row's `external_id` at the sub Cognito allocates for that federated identity — a deliberate act, per person.
+
+The failure is *distinguishable* precisely so this reads as "this workspace has no account for you" rather than "sign-in failed", which is the distinction §11.6 exists to preserve.
+
+## 10.7 A name has been consumed — read before setting `user_pool_domain_prefix`
+
+The hosted-UI domain created by hand on 2026-08-08 is:
+
+```
+talon-dev-762079300828
+```
+
+It sits on the **throwaway** pool `talon-throwaway-spec002`, and `stacks/persistent/import.tf` records that the throwaway is deliberately *not* adopted — the stack creates a fresh `talon-dev` pool instead.
+
+**Cognito domain prefixes are globally unique across every AWS account in the region.** So if `var.user_pool_domain_prefix` is ever set to `talon-dev-762079300828`, the apply fails with `InvalidParameterException: Domain already associated with another user pool` — pointing at a pool Terraform does not manage and whose name gives no hint that it is the culprit.
+
+Two ways out, both cheap, neither automatic:
+
+1. Delete the throwaway's domain first — `aws cognito-idp delete-user-pool-domain --domain talon-dev-762079300828 --user-pool-id us-east-1_08d7fh6x5` — which frees the name and immediately breaks local Google sign-in until the fresh pool has one.
+2. Give the persistent stack a different prefix and leave the throwaway alone until it is deleted wholesale.
+
+Whichever is chosen, the Google Cloud OAuth client's **Authorized redirect URIs** must gain the new domain's `/oauth2/idpresponse` too. That list is the one part of this flow no AWS credential can change, so a domain rename is always a two-place change.
