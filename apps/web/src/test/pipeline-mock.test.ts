@@ -76,12 +76,12 @@ describe('the board fixture', () => {
     expect(stats['hired']).toEqual({ passRatePct: 11, medianDaysInStage: null });
   });
 
-  it('omits scoreAvg entirely out of scorecard scope, rather than nulling it', async () => {
-    const board = await getBoard('forbidden');
-    for (const card of board.columns.flatMap((c) => c.cards)) {
-      expect(card).not.toHaveProperty('scoreAvg');
-    }
-  });
+  /**
+   * Deleted rather than kept: `scoreAvg` is no longer in the contract, so this asserted
+   * a property's absence on a payload that could never carry it — true for every card
+   * in every scenario, including the ones with no scope gating at all. Scorecard
+   * blindness (#3) returns with the scorecards table, and its test belongs with it.
+   */
 
   it('keeps every stage present on an empty board', async () => {
     const board = await getBoard('empty');

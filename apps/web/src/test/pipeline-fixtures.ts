@@ -15,7 +15,12 @@
  *     is seeded `outbound` and renders "Outbound". The enum is not widened for a pixel.
  *  3. `Hired` on David Kim is `application.status`, not a tag. It renders from status
  *     in terminal columns.
- *  4. "Starts Sep 1" is a reconstruction — the reference clips it at "Starts S…".
+ *  4. `nextAction` carries the bare verb the server derives from the canonical stage
+ *     (spec 004 §5) — "Call", not "Call Tue"; "Hired", not "Starts Sep 1". The
+ *     qualifier belongs to scheduling and offers, which do not exist. These were the
+ *     reference's own strings until the endpoint landed; keeping them would have left
+ *     the ui suite green against text the real screen can never render, which is
+ *     precisely the drift the migration existed to end.
  *
  * ⚠ FIXTURE-ONLY INVENTIONS, with no schema, seed or contract behind them:
  *    • `skills` — nothing stores candidate skills. Spec 003 OQ-2 files the real
@@ -166,14 +171,14 @@ export function eng204Board(): Board {
         card('elena', 'Elena Ruiz', 'Backend Engineer', 'Cove', {
           source: 'outbound',
           daysInStage: 8,
-          nextAction: 'Call Tue',
+          nextAction: 'Call',
         }),
         // 5d against a 5d SLA — NOT stalled. This card is the whole evidence for the
         // strict `>` threshold; changing its dwell silently changes the rule.
         card('marcus', 'Marcus Webb', 'SWE', 'Northwind', {
           source: 'outbound',
           daysInStage: 5,
-          nextAction: 'Call Mon',
+          nextAction: 'Call',
         }),
       ],
     },
@@ -190,7 +195,7 @@ export function eng204Board(): Board {
         card('ana', 'Ana Petrova', 'Senior SWE', 'Meridian', {
           source: 'referral',
           daysInStage: 3,
-          nextAction: 'Loop Thu',
+          nextAction: 'Loop',
         }),
       ],
     },
@@ -224,7 +229,7 @@ export function eng204Board(): Board {
         card('david', 'David Kim', 'Sr SWE', 'Argo', {
           source: 'referral',
           daysInStage: 0,
-          nextAction: 'Starts Sep 1',
+          nextAction: 'Hired',
           status: 'hired',
         }),
       ],

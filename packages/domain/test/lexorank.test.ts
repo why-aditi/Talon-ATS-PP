@@ -9,11 +9,19 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { FIRST_RANK, between, rebalance } from '../src/lexorank.js';
 
-/** The alphabet `between` emits, so generated keys look like real ones. */
+/**
+ * Keys satisfying the invariant `between` is total over: lowercase base-36, never
+ * ending in the lowest digit.
+ *
+ * The filter DEFINES the domain here; it is not a convenience. An earlier version used
+ * the same filter to make a totality property pass while `between` was silently
+ * returning keys above their upper bound for exactly the excluded inputs. That class
+ * now has its own test below, asserting the throw.
+ */
 const key = () =>
   fc
     .stringMatching(/^[0-9a-z]{1,8}$/)
-    .filter((s) => !s.endsWith('0') && s.length > 0);
+    .filter((s) => s.length > 0 && !s.endsWith('0'));
 
 describe('between', () => {
   it('lands strictly between two ordered keys', () => {
@@ -87,6 +95,18 @@ describe('between', () => {
     );
   });
 
+  /**
+   * The class the generator excludes. There is genuinely no string between 'a' and
+   * 'a0' — every extension of 'a' begins with a digit and '0' is the smallest — so the
+   * only honest answers are to throw or to never generate such a key. This module does
+   * both.
+   */
+  it('refuses bounds whose upper key ends in the lowest digit, rather than exceeding it', () => {
+    for (const [a, b] of [['a', 'a0'], ['1', '10'], ['ab', 'ab0'], [null, '000']] as [string | null, string][]) {
+      expect(() => between(a, b)).toThrow(RangeError);
+    }
+  });
+
   it('never emits a key ending in the lowest digit', () => {
     // Not cosmetic: a trailing '0' is the one shape that leaves no room below it
     // without growing a place, and the midpoint rule is what avoids it.
@@ -121,6 +141,23 @@ describe('rebalance', () => {
       const mid = between(keys[i - 1] as string, keys[i] as string);
       expect((keys[i - 1] as string) < mid).toBe(true);
       expect(mid < (keys[i] as string)).toBe(true);
+    }
+  });
+
+  it('never emits one ending in the lowest digit either', () => {
+    // It used to: rebalance(36) contained '20'. A key of that shape has no room
+    // beneath it, so the very next drag above it would throw.
+    for (const count of [1, 35, 36, 37, 200, 1296]) {
+      for (const k of rebalance(count)) expect(k.endsWith('0')).toBe(false);
+    }
+  });
+
+  it('stays insertable everywhere afterwards', () => {
+    const keys = rebalance(300);
+    expect(() => between(null, keys[0] as string)).not.toThrow();
+    expect(() => between(keys.at(-1) as string, null)).not.toThrow();
+    for (let i = 1; i < keys.length; i += 1) {
+      expect(() => between(keys[i - 1] as string, keys[i] as string)).not.toThrow();
     }
   });
 

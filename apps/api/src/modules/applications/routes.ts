@@ -40,6 +40,7 @@ export const applicationsRoutes: FastifyPluginAsync = async (app) => {
       requireUser(request),
       params.id,
       body,
+      { ip: request.ip, requestId: request.id },
     );
     // Writes return the full updated resource including its new version (CLAUDE.md §9).
     return reply.send(ApplicationCardSchema.parse(card));
@@ -48,7 +49,13 @@ export const applicationsRoutes: FastifyPluginAsync = async (app) => {
   app.patch('/applications/:id/rank', async (request, reply) => {
     const params = parseOrThrow(ApplicationParamsSchema, request.params, 'path');
     const body = parseOrThrow(ReorderBodySchema, request.body, 'body');
-    const card = await services(request).applicationsService.reorder(requireTx(request), params.id, body);
+    const card = await services(request).applicationsService.reorder(
+      requireTx(request),
+      requireUser(request),
+      params.id,
+      body,
+      { ip: request.ip, requestId: request.id },
+    );
     return reply.send(ApplicationCardSchema.parse(card));
   });
 };

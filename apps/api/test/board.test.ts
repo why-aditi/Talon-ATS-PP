@@ -19,7 +19,21 @@ let auth: Record<string, string>;
 const owner = postgres(OWNER_URL, { max: 1, onnotice: () => {} });
 
 /** The seed as this suite found it, restored before every test that writes. */
-let pristine: { id: string; stage: string; rank: string; version: number; status: string }[];
+let pristine: {
+  id: string;
+  stage: string;
+  rank: string;
+  version: number;
+  status: string;
+  /**
+   * Restored too, and it is the one that was missed. `moveStage` sets it to `now()`,
+   * so without this the moved candidate's `daysInStage` is 0 for the rest of the run
+   * and the assertions on Elena at 8 days and Applied at [4,3,2,1] pass only because
+   * the read-only block happens to be declared first. A restore that depends on
+   * declaration order is not a restore.
+   */
+  enteredAt: Date;
+}[];
 /**
  * The highest `stage_transitions` id the seed produced. Everything above it is this
  * suite's own doing and is removed between tests.
@@ -38,7 +52,7 @@ beforeAll(async () => {
   const [mark] = await owner`select coalesce(max(id), 0)::int as id from stage_transitions`;
   seedHighWater = mark?.['id'] as number;
   pristine = await owner`
-    select id, current_stage_id as stage, board_rank as rank, version, status
+    select id, current_stage_id as stage, board_rank as rank, version, status, stage_entered_at
     from applications where job_id = ${fixtures.talon.jobId}`.then((rows) =>
     rows.map((r) => ({
       id: r['id'] as string,
@@ -46,6 +60,7 @@ beforeAll(async () => {
       rank: r['rank'] as string,
       version: r['version'] as number,
       status: r['status'] as string,
+      enteredAt: r['stage_entered_at'] as Date,
     })),
   );
 });
@@ -76,11 +91,13 @@ beforeEach(async () => {
     await owner`
       update applications
       set current_stage_id = ${row.stage}, board_rank = ${row.rank},
-          version = ${row.version}, status = ${row.status}
+          version = ${row.version}, status = ${row.status},
+          stage_entered_at = ${row.enteredAt}
       where id = ${row.id}`;
   }
   await owner`delete from stage_transitions where id > ${seedHighWater}`;
   await owner`delete from outbox where tenant_id = ${fixtures.talon.tenantId}`;
+  await owner`delete from audit_log where tenant_id = ${fixtures.talon.tenantId} and entity_type = 'application'`;
 });
 
 const getBoard = async (): Promise<Board> => {
@@ -256,6 +273,89 @@ describe('a stage move', () => {
     ]);
     // Unpublished: the relay stamps this, and the relay is not running.
     expect(event?.['published_at']).toBeNull();
+  });
+
+  /**
+   * Non-negotiable #13. `activities` is the candidate's timeline; this is the security
+   * record, and it is the only one carrying who, from where, and what changed. The
+   * first version of this endpoint wrote the first and not the second.
+   */
+  it('writes an audit_log row with actor, before, after, ip and request id', async () => {
+    const before = await getBoard();
+    const elena = card(before, 'Elena Ruiz');
+    await move(elena.id, {
+      fromStageId: column(before, 'Screen').stageId,
+      toStageId: column(before, 'Onsite').stageId,
+      version: elena.version,
+      beforeId: null,
+      afterId: null,
+    });
+
+    const [row] = await owner`
+      select action, entity_type, entity_id, actor_id, before, after, ip, request_id
+      from audit_log where entity_id = ${elena.id} order by id desc limit 1`;
+    expect(row?.['action']).toBe('application.stage_changed');
+    expect(row?.['entity_type']).toBe('application');
+    expect(row?.['actor_id']).toBe(fixtures.talon.recruiter.id);
+    expect(row?.['before']).toMatchObject({ stageId: column(before, 'Screen').stageId, version: elena.version });
+    expect(row?.['after']).toMatchObject({ stageId: column(before, 'Onsite').stageId, version: elena.version + 1 });
+    // Not merely present — populated. A null ip or request id is the audit trail
+    // quietly losing the two fields that make it worth keeping.
+    expect(row?.['ip']).toBeTruthy();
+    expect(row?.['request_id']).toBeTruthy();
+  });
+
+  it('audits a reorder too', async () => {
+    const before = await getBoard();
+    const tess = card(before, 'Tess Bianchi');
+    const priya = card(before, 'Priya Nair');
+    await test.app.inject({
+      method: 'PATCH',
+      url: `/v1/applications/${tess.id}/rank`,
+      headers: auth,
+      payload: { beforeId: null, afterId: priya.id },
+    });
+    const [row] = await owner`
+      select action, actor_id from audit_log where entity_id = ${tess.id} order by id desc limit 1`;
+    expect(row?.['action']).toBe('application.reordered');
+    expect(row?.['actor_id']).toBe(fixtures.talon.recruiter.id);
+  });
+
+  it('refuses a move to rejected rather than half-applying it', async () => {
+    // The rejected stage is a real job_stages row and the route could reach it. Doing
+    // so would move `current_stage_id` while `status` stayed 'active', and the
+    // application would then vanish from the board entirely.
+    const [rejected] = await owner`
+      select id from job_stages where job_id = ${fixtures.talon.jobId} and canonical = 'rejected'`;
+    const before = await getBoard();
+    const elena = card(before, 'Elena Ruiz');
+    const res = await move(elena.id, {
+      fromStageId: column(before, 'Screen').stageId,
+      toStageId: rejected?.['id'] as string,
+      version: elena.version,
+      reason: 'Not a fit',
+      beforeId: null,
+      afterId: null,
+    });
+    expect(res.statusCode).toBe(422);
+    expect(card(await getBoard(), 'Elena Ruiz')).toMatchObject({ status: 'active', version: elena.version });
+  });
+
+  it('does not 500 when the named neighbours are no longer adjacent', async () => {
+    // Two recruiters dragging in one column: the client names a pair it read earlier,
+    // and by the time the write lands they are neither adjacent nor ordered. Spec §8.3
+    // says never a 500 — `between` throws on an inverted pair, so the service has to
+    // fall back rather than propagate it.
+    const before = await getBoard();
+    const applied = column(before, 'Applied');
+    const res = await test.app.inject({
+      method: 'PATCH',
+      url: `/v1/applications/${card(before, 'Tess Bianchi').id}/rank`,
+      headers: auth,
+      // Deliberately inverted: `beforeId` is the LAST card and `afterId` the first.
+      payload: { beforeId: applied.cards.at(-1)!.id, afterId: applied.cards[0]!.id },
+    });
+    expect(res.statusCode).toBe(200);
   });
 
   it('places the card between the neighbours it was given', async () => {

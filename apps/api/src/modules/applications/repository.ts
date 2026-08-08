@@ -237,7 +237,13 @@ export class ApplicationsRepository {
         join candidates c on c.id = a.candidate_id and c.tenant_id = a.tenant_id
         where a.job_id = ${jobId} and a.tenant_id = ${tx.tenantId}
       ) ranked
-      where rn <= ${CARDS_PER_COLUMN}`;
+      where rn <= ${CARDS_PER_COLUMN}
+      -- The window orders inside the subquery; Postgres does not promise that order
+      -- survives the outer scan, and the service consumes this array positionally. On
+      -- nine rows it holds by luck; on 200 with a parallel plan it need not. Dropping
+      -- it one statement after the collate comment that exists to protect the ordering
+      -- would have been the exact bug that comment describes.
+      order by stage_id, rn`;
 
     return rows.map((r) => ({
       id: r.id,
@@ -419,6 +425,37 @@ export class ApplicationsRepository {
     await tx.sql`
       insert into activities (tenant_id, application_id, type, actor_id, meta)
       values (${tx.tenantId}, ${args.applicationId}, ${args.type}, ${args.actorId}, ${tx.sql.json(args.meta)})`;
+  }
+
+  /**
+   * The audit row. Non-negotiable #13: EVERY mutation writes one, with actor, before,
+   * after, IP and request id.
+   *
+   * Distinct from `activities`, which is the candidate's human-readable timeline and
+   * carries none of those. The identity module already writes a real `audit_log` row
+   * for sign-in; these are the first business mutations in the repo, so this is the
+   * pattern every module after them inherits.
+   *
+   * Inserted directly rather than through a `security definer` function: sign-in needs
+   * one because it runs before tenant context exists, and this does not — the row is
+   * written inside the request's transaction with `app.tenant_id` already set.
+   */
+  async appendAudit(
+    tx: TenantTransaction,
+    args: {
+      action: string;
+      entityId: string;
+      before: JsonObject;
+      after: JsonObject;
+      actorId: string;
+      ip: string | null;
+      requestId: string | null;
+    },
+  ): Promise<void> {
+    await tx.sql`
+      insert into audit_log (tenant_id, actor_id, action, entity_type, entity_id, before, after, ip, request_id)
+      values (${tx.tenantId}, ${args.actorId}, ${args.action}, 'application', ${args.entityId},
+              ${tx.sql.json(args.before)}, ${tx.sql.json(args.after)}, ${args.ip}, ${args.requestId})`;
   }
 
   /**

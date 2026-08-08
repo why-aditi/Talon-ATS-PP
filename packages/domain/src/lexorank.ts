@@ -30,9 +30,19 @@ function index(char: string): number {
 /**
  * A key strictly between `a` and `b`. `null` means "the start" and "the end".
  *
- * Total: there is always a key between any two distinct keys, because when the digits
- * are adjacent it descends a place rather than giving up. That is the property the
- * board depends on — a drop between two cards must never fail for lack of room.
+ * ## The invariant: no key ends in the lowest digit
+ *
+ * `between` is total over keys that satisfy that, and only over those. It is not a
+ * style rule — it is what makes the guarantee possible at all. There is genuinely no
+ * string between `'a'` and `'a0'`: every extension of `'a'` starts with a digit, and
+ * `'0'` is the smallest one there is, so `'a0'` is already the immediate successor.
+ *
+ * An earlier version claimed unconditional totality and, for exactly those pairs,
+ * returned a key GREATER than its upper bound — silently, because the property test
+ * generated candidates with `.filter(s => !s.endsWith('0'))` and so excluded the only
+ * inputs that break it. Both are fixed: this throws rather than lying, `rebalance`
+ * no longer emits such keys, and the property test asserts the invariant instead of
+ * filtering for it.
  */
 export function between(a: string | null, b: string | null): string {
   if (a !== null && b !== null && a >= b) {
@@ -47,7 +57,19 @@ export function between(a: string | null, b: string | null): string {
 
   for (let i = 0; ; i += 1) {
     const ca = i < lower.length ? index(lower[i] as string) : 0;
-    const cb = upper === null ? BASE : i < upper.length ? index(upper[i] as string) : BASE;
+
+    // Still matching `upper` digit for digit and it has run out: `result` now EQUALS
+    // `upper`, so every continuation is greater than it. That only happens when `upper`
+    // ends in the lowest digit — the shape the invariant above forbids — so this is a
+    // caller supplying a key it should never have generated, not a gap to paper over.
+    if (upper !== null && i >= upper.length) {
+      throw new RangeError(
+        `No key exists between ${JSON.stringify(a)} and ${JSON.stringify(b)}: ` +
+          `${JSON.stringify(b)} ends in the lowest digit, which lexorank keys must not.`,
+      );
+    }
+
+    const cb = upper === null ? BASE : index(upper[i] as string);
 
     if (ca + 1 < cb) {
       // Room at this place: take the midpoint and stop. This is the only exit, and it
@@ -87,7 +109,11 @@ export function rebalance(count: number): string[] {
       key = (ALPHABET[n % BASE] as string) + key;
       n = Math.floor(n / BASE);
     }
-    return key;
+    // Never end in the lowest digit (see `between`). Appending a mid digit keeps the
+    // key strictly greater than the bare prefix and strictly less than the next key,
+    // which differs at an earlier place — so the spacing survives and `between` stays
+    // total over everything this emits.
+    return key.endsWith(ALPHABET[0] as string) ? key + (ALPHABET[Math.floor(BASE / 2)] as string) : key;
   });
 }
 

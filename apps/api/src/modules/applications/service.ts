@@ -11,6 +11,13 @@ import { ERROR_TYPES } from '@talon/contracts';
 import { FIRST_RANK, between, isTerminalStage, nextActionFor } from '@talon/domain';
 import { HttpProblem, notFound } from '../../errors.js';
 import type { AuthenticatedUser, TenantTransaction } from '../../request-context.js';
+
+/** Where the request came from, for the audit row. Optional so a caller that has no
+ *  HTTP context (a worker, a future console command) is not forced to invent one. */
+export interface RequestOrigin {
+  ip?: string | undefined;
+  requestId?: string | undefined;
+}
 import type { ApplicationsRepository, BoardCardRow, MovableApplication } from './repository.js';
 
 /** The event the relay publishes. Ids and versions only (ARCHITECTURE §6.1). */
@@ -96,6 +103,7 @@ export class ApplicationsService {
     user: AuthenticatedUser,
     applicationId: string,
     body: MoveStageBody,
+    context: RequestOrigin = {},
   ): Promise<ApplicationCard> {
     // Locks the row for the rest of the transaction, so the checks below and the write
     // are one atomic step rather than a read someone else can invalidate.
@@ -120,6 +128,20 @@ export class ApplicationsService {
 
     if (application.version !== body.version) {
       throw this.#conflict(ERROR_TYPES.STAGE_VERSION_CONFLICT, `${application.name} has changed`, application);
+    }
+
+    // Rejection and withdrawal have their own flows, which carry more than a stage id
+    // (a reason code, an optional templated email — PRD §5.3). Accepting them here
+    // half-applies: `current_stage_id` would move while `status` stayed 'active', and
+    // the application would then vanish from the board entirely, because those columns
+    // are filtered out of the response above.
+    if (destination.canonical === 'rejected' || destination.canonical === 'withdrawn') {
+      throw new HttpProblem(
+        422,
+        ERROR_TYPES.REASON_REQUIRED,
+        'Not a board move',
+        `${destination.name} is reached by rejecting or withdrawing ${application.name}, not by moving the card.`,
+      );
     }
 
     // PRD §5.4: a move to a terminal stage records why. The board blocks these
@@ -172,6 +194,18 @@ export class ApplicationsService {
       payload: { applicationId, jobId: application.jobId, toStageId: body.toStageId, version },
     });
 
+    // Non-negotiable #13. `activities` above is the candidate's timeline; this is the
+    // security record, and it is the one that carries who, from where, and what changed.
+    await this.#repository.appendAudit(tx, {
+      action: 'application.stage_changed',
+      entityId: applicationId,
+      before: { stageId: application.currentStageId, version: application.version, status: application.status },
+      after: { stageId: body.toStageId, version, status },
+      actorId: user.id,
+      ip: context.ip ?? null,
+      requestId: context.requestId ?? null,
+    });
+
     return {
       id: application.id,
       candidateId: application.candidateId,
@@ -192,7 +226,13 @@ export class ApplicationsService {
    * bumping it here would 409 an unrelated in-flight stage move, which reads as a race
    * and is not one. Last-write-wins — position is not worth a conflict dialog.
    */
-  async reorder(tx: TenantTransaction, applicationId: string, body: ReorderBody): Promise<ApplicationCard> {
+  async reorder(
+    tx: TenantTransaction,
+    user: AuthenticatedUser,
+    applicationId: string,
+    body: ReorderBody,
+    context: RequestOrigin = {},
+  ): Promise<ApplicationCard> {
     const application = await this.#repository.lockForMove(tx, applicationId);
     if (!application) throw notFound('That application is no longer on this board.');
 
@@ -203,6 +243,18 @@ export class ApplicationsService {
       body.afterId ?? null,
     );
     await this.#repository.updateRank(tx, applicationId, rank);
+
+    // A reorder is still a mutation (#13). It carries no version because position is
+    // last-write-wins, so `before`/`after` name the rank rather than the version.
+    await this.#repository.appendAudit(tx, {
+      action: 'application.reordered',
+      entityId: applicationId,
+      before: { stageId: application.currentStageId },
+      after: { stageId: application.currentStageId, boardRank: rank },
+      actorId: user.id,
+      ip: context.ip ?? null,
+      requestId: context.requestId ?? null,
+    });
 
     return {
       id: application.id,
@@ -235,7 +287,20 @@ export class ApplicationsService {
     const { before, after } = await this.#repository.neighbourRanks(tx, stageId, beforeId, afterId);
 
     // `beforeId` names the card this one goes ABOVE, so its rank is the upper bound.
-    if (before !== null && after !== null) return between(after, before);
+    //
+    // Both bounds are read UNLOCKED and were named by the client from a board it read
+    // earlier, so by now they may not be adjacent — or even ordered. Two recruiters
+    // dragging in one column is the ordinary case, not an exotic one, and `between`
+    // throws on an inverted pair. Falling back to the single bound that still makes
+    // sense keeps a routine race a successful move rather than a 500 (spec §8.3).
+    if (before !== null && after !== null && after < before) {
+      try {
+        return between(after, before);
+      } catch {
+        // The pair was ordered but admits no key between them. Land just above the
+        // lower neighbour instead of failing the drag.
+      }
+    }
     if (before !== null) return between(null, before);
     if (after !== null) return between(after, null);
 

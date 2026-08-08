@@ -83,11 +83,19 @@ const HOSTILE_REQUESTS: Record<string, HostileCase> = {
     }),
     victimStatus: 409,
   },
+  // `beforeId` names the card this one goes above — itself, so the computed position
+  // is the one it already holds and the write is a no-op.
+  //
+  // `{ beforeId: null, afterId: null }` was the first version and is NOT inert: it
+  // resolves no neighbour, falls through to `lastRank`, and appends. That moved the
+  // first Applied card to the bottom permanently, and `board.test.ts` asserts Applied's
+  // exact order — a race decided by which file vitest happened to run first. Same trap
+  // the stage case above was already fixed for; `/rank` just has no version to stale.
   'PATCH /v1/applications/:id/rank': {
     request: (f) => ({
       method: 'PATCH',
       url: `/v1/applications/${f.talon.applicationId}/rank`,
-      payload: { beforeId: null, afterId: null },
+      payload: { beforeId: f.talon.applicationId, afterId: null },
     }),
   },
 };

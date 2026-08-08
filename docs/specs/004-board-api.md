@@ -245,6 +245,29 @@ Both were caught by reverting the query to the naive join and checking that the 
 
 **The board served seven columns** until a real database showed it. `rejected` and `withdrawn` are genuine `job_stages` rows; the MSW fixture never had them because it was written from the reference screen. The mock was right by construction and the endpoint wrong by construction, and nothing in between could tell.
 
+## 12b. Review findings and what changed
+
+The `reviewer` agent raised two blocking findings and eleven should-fix. Every blocking one is fixed here; the notable should-fix ones too. Recorded because several are shaped like the bugs already in §12 — an assertion or a docstring that was true only because nothing exercised it.
+
+**Blocking**
+
+1. **Neither mutation wrote `audit_log`** (non-negotiable #13). `activities` is the candidate's timeline and carries no IP, no request id, no before/after; the identity module already writes a real audit row for sign-in. These are the first business mutations in the repo, so the omission would have set the pattern for every module after them. Both `moveStage` and `reorder` now write one, and both are tested — including that `ip` and `request_id` are *populated*, not merely present.
+2. **`#rankFor` could 500 on a routine concurrent reorder.** `between` throws on an inverted pair, and the two neighbour ranks are read unlocked from rows the client named earlier — so two recruiters dragging in one column, which CLAUDE.md §6 explicitly says to test, produced a 500 against §8.3's "never a 500". It now falls back to the single bound that still makes sense. Tested with a deliberately inverted pair.
+
+**Notable should-fix**
+
+3. **`between` was not total, and the property test hid it.** The docstring claimed totality; for any pair where the upper bound is the lower bound plus trailing zeros — `between('a', 'a0')` — it returned a key *above* its upper bound. There is genuinely no key between those two, so the honest answers are to throw and to never generate such a key. It now does both: `between` throws with the reason, and `rebalance` no longer emits trailing-zero keys (it used to: `rebalance(36)` contained `'20'`). The generator's `.filter(s => !s.endsWith('0'))` had excluded exactly the failing class; that filter now *defines the documented domain* and the excluded class has its own test.
+4. **`findBoardCards` dropped its ordering.** The window ordered inside the subquery and the outer select had no `ORDER BY`, one statement after the `collate "C"` comment that exists to protect exactly that. Holds on nine rows, not guaranteed on 200.
+5. **`isolation.test.ts` permanently moved a seeded card.** Its `/rank` owner pass sent `{beforeId: null, afterId: null}`, which is not inert — it appends. `board.test.ts` asserts Applied's exact order, so this was a race decided by which file vitest ran first. The same trap the stage case had already been fixed for; `/rank` just has no version to make stale. It now names the card itself as its own neighbour, which is a genuine no-op.
+6. **The `beforeEach` restore did not restore `stage_entered_at`.** Once any move ran, the moved candidate's `daysInStage` was 0 for the rest of the run, and the assertions on Elena at 8 days passed only because the read-only block is declared first. A restore that depends on test declaration order is not a restore.
+7. **A move to `rejected`/`withdrawn` half-applied.** The route could reach those stages with a reason: `current_stage_id` moved while `status` stayed `active`, and the application then vanished from the board because those columns are filtered out. Now refused — they are reached by their own flows, which carry more than a stage id.
+8. **Two UI tests could not fail** (`scoreAvg` absence on a payload that can no longer carry it). One deleted, one narrowed to what it can still prove.
+9. **The UI fixtures asserted `nextAction` values the server cannot produce** — `'Call Tue'`, `'Starts Sep 1'`. Migrated for shape but not for values, leaving the web suite green against text the real screen will never render. That is the drift the migration existed to end.
+
+`ARCHITECTURE.md` §6.1's request body is corrected in this PR: it omitted `fromStageId` while the prose above it required the field.
+
+**Accepted, not fixed** — recorded rather than silently dropped: the `round()` on a double is banker's rounding (a true 2.5-day median reports 2); the dwell lateral uses strict `>` on `occurred_at`, so two transitions at the identical timestamp lose one; `reach`/`dwell` are scoped by tenant and stage-belongs-to-job rather than by the application's own job; `outbox` is absent from `TENANT_TABLES`; OQ-1's index is still missing. None changes a number today, and each is one line in §13.
+
 ## 13. Still open
 
 - **OQ-2 answered:** 200 cards per column. No truncation flag — `count` carries the column's true size, so `count > cards.length` is the signal. The UI does not yet say "200 of 340"; it renders the true count in the header and a shorter list.
