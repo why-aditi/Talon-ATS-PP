@@ -481,8 +481,8 @@ Three PRs, contracts first (§5 of CLAUDE.md).
 | PR | Branch | Contents | Gate |
 |---|---|---|---|
 | A | `feat/007-contracts-and-mock` | `packages/contracts/src/people.ts`, `app/api/mock/[...path]/route.ts`, `lib/mock-fixtures.ts`, `mock-endpoint.test.ts`, **plus the OQ-6 chart tokens** | contracts and tokens both fixed before any screen is built against them |
-| B | `feat/007-review-inbox-candidates` | `/review-inbox`, `/candidates`, `/candidates/:id` + tests | |
-| C | `feat/007-offers-reports` | `/offers`, `/offers/:id`, `/reports`, `BUILT` update + tests | `BUILT` lands last so no row goes live before its page |
+| B | `feat/007-review-inbox-candidates` | `/review-inbox`, `/candidates`, `/candidates/:id` + tests, and the `BUILT` entries for those two rows | a row goes live in the PR that builds its page, not in a later one |
+| C | `feat/007-offers-reports` | `/offers`, `/offers/:id`, `/reports`, and their `BUILT` entries + tests | as above |
 
 `reviewer` agent on each, findings fixed by the owning agent, re-reviewed, squash-merged (§8).
 
