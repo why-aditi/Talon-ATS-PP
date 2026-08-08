@@ -27,14 +27,26 @@ If you add a guardrail to role_github_deploy.tf, add a `child` row here in the
 same PR. A guardrail with no `child` row is untested against the escalation that
 matters.
 """
+import atexit
 import json
 import os
 import subprocess
 import sys
+import tempfile
 
 ACCT = None  # filled from the plan's account-bearing ARNs
 HERE = os.path.dirname(os.path.abspath(__file__))
-REQ = os.path.join(HERE, '.request.json')
+
+# Per-process, in the system temp directory — not a fixed `.request.json` next to
+# this script. The fixed path was rewritten before each of the ~95 calls, so two
+# runs at once (a CI leg and a local invocation, say) interleave writes and each
+# simulation is answered against the OTHER run's payload. That does not error: it
+# returns confident, wrong decisions, which is the worst failure mode a policy
+# assertion can have. mkstemp gives one path per process, and atexit removes it
+# on the exception paths too, which the old explicit unlink did not cover.
+_fd, REQ = tempfile.mkstemp(prefix='talon-simulate-', suffix='.json')
+os.close(_fd)
+atexit.register(lambda: os.path.exists(REQ) and os.remove(REQ))
 
 
 # ---------------------------------------------------------------------------
@@ -58,9 +70,16 @@ def managed(arn):
 
 
 def load_plan(path):
-    d = json.load(open(path))
-    return {r['address']: r['values']
-            for r in d['planned_values']['root_module']['resources']}
+    try:
+        d = json.load(open(path))
+        resources = d['planned_values']['root_module']['resources']
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        # Explicit, because this runs in CI right after `terraform plan`: a
+        # missing or truncated plan.json must read as "the plan did not produce
+        # one", not as a Python traceback that looks like a bug in the assertions.
+        sys.exit(f'simulate: {path} is not the JSON form of a terraform plan '
+                 f'({exc}). Produce it with `terraform show -json tf.plan`.')
+    return {r['address']: r['values'] for r in resources}
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +173,51 @@ def main(plan_path):
             # per-service task-role split, open question 2.
             ('child', 's3:GetObject', f'arn:aws:s3:::{name}-quarantine/resumes/x.pdf', {}, 'allowed'),
         ]),
+        # --- the mirrors that had no `child` row at all ------------------------
+        #
+        # MEASURED GAP, not a hypothetical one. Deleting `ProtectTerraformState`
+        # or `DenyAccountAndOrganizationChanges` from permissions_boundary.tf
+        # left this file entirely green: both were mirrored, and every assertion
+        # about them ran against the DEPLOY role, whose own identity policy
+        # denies them either way. The file's own rule at the top — "if you add a
+        # guardrail, add a `child` row" — was not being applied to the guardrails
+        # that already existed.
+        #
+        # A child holding inline *:* is denied by nothing but the boundary, so
+        # these rows fail the moment a mirror is dropped.
+        ('Every mirrored guardrail, as a child (delete a mirror and these fail)', [
+            ('child', 's3:DeleteBucket', STATE, {}, 'explicitDeny'),
+            ('child', 's3:PutBucketVersioning', STATE, {}, 'explicitDeny'),
+            # The two that end state recovery without touching versioning or the
+            # bucket itself — see local.state_bucket_protection_actions.
+            ('child', 's3:PutLifecycleConfiguration', STATE, {}, 'explicitDeny'),
+            ('child', 's3:PutBucketPolicy', STATE, {}, 'explicitDeny'),
+            ('child', 'organizations:CreateAccount', '*', {}, 'explicitDeny'),
+            ('child', 'account:CloseAccount', '*', {}, 'explicitDeny'),
+            # The service-scoped PassRole mirror. This had only a `deploy` row,
+            # which is the one principal whose result proves the least: the
+            # deploy role's Allow is conditioned, so it would be denied with or
+            # without the boundary. glue is the stand-in for "any service not on
+            # local.pass_role_services".
+            ('child', 'iam:PassRole', R + f'{name}-ecs-task', {'passed_to': 'glue.amazonaws.com'}, 'explicitDeny'),
+            # The client and the domain, added to stateful_delete_actions with
+            # the pool. check-plan.py already fails a PLAN that replaces the
+            # client; these close the CLI route to the same outage.
+            ('child', 'cognito-idp:DeleteUserPoolClient', POOL, {}, 'explicitDeny'),
+            ('child', 'cognito-idp:DeleteUserPoolDomain', POOL, {}, 'explicitDeny'),
+        ]),
+        # A ceiling that denies what a bound role legitimately does is a broken
+        # deploy, not a fix — the same argument as "The stack still deploys"
+        # below, for the roles the boundary also binds.
+        ('The boundary does not break the roles it binds', [
+            # Offboarding. The ECS task role carries this and the boundary binds
+            # that role too, which is why AdminDeleteUser is deliberately absent
+            # from local.stateful_delete_actions.
+            ('child', 'cognito-idp:AdminDeleteUser', POOL, {}, 'allowed'),
+            ('deploy', 'cognito-idp:AdminDeleteUser', POOL, {}, 'allowed'),
+            # Terraform writing its own state object is not a protected action.
+            ('child', 's3:PutObject', STATE + '/persistent/terraform.tfstate', {}, 'allowed'),
+        ]),
         # --- unchanged, must keep holding for a child ------------------------
         ('Fixed points a child must not reach', [
             ('child', 'iam:CreateAccessKey', f'arn:aws:iam::{acct}:user/anyone', {}, 'explicitDeny'),
@@ -182,6 +246,12 @@ def main(plan_path):
             ('deploy', 'iam:PassRole', R + f'{name}-ecs-task', {'passed_to': 'ec2.amazonaws.com'}, 'explicitDeny'),
             ('deploy', 'ec2:RunInstances', f'arn:aws:ec2:ap-south-1:{acct}:instance/*', {'region': 'ap-south-1'}, 'explicitDeny'),
             ('deploy', 'dynamodb:DeleteTable', LOCK, {}, 'explicitDeny'),
+            ('deploy', 'cognito-idp:DeleteUserPoolClient', POOL, {}, 'explicitDeny'),
+            ('deploy', 'cognito-idp:DeleteUserPoolDomain', POOL, {}, 'explicitDeny'),
+            ('deploy', 's3:PutLifecycleConfiguration', STATE, {}, 'explicitDeny'),
+            ('deploy', 's3:PutBucketPolicy', STATE, {}, 'explicitDeny'),
+            ('deploy', 'organizations:CreateAccount', '*', {}, 'explicitDeny'),
+            ('deploy', 'account:CloseAccount', '*', {}, 'explicitDeny'),
         ]),
         # --- the plan role ----------------------------------------------------
         ('Plan role: object bodies and object names', [
@@ -278,6 +348,13 @@ def main(plan_path):
             ('admin', 'iam:PassRole', R + f'{name}-ecs-task', {'passed_to': 'ec2.amazonaws.com'}, 'allowed'),
             ('admin', 'iam:CreateOpenIDConnectProvider', '*', {}, 'allowed'),
             ('admin', 'iam:DeleteRole', R + f'{name}-github-deploy', {}, 'allowed'),
+            # §9.5a: `down.sh --all` is run by this identity, and the widened
+            # stateful_delete_actions must not take one-command teardown away —
+            # that is the whole reason these are IAM denies and not
+            # prevent_destroy.
+            ('admin', 'cognito-idp:DeleteUserPool', POOL, {}, 'allowed'),
+            ('admin', 'cognito-idp:DeleteUserPoolClient', POOL, {}, 'allowed'),
+            ('admin', 'cognito-idp:DeleteUserPoolDomain', POOL, {}, 'allowed'),
         ]),
     ]
 
@@ -293,8 +370,6 @@ def main(plan_path):
             total += 1
             print(f'{"PASS" if ok else "FAIL"}  {principal:<6} {action:<38} '
                   f'expected={expected:<13} got={got}')
-    if os.path.exists(REQ):
-        os.remove(REQ)
     print(f'\n{total} assertions, {failures} failures')
     return 1 if failures else 0
 

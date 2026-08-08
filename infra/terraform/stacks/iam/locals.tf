@@ -190,8 +190,24 @@ locals {
 
   # §4.9: destroyable by the human running down.sh --all, not by an automated
   # apply and not by anything an automated apply can create.
+  #
+  # The two CLIENT-level Cognito deletes are here for the reason check-plan.py
+  # already covers `aws_cognito_user_pool_client` by its prefix rule: deleting
+  # the app client mints nothing back, and every running API instance's
+  # COGNITO_CLIENT_ID stops resolving. Both were measured `allowed` for the
+  # deploy role AND for a boundary-carrying child while only the plan route was
+  # gated — the CLI route to the same outage was wide open.
+  # DeleteUserPoolDomain is the same shape one level up: it takes
+  # /oauth2/authorize and /oauth2/token away from every tenant at once.
+  #
+  # NOT here, deliberately: cognito-idp:AdminDeleteUser. The ECS task role needs
+  # it for offboarding, the boundary binds that role too, and a deny would break
+  # the feature rather than protect anything stateful — the same mistake as
+  # denying rds:DeleteDBInstance (see the comment in role_github_deploy.tf).
   stateful_delete_actions = [
     "cognito-idp:DeleteUserPool",
+    "cognito-idp:DeleteUserPoolClient",
+    "cognito-idp:DeleteUserPoolDomain",
     "rds:DeleteDBCluster",
   ]
 
@@ -204,10 +220,29 @@ locals {
 
   # §9.5: the state bucket is bootstrapped once and never destroyed, and its
   # versioning IS the recovery path for a corrupted state file.
+  #
+  # Which is why the list cannot stop at "can you delete the bucket, and can you
+  # switch versioning off". Two actions destroy that recovery path without
+  # touching either, and both were measured `allowed` on the state bucket for the
+  # deploy role and for a boundary-carrying child:
+  #
+  #   s3:PutLifecycleConfiguration — one rule expiring noncurrent versions after
+  #     N days deletes every historical state file on S3's schedule. Versioning
+  #     stays "Enabled" the whole time, so the guard that names it still reads as
+  #     satisfied and nothing is denied at the moment the history goes.
+  #   s3:PutBucketPolicy — a resource policy Deny is evaluated before any
+  #     identity policy, so the bucket can be made unreadable to the very roles
+  #     that need it (or readable to a principal outside the account) without a
+  #     single denied API call.
+  #
+  # The state bucket is created once by §9.5a stage 1 and never reconfigured by
+  # an apply, so denying these costs nothing an automated run legitimately does.
   state_bucket_protection_actions = [
     "s3:DeleteBucket",
     "s3:PutBucketVersioning",
     "s3:DeleteObjectVersion",
+    "s3:PutLifecycleConfiguration",
+    "s3:PutBucketPolicy",
   ]
 
   state_lock_protection_actions = [
