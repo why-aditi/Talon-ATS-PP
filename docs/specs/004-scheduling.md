@@ -51,30 +51,146 @@ interface CalendarProvider {
 
 Implementations: `RadicaleCalendarProvider` (default), `SeededCalendarProvider` (unit tests — no container needed).
 
+**`getBusy` must return a key for every requested `userId`** — an omitted key is not a permitted way to say "this one failed". Today the safety property is carried one layer away, by the solver's absent-is-fully-busy default, and that is deliberate defence in depth. But it means a consumer that iterates the *returned* record instead of the *requested* `userIds` silently loses it, which is exactly the bug PR A shipped in the web layer and had to fix. **Open for PR B:** make it structural instead — `Record<string, { readable: boolean; busy: BusyInterval[] }>` — so "we couldn't read this" is a value rather than an absence. The interface is what PR B gets built against, so decide before writing the Radicale adapter. **Owner: Aditi Kala.**
+
 ## 5. Data model
 
-`interview_loops` already exists (ARCHITECTURE §5). Additions:
+> **Rewritten 2026-08-08 to match what shipped.** The draft below this line originally claimed `interview_loops` already existed, sketched `interview_rounds` and `interview_round_panelists` **without `tenant_id`**, showed plain single-column foreign keys, and mentioned none of the columns the build actually needed. A reader who trusted it would have built against a schema that does not exist. `packages/db/migrations/0009_scheduling.up.sql` is authoritative for exact DDL — its header enumerates its own deviations — and this section now describes the same thing.
+
+`interview_loops` did **not** already exist; migration 0009 creates it, along with four more tables. All five carry `tenant_id`, `enable`+`force row level security`, and a policy with both `using` and `with check`. **Every foreign key is composite** — non-negotiable 10, because FK validation bypasses RLS and a plain key can point at another tenant's row.
 
 ```sql
+alter table tenants                      -- §6's single per-tenant business-hours window
+  add column business_hours_start time not null default '09:00',
+  add column business_hours_end   time not null default '17:00',
+  add constraint tenants_business_hours_ck check (business_hours_end > business_hours_start);
+
+create table interview_loops (
+  id uuid primary key,
+  tenant_id uuid not null references tenants (id),
+  application_id uuid not null,
+  status text not null check (status in
+    ('draft','proposed','held','confirmed','completed','cancelled')),
+  target_date date,
+  timezone text not null,                -- organizer's IANA zone (§8)
+  candidate_timezone text,               -- §6's candidate window, in the candidate's zone
+  candidate_window_start time,
+  candidate_window_end time,
+  held_by uuid,                          -- §9
+  hold_expires_at timestamptz,
+  version int not null default 1,        -- optimistic concurrency
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  -- the window is all-or-nothing, and ordered
+  constraint interview_loops_candidate_window_ck check (…),
+  -- a hold is a pair: both set or neither
+  constraint interview_loops_hold_pair_ck check ((held_by is null) = (hold_expires_at is null)),
+  constraint interview_loops_held_requires_holder_ck check (status <> 'held' or held_by is not null),
+  unique (tenant_id, id),
+  unique (application_id, id),           -- lets interviews pin (application_id, loop_id)
+  foreign key (tenant_id, application_id) references applications (tenant_id, id),
+  foreign key (tenant_id, held_by) references users (tenant_id, id)
+);
+
 create table interview_rounds (          -- the template: what the loop must contain
-  id uuid primary key, tenant_id uuid not null,
-  loop_id uuid not null references interview_loops,
-  kind text not null,                     -- coding | system_design | values | hiring_manager
-  duration_min int not null,
-  position int not null,                  -- order within the loop
-  is_swappable boolean not null default false,   -- reserved; see §7
-  unique (loop_id, position)
+  id uuid primary key,
+  tenant_id uuid not null references tenants (id),
+  loop_id uuid not null,
+  kind text not null check (kind in ('coding','system_design','values','hiring_manager')),
+  -- % 15 because an off-grid duration cannot sit on the solver's bitmap (§7)
+  duration_min int not null check (duration_min > 0 and duration_min % 15 = 0),
+  position int not null check (position >= 0),
+  is_swappable boolean not null default false,   -- reserved; ignored in M2, see §7
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (loop_id, position),
+  unique (tenant_id, id),
+  unique (loop_id, id),                  -- lets interviews pin (loop_id, round_id)
+  foreign key (tenant_id, loop_id) references interview_loops (tenant_id, id) on delete cascade
 );
 
 create table interview_round_panelists (
-  round_id uuid references interview_rounds,
-  user_id uuid references users,
-  is_required boolean not null default true,
-  primary key (round_id, user_id)
+  tenant_id uuid not null references tenants (id),
+  round_id uuid not null,
+  user_id uuid not null,
+  is_required boolean not null default true,      -- required ones bind the solver
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (round_id, user_id),
+  foreign key (tenant_id, round_id) references interview_rounds (tenant_id, id) on delete cascade,
+  foreign key (tenant_id, user_id)  references users (tenant_id, id)
 );
 ```
 
-`interviews` (already specced) holds the *scheduled instance* of a round: `scheduled_start`, `scheduled_end`, `status`, `external_event_id`. A round with no interview row is unscheduled.
+`interviews` holds the *scheduled instance* of a round. It did not "already exist" either in the shape §5 assumed — it gains `round_id` (not null, unique: in M2 every interview instantiates exactly one round), and §7a's `manual_override` / `acknowledged_blocker`. A round with no interview row is unscheduled.
+
+```sql
+create table interviews (
+  id uuid primary key,
+  tenant_id uuid not null references tenants (id),
+  application_id uuid not null,
+  loop_id uuid not null,
+  round_id uuid not null,
+  kind text not null check (kind in ('coding','system_design','values','hiring_manager')),
+  duration_min int not null check (duration_min > 0 and duration_min % 15 = 0),
+  scheduled_start timestamptz,
+  scheduled_end   timestamptz,
+  status text not null check (status in
+    ('unscheduled','pending','confirmed','declined','completed','cancelled')),
+  external_event_id text,
+  external_provider text,
+  manual_override boolean not null default false,          -- §7a
+  acknowledged_blocker jsonb,                              -- §7a, the blocker a human accepted
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  -- a blocker without an override is meaningless
+  constraint interviews_acknowledged_blocker_requires_override_ck
+    check (acknowledged_blocker is null or manual_override),
+  constraint interviews_schedule_pair_ck  check ((scheduled_start is null) = (scheduled_end is null)),
+  -- The span must equal the duration, or the row states its length twice and disagrees:
+  -- duration_min = 45 with a 10:00-11:00 span otherwise passes every check here, which is
+  -- the same silent rounding the % 15 check exists to stop, by a different door. Equality
+  -- with a strictly positive interval also implies end > start, so there is deliberately no
+  -- separate order check; if this is ever relaxed to a tolerance, that check comes back.
+  -- Template-vs-instance duration stays unreconciled on purpose (no trigger): an interview
+  -- that has happened must keep describing itself after its round template is edited.
+  constraint interviews_schedule_span_ck  check (scheduled_end is null
+    or scheduled_end = scheduled_start + make_interval(mins => duration_min)),
+  constraint interviews_scheduled_when_committed_ck
+    check (status in ('unscheduled','cancelled') or scheduled_start is not null),
+  unique (round_id),
+  unique (tenant_id, id),
+  foreign key (tenant_id, application_id) references applications (tenant_id, id),
+  foreign key (tenant_id, loop_id)   references interview_loops  (tenant_id, id),
+  -- the two structural pins: a round can never come from another loop, and a loop
+  -- can never come from another application (non-negotiable 10)
+  foreign key (loop_id, round_id)     references interview_rounds (loop_id, id) on delete cascade,
+  foreign key (application_id, loop_id) references interview_loops (application_id, id)
+);
+
+create unique index interviews_external_event_idx      -- idempotent calendar writes (§10 step 5)
+  on interviews (tenant_id, external_provider, external_event_id)
+  where external_event_id is not null;
+
+create table interview_panelists (       -- per-interview attendance and §10's response
+  tenant_id uuid not null references tenants (id),
+  interview_id uuid not null,
+  user_id uuid not null,
+  response text not null default 'pending' check (response in ('pending','accepted','declined')),
+  is_required boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (interview_id, user_id),
+  foreign key (tenant_id, interview_id) references interviews (tenant_id, id) on delete cascade,
+  foreign key (tenant_id, user_id)      references users (tenant_id, id)
+);
+```
+
+**Three durations, two reconciled.** `interview_rounds.duration_min` is the template, `interviews.duration_min` is the instance, and `scheduled_end - scheduled_start` is the span. `interviews_schedule_span_ck` pins the last two together. Template-vs-instance is deliberately *not* enforced: an interview that already happened must keep describing itself after someone edits the round it came from, so the instance owns its own duration. There is no separate `interviews_schedule_order_ck`: `scheduled_end > scheduled_start` is logically implied by equality with a strictly positive interval, so the check could never fail on its own. If the span check is ever relaxed — a tolerance, a break allowed inside a round — the ordering stops being implied and the order check has to come back with it. That is recorded in the migration's comment as well as here.
+
+`scheduled_start` is deliberately **not** pinned to a fixed UTC 15-minute grid: the solver's grid origin is the candidate window (§7), which in a half-hour zone like `Asia/Kolkata` sits at `:30`.
+
+**The two status machines are independent, and no constraint couples them.** A loop at `proposed` can hold interviews at `confirmed` — that is a normal mid-flight state, and the seed produces it. The loop's status describes the *arrangement*; an interview's describes *that round*. The one derived rule is §10 step 6: a loop stays `pending` until every one of its interviews confirms, so a partial calendar write is never reported as success.
 
 **Holds** live on `interview_loops.hold_expires_at` + `held_by`, with a Redis key `hold:{loopId}` at matching TTL for fast conflict checks. Postgres is the source of truth; Redis is the index. A sweep job expires holds whose `hold_expires_at` has passed — expiry must not depend on the read path, or an expired hold stays visible until someone happens to look.
 
@@ -229,6 +345,8 @@ Keyboard: the grid is navigable and a slot selectable without a pointer. Day/Wee
 | E2E (Playwright) | Schedule a 4-round loop against a seeded Radicale, hit the conflict, resolve it, hold, send, verify events exist |
 | a11y | Grid keyboard-navigable, hatch pattern present, axe clean |
 
+**Which gate covers contrast, precisely.** The component suite runs `axe` with `color-contrast` disabled, because jsdom has no layout and the rule cannot compute a ratio there — so a green component run is *not* evidence of contrast compliance. Contrast is covered by CLAUDE.md §8's separate contrast check against the built tokens, and by `@axe-core/playwright` inside the E2E run, where real layout exists. Both are PR B for this screen (E2E needs Radicale). Saying so because "axe clean" in a jsdom suite reads as more than it is.
+
 ## 14. Open questions
 
 1. ~~**Does the recruiter need to override the solver and place rounds manually?**~~ **Answered 2026-08-08 (Aditi Kala): yes, in scope for M2.** See §7a. Note this contradicts "the reference screen doesn't show it" — the screen is still authoritative for everything it *does* show; manual placement is additive to it.
@@ -238,7 +356,12 @@ Keyboard: the grid is navigable and a slot selectable without a pointer. Day/Wee
 5. **Is "fewest gaps" really the top scoring key?** §7 step 3 orders by fewer gaps, then earlier finish, then shorter span, and it is implemented literally. The consequence: a back-to-back loop at 3pm outranks a 9am loop with one 15-minute gap, and the screen's primary button names arrangement 1. If recruiters would rather be offered the earliest start, the primary key should be finish time. **Owner: Aditi Kala.** Not silently re-weighted.
 6. **A candidate window is a bare date with no zone, so it means that calendar date *in the candidate's zone*.** That is the only available reading, but it bites: Asia/Kolkata "6 Aug, 09:00–16:00" against America/Chicago business hours 09:00–17:00 **does not overlap at all**, and the solver correctly answers `window_too_narrow / availableMin: 0`. Correct, and probably surprising to a recruiter who sees "no availability" for what looks like a normal workday. Whether the UI should explain the zone collision specifically is open. **Owner: Aditi Kala.**
 
+   **And the client now reads it a third way, which needs your ruling.** The screen shifts the candidate window to whichever day is displayed, treating "9 to 4" as a wall clock that recurs. Pinned to the single reference date instead, every row of every other day reports `outside_window` and the Day/Week toggle is dead — so the recurring reading is what makes the screen usable. The server keeps the strict single-date reading. Two layers, two meanings for one column, which is exactly the kind of divergence that produces a bug nobody can locate. Resolve it as either a recurring availability rule (which §2 currently lists as out of scope) or a date-bounded one the UI stops extrapolating. One-line change on the client either way.
+7. **Should `outside_window` block the send button?** Today it does not. The reference screen's invariant is that `panelist_busy` leaves send **enabled** — Maya is busy at 10:00 and the primary button still reads "Send invites, 10:00 AM Aug 6" — because the row is the loop's *start* and the server re-validates. That reasoning does not carry to `outside_window`: no sequential placement rescues a first round that already runs past the candidate's window, so the send is guaranteed to be refused server-side. Gating on the whole blocker union would break the reference invariant; gating on `outside_window` alone would not. Left enabled deliberately rather than changed, because it trades a wasted round-trip for a risk to the one behavior the reference screen pins. **Owner: Aditi Kala.**
+
 ## 15. Definition of done
+
+> **The seed is not the reference loop, so read the screen tick with that in mind.** CLAUDE.md §7 says seed data mirrors the reference screens exactly, "so visual comparison against the reference is always possible without hand-setup." It does not hold for this screen yet. `seed.ts` builds Ana's loop with organizer `America/Los_Angeles`, candidate `America/New_York`, job "Senior SWE", panelists Lin/Sam/Tom/Maya, and a target date of `now + 3d`. `scheduling-fixtures.ts` uses `America/Chicago` for both, "Senior Product Engineer", Lin/David/Maya/Sam, and 6 Aug 2026. Only Maya's id is shared. So the reference-screen verification below was done against **fixture** data, and the day the endpoint lands the screen will render something else. Converging the seed onto the reference loop is PR B work; it is written down here rather than discovered then. **Owner: Aditi Kala.**
 
 Ticked boxes are done and verified in PR A. Everything unticked is PR B, and none of it is started — no gate currently guards it, which is the point of saying so here rather than letting a green CI imply coverage.
 
