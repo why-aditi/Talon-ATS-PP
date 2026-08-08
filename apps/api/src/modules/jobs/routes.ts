@@ -14,6 +14,7 @@ import {
   ListJobsQuerySchema,
   ListJobsResponseSchema,
   ListStageTemplatesResponseSchema,
+  UpdateJobRequestSchema,
 } from '@talon/contracts';
 import type { FastifyPluginAsync } from 'fastify';
 import { requireTx, requireUser, services } from '../../context.js';
@@ -60,5 +61,19 @@ export const jobsRoutes: FastifyPluginAsync = async (app) => {
     // 201 with a Location header (CLAUDE.md §9): writes return the full
     // resource, and the header is what makes it addressable without parsing it.
     return reply.code(201).header('location', `/v1/jobs/${job.id}`).send(JobSchema.parse(job));
+  });
+
+  app.patch('/jobs/:id', async (request, reply) => {
+    const params = parseOrThrow(GetJobParamsSchema, request.params, 'path');
+    const body = parseOrThrow(UpdateJobRequestSchema, request.body, 'body');
+    const job = await services(request).jobsService.updateJob(
+      requireTx(request),
+      requireUser(request),
+      params.id,
+      body,
+    );
+    // §9: writes return the full updated resource, including its new version —
+    // without it the client has to refetch before it can edit again.
+    return reply.send(JobSchema.parse(job));
   });
 };

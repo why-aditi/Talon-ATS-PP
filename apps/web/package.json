@@ -15,6 +15,7 @@
     "@dnd-kit/utilities": "^3.2.2",
     "@radix-ui/react-select": "^2.3.7",
     "@talon/contracts": "workspace:*",
+    "@talon/domain": "workspace:*",
     "@talon/tokens": "workspace:*",
     "@tanstack/react-query": "^5.66.0",
     "next": "^15.4.0",

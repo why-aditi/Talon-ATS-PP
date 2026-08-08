@@ -33,6 +33,24 @@ beforeAll(() => {
     unobserve() {}
     disconnect() {}
   };
+  /*
+    jsdom ships HTMLDialogElement without showModal/close, so any component that
+    opens a dialog throws without these. They are jsdom gaps rather than
+    behaviour worth asserting: the real focus trap, Escape handling and
+    top-layer stacking are the platform's, and a browser is the only place they
+    can be verified.
+
+    `open` is set and cleared because tests query by role, and a <dialog>
+    without the attribute is hidden from the accessibility tree.
+  */
+  HTMLDialogElement.prototype.showModal ??= function showModal(this: HTMLDialogElement) {
+    this.open = true;
+  };
+  HTMLDialogElement.prototype.close ??= function close(this: HTMLDialogElement) {
+    this.open = false;
+    this.dispatchEvent(new Event('close'));
+  };
+
   installFetchStub();
 });
 

@@ -70,6 +70,8 @@ export const ERROR_TYPES = {
    * the only signal that someone else moved it.
    */
   STAGE_VERSION_CONFLICT: 'urn:talon:error:stage-version-conflict',
+  /** PATCH /v1/jobs/:id against a version somebody else has moved on from. */
+  JOB_VERSION_CONFLICT: 'urn:talon:error:job-version-conflict',
   /** Answered regardless of version — re-applying a stage change over someone else's
    *  move corrupts the append-only transition log. */
   STAGE_MOVED: 'urn:talon:error:stage-moved',
