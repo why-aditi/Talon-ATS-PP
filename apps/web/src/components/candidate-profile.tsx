@@ -18,14 +18,11 @@
  * asks the session for the role rather than inferring from the payload.
  */
 import type { ActivityEntry, CandidateProfile } from '@talon/contracts';
+import { hasScope, isRole } from '@talon/domain';
 import Link from 'next/link';
 import { formatCompactMoney, formatInZone, useCandidateProfile } from '../lib/people-query';
 import { useSession } from '../lib/session';
 import { Avatar, Button, Eyebrow, cx } from './ui';
-
-/** Mirrors the mock's gate (spec 007 §9). The component uses this only to tell the two
- *  nulls apart — it is not what withholds the value; the API already did that. */
-const COMP_SCOPED = new Set(['admin', 'recruiting_lead', 'recruiter', 'hiring_manager']);
 
 const DOT: Record<ActivityEntry['kind'], string> = {
   scheduling: 'bg-feedback-info-fg',
@@ -112,7 +109,11 @@ function Rail({ profile, showComp }: { profile: CandidateProfile; showComp: bool
 export function CandidateProfileScreen({ candidateId }: { candidateId: string }) {
   const query = useCandidateProfile(candidateId);
   const { session } = useSession();
-  const showComp = COMP_SCOPED.has(session?.user.role ?? '');
+  // Reads the same ROLE_SCOPES table the API reads, rather than a second copy of it.
+  // This does NOT withhold anything — the endpoint already did (§4.2). It only tells
+  // the two nulls apart: "never stated" versus "not yours to see".
+  const role = session?.user.role;
+  const showComp = typeof role === 'string' && isRole(role) && hasScope(role, 'comp:read');
 
   if (query.isPending) {
     return (

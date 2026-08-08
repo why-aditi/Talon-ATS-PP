@@ -27,6 +27,7 @@ import {
   ReportsOverviewSchema,
   ReviewQueueResponseSchema,
 } from '@talon/contracts';
+import { hasScope, isRole } from '@talon/domain';
 import { NextResponse } from 'next/server';
 import type { ZodSchema } from 'zod';
 import {
@@ -37,9 +38,6 @@ import {
   reportsOverview,
   reviewQueue,
 } from '../../../../lib/mock-fixtures';
-
-/** Roles allowed to see base, equity, band and comp expectation. Mirrors spec 007 §9. */
-const COMP_SCOPED = new Set(['admin', 'recruiting_lead', 'recruiter', 'hiring_manager']);
 
 function problem(status: number, type: string, title: string): NextResponse {
   return NextResponse.json(
@@ -67,7 +65,12 @@ function compScopeOf(request: Request): boolean {
   try {
     const claims: unknown = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
     const role = (claims as { role?: unknown } | null)?.role;
-    return typeof role === 'string' && COMP_SCOPED.has(role);
+    // `hasScope`, not a local set. An earlier version of this file kept its own list
+    // and it had drifted: it named `recruiting_lead`, a role the system cannot issue,
+    // while omitting `member`, which it can. ROLE_SCOPES in @talon/domain is the one
+    // table both `contracts` and every service already read from — a second copy is
+    // exactly the drift that module exists to prevent (spec 001 §6.4).
+    return typeof role === 'string' && isRole(role) && hasScope(role, 'comp:read');
   } catch {
     return false;
   }

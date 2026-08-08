@@ -1,4 +1,4 @@
-// Migration 0009 (spec 008 §4, §6). Two tenant-scoped tables whose correctness lives
+// Migration 0010 (spec 008 §4, §6). Two tenant-scoped tables whose correctness lives
 // entirely in their policies, grants and composite foreign keys.
 //
 // They are deliberately NOT in TENANT_TABLES: that sweep needs seeded rows to mean

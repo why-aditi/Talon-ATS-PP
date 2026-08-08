@@ -57,6 +57,28 @@ variable "github_repo" {
   }
 }
 
+variable "github_owner_id" {
+  description = "Numeric GitHub owner id, used to build the id-qualified OIDC subject prefix (locals.tf). CI passes github.repository_owner_id, so a fork gets its own. The default is this repository's; empty disables the id-qualified claim entirely."
+  type        = string
+  default     = "130339327"
+
+  validation {
+    condition     = var.github_owner_id == "" || can(regex("^[0-9]+$", var.github_owner_id))
+    error_message = "github_owner_id must be numeric — it is an id, not a login. A login here silently produces a subject claim nothing matches."
+  }
+}
+
+variable "github_repository_id" {
+  description = "Numeric GitHub repository id, used to build the id-qualified OIDC subject prefix (locals.tf). CI passes github.repository_id. The default is this repository's; empty disables the id-qualified claim entirely."
+  type        = string
+  default     = "1326442505"
+
+  validation {
+    condition     = var.github_repository_id == "" || can(regex("^[0-9]+$", var.github_repository_id))
+    error_message = "github_repository_id must be numeric — it is an id, not a name."
+  }
+}
+
 variable "github_default_branch" {
   description = "Branch that is allowed to run terraform apply. ARCHITECTURE §9.5: plan on every PR, apply on merge."
   type        = string
@@ -64,9 +86,15 @@ variable "github_default_branch" {
 }
 
 variable "github_oidc_provider_arn" {
-  description = "ARN of an existing GitHub OIDC provider. The provider is account-global and there can only be one per account; set this when a company account already has it and this stack should reuse rather than create it. Empty means create it here."
+  description = "ARN of an existing GitHub OIDC provider, when it lives in a different account or under a non-default URL. Empty is normal: the ARN for this account is then constructed in locals.tf, because the issuer URL is fixed and the ARN is therefore deterministic. See create_github_oidc_provider for the create-it-here case."
   type        = string
   default     = ""
+}
+
+variable "create_github_oidc_provider" {
+  description = "Create the GitHub OIDC provider instead of reusing the account's. False because the provider is account-global — one per issuer URL — and 762079300828 is shared, so it already exists. Set true when standing this up in a fresh account that has never run a GitHub Actions workflow; leaving it false there fails the PLAN with 'no matching OpenID Connect Provider found', which names the fix."
+  type        = bool
+  default     = false
 }
 
 variable "github_oidc_thumbprints" {

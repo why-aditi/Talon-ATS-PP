@@ -150,7 +150,16 @@ variable "refresh_token_validity_days" {
 variable "user_pool_domain_prefix" {
   description = "Prefix for the Cognito-hosted auth domain, i.e. https://<prefix>.auth.<region>.amazoncognito.com. ARCHITECTURE §9.4 rules out a custom domain (no Route 53 zone, no ACM cert), so this is the prefix form. Must be globally unique across ALL AWS accounts in the region — a taken prefix fails the apply with InvalidParameterException. Empty means no domain is created, which is the pre-SSO status quo: /oauth2/authorize and /oauth2/token do not exist without it."
   type        = string
-  default     = ""
+
+  # The dev value, checked in DELIBERATELY. It was first supplied as a `-var` on a
+  # human-run apply, which Terraform does not persist — so the next plan, and every
+  # CI plan, plotted the destruction of the domain and the Google IdP that apply had
+  # just created. `*.tfvars` is gitignored (.gitignore:25), so a vars file cannot
+  # reach CI either. A default is the only place both CI and `up.sh` read.
+  #
+  # It embeds an account id because the prefix is globally unique per region. A
+  # clone in another account must override it; see spec 006 §4.4.
+  default = "talon-dev-auth-762079300828"
 
   validation {
     condition     = var.user_pool_domain_prefix == "" || can(regex("^[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$", var.user_pool_domain_prefix))
@@ -169,13 +178,13 @@ variable "user_pool_domain_prefix" {
 variable "oauth_callback_urls" {
   description = "Allowed redirect targets after a hosted-UI or social sign-in. Empty means OAuth is not enabled on the client at all, and the client keeps the ADMIN_USER_PASSWORD/SRP behaviour it has now. Spec 003 sets these."
   type        = list(string)
-  default     = []
+  default     = ["http://localhost:3000/api/auth/sso/callback"]
 }
 
 variable "oauth_logout_urls" {
   description = "Allowed redirect targets after sign-out. Only meaningful when oauth_callback_urls is non-empty."
   type        = list(string)
-  default     = []
+  default     = ["http://localhost:3000/sign-in"]
 }
 
 variable "oauth_flows" {
@@ -198,7 +207,7 @@ variable "oauth_scopes" {
 variable "supported_identity_providers" {
   description = "Identity providers the client may use. COGNITO is the local user directory. Google is added by spec 003 once the OAuth client exists; per-tenant SAML IdPs are created at RUNTIME through the API (§9.4) and must never appear here — managing them as infrastructure would make customer onboarding a deploy."
   type        = list(string)
-  default     = ["COGNITO"]
+  default     = ["COGNITO", "Google"]
 }
 
 # ---------------------------------------------------------------------------

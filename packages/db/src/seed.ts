@@ -81,6 +81,11 @@ export async function seed(databaseUrl = process.env['DATABASE_URL'] ?? DEFAULT_
   const transitionRows: (typeof s.stageTransitions.$inferInsert)[] = [];
   const activityRows: (typeof s.activities.$inferInsert)[] = [];
   const auditRows: (typeof s.auditLog.$inferInsert)[] = [];
+  const loopRows: (typeof s.interviewLoops.$inferInsert)[] = [];
+  const roundRows: (typeof s.interviewRounds.$inferInsert)[] = [];
+  const roundPanelistRows: (typeof s.interviewRoundPanelists.$inferInsert)[] = [];
+  const interviewRows: (typeof s.interviews.$inferInsert)[] = [];
+  const interviewPanelistRows: (typeof s.interviewPanelists.$inferInsert)[] = [];
 
   const rankCounters = new Map<string, number>();
   const nextRank = (stageId: string) => {
@@ -242,6 +247,92 @@ export async function seed(databaseUrl = process.env['DATABASE_URL'] ?? DEFAULT_
     return applicationId;
   }
 
+  /**
+   * An interview loop with its round template, and optionally the scheduled instances
+   * of the first `scheduledCount` rounds (spec 004 §5).
+   *
+   * `startUtc` is a UTC instant, deliberately, and not "10:00 in the organizer's zone"
+   * converted here: the seed has no timezone library and a hand-rolled offset would be
+   * wrong twice a year. Storage is UTC (non-negotiable #7) and the API converts on the
+   * way out, so a UTC instant is the honest thing for a fixture to state.
+   */
+  function addLoop(opts: {
+    tenantId: string;
+    applicationId: string;
+    timezone: string;
+    candidateTimezone: string;
+    targetDate: string;
+    heldBy?: string;
+    rounds: { kind: 'coding' | 'system_design' | 'values' | 'hiring_manager'; durationMin: number; panelists: string[] }[];
+    /** How many of the rounds, from position 0, already have a confirmed time. */
+    scheduledCount: number;
+    startUtc: Date;
+  }) {
+    const loopId = uuidv7();
+    loopRows.push({
+      id: loopId,
+      tenantId: opts.tenantId,
+      applicationId: opts.applicationId,
+      // Some rounds placed, some not: the reference screen's mid-flight state.
+      status: opts.scheduledCount === 0 ? 'draft' : 'proposed',
+      targetDate: opts.targetDate,
+      timezone: opts.timezone,
+      candidateTimezone: opts.candidateTimezone,
+      candidateWindowStart: '09:00:00',
+      candidateWindowEnd: '16:00:00',
+      heldBy: null,
+      holdExpiresAt: null,
+    });
+    let cursor = opts.startUtc.getTime();
+    opts.rounds.forEach((round, position) => {
+      const roundId = uuidv7();
+      roundRows.push({
+        id: roundId,
+        tenantId: opts.tenantId,
+        loopId,
+        kind: round.kind,
+        durationMin: round.durationMin,
+        position,
+        isSwappable: false,
+      });
+      for (const userId of round.panelists) {
+        roundPanelistRows.push({ tenantId: opts.tenantId, roundId, userId, isRequired: true });
+      }
+      if (position >= opts.scheduledCount) return; // no interviews row = unscheduled
+      const start = new Date(cursor);
+      const end = new Date(cursor + round.durationMin * 60_000);
+      cursor = end.getTime();
+      const interviewId = uuidv7();
+      interviewRows.push({
+        id: interviewId,
+        tenantId: opts.tenantId,
+        applicationId: opts.applicationId,
+        loopId,
+        roundId,
+        kind: round.kind,
+        durationMin: round.durationMin,
+        scheduledStart: start,
+        scheduledEnd: end,
+        status: 'confirmed',
+        externalEventId: `seed-${interviewId}`,
+        externalProvider: 'seeded',
+      });
+      for (const userId of round.panelists) {
+        interviewPanelistRows.push({
+          tenantId: opts.tenantId,
+          interviewId,
+          userId,
+          response: 'accepted',
+          isRequired: true,
+        });
+      }
+    });
+    return loopId;
+  }
+
+  /** Fixture dates are relative so the seed stays stable; `date` columns take YYYY-MM-DD. */
+  const isoDate = (d: Date) => d.toISOString().slice(0, 10);
+
   // ── Tenant A: Talon Inc. ──────────────────────────────────────────────────
   const talon = uuidv7();
   tenantRows.push({ id: talon, name: 'Talon Inc.', slug: 'talon', createdAt: ago(365) });
@@ -310,7 +401,7 @@ export async function seed(databaseUrl = process.env['DATABASE_URL'] ?? DEFAULT_
   addApplication({ ...named, candidate: { name: 'Elena Ruiz', title: 'Backend Engineer', company: 'Cove' }, source: 'outbound', path: [{ c: 'applied', at: ago(10, 6) }, { c: 'screen', at: ago(8, 6) }] });
   addApplication({ ...named, candidate: { name: 'Marcus Webb', title: 'SWE', company: 'Northwind' }, source: 'outbound', path: [{ c: 'applied', at: ago(7, 6) }, { c: 'screen', at: ago(5, 6) }] });
   // Ana: entered Onsite 3d ago → "3d in stage"; Screen dwell 4d
-  addApplication({ ...named, candidate: { name: 'Ana Petrova', title: 'Senior SWE', company: 'Meridian' }, source: 'referral', referredById: davidO, path: [{ c: 'applied', at: ago(9, 6) }, { c: 'screen', at: ago(7, 6) }, { c: 'onsite', at: ago(3, 6) }] });
+  const anaApplication = addApplication({ ...named, candidate: { name: 'Ana Petrova', title: 'Senior SWE', company: 'Meridian' }, source: 'referral', referredById: davidO, path: [{ c: 'applied', at: ago(9, 6) }, { c: 'screen', at: ago(7, 6) }, { c: 'onsite', at: ago(3, 6) }] });
   // Sofia: "1d in stage" in Offer; Screen dwell 4d, Onsite dwell 6d
   addApplication({ ...named, candidate: { name: 'Sofia Lindqvist', title: 'Staff Eng', company: 'Polar' }, source: 'outbound', path: [{ c: 'applied', at: ago(13, 6) }, { c: 'screen', at: ago(11, 6) }, { c: 'onsite', at: ago(7, 6) }, { c: 'offer', at: ago(1, 6) }] });
   // David: "0d in stage" in Hired; the only completed Offer dwell, at 3d
@@ -342,6 +433,28 @@ export async function seed(databaseUrl = process.env['DATABASE_URL'] ?? DEFAULT_
     }
   }
 
+  // ── Ana's onsite loop (06-scheduling@2x.png) ──────────────────────────────
+  // Four rounds, four people, two already placed and two still pending — the exact
+  // mid-flight state the reference screen shows. The unplaced two have NO interviews
+  // row, which is what "unscheduled" means (migration 0009).
+  const anaLoopDate = new Date(NOW + 3 * DAY);
+  addLoop({
+    tenantId: talon,
+    applicationId: anaApplication,
+    timezone: 'America/Los_Angeles', // Maya organises
+    candidateTimezone: 'America/New_York', // "candidate available 9 to 4", her clock
+    targetDate: isoDate(anaLoopDate),
+    rounds: [
+      { kind: 'coding', durationMin: 60, panelists: [lin] },
+      { kind: 'system_design', durationMin: 60, panelists: [sam] },
+      { kind: 'values', durationMin: 45, panelists: [tom] },
+      { kind: 'hiring_manager', durationMin: 30, panelists: [maya] },
+    ],
+    scheduledCount: 2,
+    // 17:00Z = 10:00 in Maya's zone during PDT — the screen's "10:00 AM".
+    startUtc: new Date(Date.UTC(anaLoopDate.getUTCFullYear(), anaLoopDate.getUTCMonth(), anaLoopDate.getUTCDate(), 17, 0, 0)),
+  });
+
   auditRows.push({ tenantId: talon, action: 'seed.completed', entityType: 'tenant', entityId: talon, after: { jobs: 6, users: 5 }, requestId: 'seed' });
 
   // ── Tenant B: Acme Corp (isolation-test target) ───────────────────────────
@@ -354,14 +467,29 @@ export async function seed(databaseUrl = process.env['DATABASE_URL'] ?? DEFAULT_
   const acm001 = addJob({ tenantId: acme, templateId: acmeTemplate, reqCode: 'ACM-001', title: 'Platform Engineer', department: 'Engineering', location: 'Berlin', status: 'active', currency: 'EUR', recruiterId: beth });
   const acmeCommon = { tenantId: acme, job: acm001, actorId: beth, withActivities: true };
   addApplication({ ...acmeCommon, candidate: { name: 'Noor Haddad', title: 'SRE', company: 'Initech' }, source: 'careers_page', path: [{ c: 'applied', at: ago(5, 3) }] });
-  addApplication({ ...acmeCommon, candidate: { name: 'Petra Kovacs', title: 'Backend Engineer', company: 'Globex' }, source: 'outbound', path: [{ c: 'applied', at: ago(9, 3) }, { c: 'screen', at: ago(4, 3) }] });
+  const petraApplication = addApplication({ ...acmeCommon, candidate: { name: 'Petra Kovacs', title: 'Backend Engineer', company: 'Globex' }, source: 'outbound', path: [{ c: 'applied', at: ago(9, 3) }, { c: 'screen', at: ago(4, 3) }] });
   addApplication({ ...acmeCommon, candidate: { name: 'Milo Andersen', title: 'Platform Engineer', company: 'Umbrella' }, source: 'referral', referredById: beth, path: [{ c: 'applied', at: ago(20, 3) }, { c: 'rejected', at: ago(15, 3) }] });
+  // Acme gets a loop of its own for one reason: the isolation sweep asserts tenant A
+  // sees rows and none of tenant B's, and an empty table passes that vacuously.
+  const petraLoopDate = new Date(NOW + 4 * DAY);
+  addLoop({
+    tenantId: acme,
+    applicationId: petraApplication,
+    timezone: 'Europe/Berlin',
+    candidateTimezone: 'Europe/Berlin',
+    targetDate: isoDate(petraLoopDate),
+    rounds: [{ kind: 'hiring_manager', durationMin: 45, panelists: [beth] }],
+    scheduledCount: 1,
+    startUtc: new Date(Date.UTC(petraLoopDate.getUTCFullYear(), petraLoopDate.getUTCMonth(), petraLoopDate.getUTCDate(), 8, 0, 0)),
+  });
   auditRows.push({ tenantId: acme, action: 'seed.completed', entityType: 'tenant', entityId: acme, after: { jobs: 1, users: 1 }, requestId: 'seed' });
 
   // ── Write everything (seed runs as the owner/migration role, which is not
   // subject to app-role grants; re-running the seed resets all data) ─────────
   try {
-    await client.unsafe(`truncate table audit_log, activities, stage_transitions, applications,
+    await client.unsafe(`truncate table audit_log, activities, stage_transitions,
+      interview_panelists, interviews, interview_round_panelists, interview_rounds,
+      interview_loops, applications,
       candidates, job_stages, jobs, stage_templates, users, tenants restart identity cascade`);
     const chunked = async <T extends object>(table: Parameters<typeof db.insert>[0], rows: T[]) => {
       for (let i = 0; i < rows.length; i += 300) {
@@ -380,6 +508,11 @@ export async function seed(databaseUrl = process.env['DATABASE_URL'] ?? DEFAULT_
     activityRows.sort((a, b) => (a.occurredAt as Date).getTime() - (b.occurredAt as Date).getTime());
     await chunked(s.stageTransitions, transitionRows);
     await chunked(s.activities, activityRows);
+    await chunked(s.interviewLoops, loopRows);
+    await chunked(s.interviewRounds, roundRows);
+    await chunked(s.interviewRoundPanelists, roundPanelistRows);
+    await chunked(s.interviews, interviewRows);
+    await chunked(s.interviewPanelists, interviewPanelistRows);
     await chunked(s.auditLog, auditRows);
     console.log(
       `seeded: ${tenantRows.length} tenants, ${userRows.length} users, ${jobRows.length} jobs, ` +
