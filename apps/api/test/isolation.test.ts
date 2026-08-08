@@ -59,8 +59,23 @@ interface HostileCase {
 /** Minimal mapping that PASSES ImportMappingSchema — a body that 400s on the schema
  *  would never reach the tenancy check and this gate would prove nothing. */
 const MAPPING = { columns: { name: 'name' }, duplicateStrategy: 'skip', defaultJobId: null };
+const INVALID_ARRANGEMENT = {
+  startUtc: '2026-08-11T16:00:00.000Z', endUtc: '2026-08-11T17:00:00.000Z', spanMin: 60, totalGapMin: 0,
+  rounds: [{ roundId: '00000000-0000-0000-0000-000000000001', startUtc: '2026-08-11T16:00:00.000Z', endUtc: '2026-08-11T17:00:00.000Z', panelistIds: [] }],
+};
 
 const HOSTILE_REQUESTS: Record<string, HostileCase> = {
+  'GET /v1/interview-loops/:id': {
+    request: (f) => ({ method: 'GET', url: `/v1/interview-loops/${f.talon.interviewLoopId}` }),
+  },
+  'POST /v1/interview-loops/:id/hold': {
+    request: (f) => ({ method: 'POST', url: `/v1/interview-loops/${f.talon.interviewLoopId}/hold`, payload: { arrangement: INVALID_ARRANGEMENT, version: 9_999 } }),
+    victimStatus: 400,
+  },
+  'POST /v1/interview-loops/:id/send': {
+    request: (f) => ({ method: 'POST', url: `/v1/interview-loops/${f.talon.interviewLoopId}/send`, payload: { arrangement: INVALID_ARRANGEMENT, version: 9_999, idempotencyKey: '00000000-0000-0000-0000-000000000002' } }),
+    victimStatus: 409,
+  },
   'GET /v1/jobs': {
     request: () => ({ method: 'GET', url: '/v1/jobs?limit=100' }),
     hostileStatus: 200,

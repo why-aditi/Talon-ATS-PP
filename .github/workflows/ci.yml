@@ -42,10 +42,13 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: docker compose up -d --wait radicale
       - run: pnpm build
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
+        env:
+          RUN_RADICALE: '1'
       - run: pnpm test:isolation
       - run: pnpm test:routes
       # The contrast check lands with the token pipeline's own gate — spec 001 §10.

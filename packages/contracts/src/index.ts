@@ -159,6 +159,16 @@ export {
   type LoopHold,
   InterviewLoopSchema,
   type InterviewLoop,
+  GetInterviewLoopParamsSchema,
+  HoldLoopRequestSchema,
+  type HoldLoopRequest,
+  HoldLoopResponseSchema,
+  type HoldLoopResponse,
+  SendLoopRequestSchema,
+  type SendLoopRequest,
+  AvailabilityDriftSchema,
+  SendLoopResponseSchema,
+  type SendLoopResponse,
 } from './scheduling.js';
 
 export {

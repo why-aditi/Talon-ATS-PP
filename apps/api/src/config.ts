@@ -155,6 +155,7 @@ export interface ApiConfig {
   databaseUrl: string;
   poolMax: number;
   auth: AuthConfig;
+  calendar?: { url: string; username: string; password: string };
 }
 
 const LOCAL_DATABASE_URL = 'postgres://talon_app:talon_app@localhost:5432/talon';
@@ -250,6 +251,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   return {
     databaseUrl: env['API_DATABASE_URL'] ?? LOCAL_DATABASE_URL,
     poolMax,
+    calendar: {
+      url: env['RADICALE_URL'] ?? 'http://localhost:5232',
+      username: env['RADICALE_USERNAME'] ?? 'talon',
+      password: env['RADICALE_PASSWORD'] ?? 'talon',
+    },
     auth: {
       cognito,
       secret,

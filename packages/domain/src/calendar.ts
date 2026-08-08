@@ -24,7 +24,7 @@ export type CalendarEvent = {
 };
 
 export interface CalendarProvider {
-  getBusy(userIds: string[], from: Date, to: Date): Promise<Record<string, BusyInterval[]>>;
+  getBusy(userIds: string[], from: Date, to: Date, ignoreExternalIds?: readonly string[]): Promise<Record<string, BusyInterval[]>>;
   createEvent(userId: string, event: CalendarEvent): Promise<{ externalId: string }>;
   updateEvent(userId: string, externalId: string, event: CalendarEvent): Promise<void>;
   deleteEvent(userId: string, externalId: string): Promise<void>;
