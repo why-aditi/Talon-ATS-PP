@@ -57,6 +57,13 @@ export const ERROR_TYPES = {
   /** Also returned for another tenant's resource — never 403 (spec 001 §6.4). */
   NOT_FOUND: 'urn:talon:error:not-found',
   /**
+   * A FIELD the caller may not write, on a resource they can otherwise see —
+   * comp, today (spec 005 §4.7). Deliberately narrow: every other "you may not"
+   * in this API is answerable as 404, and using 403 for a cross-tenant id would
+   * confirm the id exists. Only a field-level scope failure earns this.
+   */
+  FORBIDDEN: 'urn:talon:error:forbidden',
+  /**
    * Board moves. Two 409s, deliberately distinct (ARCHITECTURE §6.1): the card
    * changed under you, versus the card is no longer where you thought. The ui shows
    * different copy for each and refetches differently, so collapsing them would lose

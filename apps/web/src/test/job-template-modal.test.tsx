@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShell } from '../components/app-shell';
@@ -233,19 +233,22 @@ function renderShell() {
 }
 
 describe('one path per action', () => {
-  it('opens the same modal from the sidebar trigger', async () => {
-    const user = setupUser();
+  /*
+    "+ New job" opened this modal while /jobs/new did not exist. The wizard is
+    real now and POST /v1/jobs answers, so both triggers are links to it and the
+    control means what it says.
+
+    The modal survives because it is a different intent — copy the JD text, not
+    create a job — and it is reached from step 1 of the wizard, which is where
+    someone writing a req wants it. Two intents behind one control was the thing
+    #5 is about.
+  */
+  it('is not what "+ New job" opens any more — that is a link to the wizard', () => {
     renderShell();
 
+    expect(screen.queryByRole('button', { name: '+ New job' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '+ New job' })).toHaveAttribute('href', '/jobs/new');
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: '+ New job' }));
-    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
-    expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('Job description template');
-  });
-
-  it('no longer links anywhere — /jobs/new is the wizard route and does not exist', () => {
-    renderShell();
-    expect(screen.queryByRole('link', { name: '+ New job' })).not.toBeInTheDocument();
   });
 });
 

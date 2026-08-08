@@ -156,3 +156,101 @@ export const ListJobsResponseSchema = z.object({
   nextCursor: z.string().nullable(),
 });
 export type ListJobsResponse = z.infer<typeof ListJobsResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Stage templates — spec 005 §6.3
+//
+// A job's pipeline is copied from one of these at creation. The template is
+// read-only here: editing one is its own screen and its own spec.
+// ---------------------------------------------------------------------------
+
+export const TemplateStageSchema = z.object({
+  name: z.string().min(1),
+  canonical: CanonicalStageSchema,
+  /** Null is "no SLA", which is different from zero and must stay different. */
+  slaDays: z.number().int().positive().nullable(),
+  isTerminal: z.boolean(),
+});
+export type TemplateStage = z.infer<typeof TemplateStageSchema>;
+
+export const StageTemplateSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(1),
+  stages: z.array(TemplateStageSchema),
+});
+export type StageTemplate = z.infer<typeof StageTemplateSchema>;
+
+/**
+ * No cursor. A tenant has a handful of templates and the wizard shows all of
+ * them at once; paginating a list nothing scrolls would be a cursor to maintain
+ * for no reader.
+ */
+export const ListStageTemplatesResponseSchema = z.object({
+  data: z.array(StageTemplateSchema),
+});
+export type ListStageTemplatesResponse = z.infer<typeof ListStageTemplatesResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// POST /v1/jobs — spec 005 §4.2
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-stage SLA overrides, keyed by POSITION rather than by a stage id: the
+ * `job_stages` rows do not exist until the transaction that reads this creates
+ * them, so there is no id to name yet.
+ */
+export const StageOverrideSchema = z.object({
+  position: z.number().int().min(0),
+  slaDays: z.number().int().positive().max(365).nullable(),
+});
+export type StageOverride = z.infer<typeof StageOverrideSchema>;
+
+/**
+ * Cents arrive as digit strings, not numbers. `bigint` has no JSON
+ * representation, and a number would reinstate the 2^53 precision class that
+ * CLAUDE.md §4.9 abolishes outright.
+ */
+const CentsSchema = z
+  .string()
+  .regex(/^[1-9][0-9]*$/, 'Cents must be a positive integer, as a string');
+
+export const CreateJobRequestSchema = z
+  .object({
+    title: z.string().trim().min(1).max(200),
+    department: z.string().trim().min(1).max(100),
+    location: z.string().trim().min(1).max(100),
+    employmentType: z.string().trim().max(50).optional(),
+
+    bandMinCents: CentsSchema.optional(),
+    bandMaxCents: CentsSchema.optional(),
+    /** Required whenever a band is present — never defaulted (§4.9). */
+    currency: z.string().regex(/^[A-Z]{3}$/).optional(),
+
+    recruiterId: z.string().uuid().nullable().default(null),
+    hiringManagerId: z.string().uuid().nullable().default(null),
+    openings: z.number().int().min(1).max(999).default(1),
+    stageTemplateId: z.string().uuid(),
+    stageOverrides: z.array(StageOverrideSchema).max(20).default([]),
+
+    /** The wizard creates drafts; publishing is a separate, deliberate act. */
+    status: z.enum(['draft', 'active']).default('draft'),
+  })
+  // .strict(): an unexpected key is a client that thinks it is sending
+  // something, and dropping it silently is worse than a 400.
+  .strict()
+  .refine((v) => (v.bandMinCents === undefined) === (v.bandMaxCents === undefined), {
+    message: 'Band minimum and maximum must be provided together',
+    path: ['bandMaxCents'],
+  })
+  .refine((v) => v.bandMinCents === undefined || v.currency !== undefined, {
+    message: 'A currency is required when a band is set',
+    path: ['currency'],
+  })
+  .refine(
+    (v) =>
+      v.bandMinCents === undefined ||
+      v.bandMaxCents === undefined ||
+      BigInt(v.bandMaxCents) >= BigInt(v.bandMinCents),
+    { message: 'Band maximum must be at least the minimum', path: ['bandMaxCents'] },
+  );
+export type CreateJobRequest = z.infer<typeof CreateJobRequestSchema>;
