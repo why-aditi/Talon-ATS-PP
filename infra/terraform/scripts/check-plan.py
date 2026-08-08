@@ -62,6 +62,26 @@ def main(path):
     except (OSError, ValueError) as exc:
         sys.exit(f'check-plan: could not read {path}: {exc}')
 
+    # A gate that cannot tell "nothing is being replaced" from "this is not a
+    # plan" fails open, and both of the ways it failed open are plausible.
+    #
+    #   {}                                   — the plan step died before writing
+    #   {"format_version":…,"planned_values":{…}}
+    #                                        — `terraform show -json` run against
+    #                                          STATE instead of a plan file. That
+    #                                          shape has planned_values and no
+    #                                          resource_changes, so every loop
+    #                                          below iterates zero times and the
+    #                                          check prints its success line.
+    #
+    # `resource_changes` is present on every real plan, including an empty one
+    # (as `[]`), so requiring the key distinguishes "no changes" from "no plan".
+    if not isinstance(plan, dict) or 'resource_changes' not in plan:
+        sys.exit(f'check-plan: {path} has no "resource_changes" key, so it is '
+                 'not the JSON form of a plan file. Produce it with '
+                 '`terraform show -json tf.plan`, not from state. Refusing to '
+                 'report a pass on a file this check cannot read.')
+
     findings = []
     for change in plan.get('resource_changes', []):
         actions = change.get('change', {}).get('actions', [])

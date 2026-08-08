@@ -11,12 +11,26 @@ on:
       - 'infra/terraform/**'
       - '.github/workflows/terraform.yml'
 
+# cancel-in-progress is scoped to pull requests DELIBERATELY. On `push: main` the
+# same group would let a newer merge cancel an in-flight `terraform apply` — which
+# does not roll back: it leaves the DynamoDB lock held by a dead session and half
+# the stack applied, and the next run fails on the stale lock rather than on the
+# real problem. A superseded PR plan is worth cancelling; an apply never is.
 concurrency:
   group: terraform-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
+
+env:
+  AWS_REGION: us-east-1
+  # Terraform version is pinned to the one the stacks were planned and measured
+  # against (spec 002 §4.3a, §4a.4). It must not trail the version an operator
+  # runs locally: state written by a newer Terraform is refused by an older one,
+  # so a CI job on 1.9.x against state a human applied with 1.15.x fails with
+  # "state snapshot was created by Terraform vX, which is newer than this one".
+  TF_VERSION: 1.15.8
 
 jobs:
   # fmt, tflint and checkov need no AWS credentials and no state, so they run on
@@ -29,7 +43,7 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.9.8
+          terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
       - name: terraform fmt
@@ -49,7 +63,12 @@ jobs:
             echo "::endgroup::"
           done
 
-      - uses: bridgecrewio/checkov-action@master
+      # Pinned to a commit SHA, not @master. checkov's policy set changes daily;
+      # on a floating ref a new check can turn this build red with no commit of
+      # ours, which is indistinguishable from a real finding at the moment
+      # someone is trying to merge. Bumping the pin is a PR that re-runs the scan
+      # and records the new numbers in spec 002 §5.2.
+      - uses: bridgecrewio/checkov-action@9b70310bcd306d11740313070b940167d6b23085 # v12.3115.0
         with:
           directory: infra/terraform
           framework: terraform
@@ -89,31 +108,105 @@ jobs:
       fail-fast: false
       matrix:
         stack: [iam, persistent]
+    env:
+      # Supplied as TF_VAR_ rather than as `-var`, and that is the fix for a real
+      # bug rather than a style choice. A `-var github_repo=…` flag passed to a
+      # stack that does not DECLARE that variable is a hard error:
+      #
+      #   Error: Value for undeclared variable
+      #
+      # stacks/persistent declares no `github_repo`, so the single flag this job
+      # used to pass to every matrix leg made the persistent plan fail outright —
+      # and with it the stateful-resource gate below, on the ONE stack that
+      # contains aws_cognito_user_pool. The gate existed and never ran.
+      #
+      # Terraform ignores a TF_VAR_ environment variable that no root module
+      # declares (verified against both stacks at 1.15.8), so one env entry is
+      # correct for every stack in the matrix and stays correct for the next one.
+      TF_VAR_github_repo: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.9.8
+          terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
-          aws-region: us-east-1
+          aws-region: ${{ env.AWS_REGION }}
           role-session-name: gha-plan-${{ github.run_id }}
 
-      - name: terraform init
-        run: terraform -chdir=infra/terraform/stacks/${{ matrix.stack }} init -input=false
+      - name: resolve the state backend
+        id: backend
+        run: |
+          set -euo pipefail
+          acct="$(aws sts get-caller-identity --query Account --output text)"
+          # Same defaults as stacks/iam/locals.tf. If §9.5a stage 1 creates the
+          # bucket under another name, set the repo variables — spec 002 edge
+          # case 6 is that this coupling has no runtime check.
+          #
+          # The bucket and table must already exist: §9.5a stage 1 bootstraps
+          # them with the AWS CLI, outside Terraform's graph, and `global/state`
+          # is not built yet. Until it is, `terraform init` below fails with
+          # "S3 bucket does not exist" — loudly, which is the point. Setting
+          # vars.AWS_PLAN_ROLE_ARN without having run stage 1 turns this job red
+          # rather than quietly local, and that ordering is deliberate.
+          echo "bucket=${TF_STATE_BUCKET:-talon-tfstate-$acct}" >> "$GITHUB_OUTPUT"
+          echo "table=${TF_STATE_LOCK_TABLE:-talon-tfstate-lock}" >> "$GITHUB_OUTPUT"
+        env:
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          TF_STATE_LOCK_TABLE: ${{ vars.TF_STATE_LOCK_TABLE }}
 
+      # `terraform init` with no -backend-config initialises LOCAL state. No
+      # stack checks in a backend block (backend.tf is gitignored so a clean
+      # clone can init before the state bucket exists — §9.5a stage 1), so CI
+      # doing the same thing produced an empty state file per run: every plan
+      # started from nothing and read as "create everything".
+      #
+      # CI therefore does what the READMEs tell a human to do — copy the example
+      # backend block in, then supply the partial configuration at init time.
+      - name: terraform init
+        run: |
+          set -euo pipefail
+          stack=infra/terraform/stacks/${{ matrix.stack }}
+          cp "$stack/backend.tf.example" "$stack/backend.tf"
+          terraform -chdir="$stack" init -input=false \
+            -backend-config="bucket=${{ steps.backend.outputs.bucket }}" \
+            -backend-config="key=${{ matrix.stack }}/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ steps.backend.outputs.table }}" \
+            -backend-config="encrypt=true"
+
+      # `dynamodb_table` prints a deprecation warning at Terraform 1.15 in favour
+      # of S3 native locking (`use_lockfile`). It stays: ARCHITECTURE §9.5
+      # specifies a DynamoDB lock table, and the plan role's ONLY write grant is
+      # GetItem/PutItem/DeleteItem on it (role_github_plan.tf). Switching to
+      # use_lockfile makes that grant dead and needs s3:PutObject on the lock
+      # object instead — an IAM change, so a separate PR, not a flag swap.
+      #
+      # A missing backend does not fail init — it succeeds quietly with local
+      # state, and every downstream step then behaves exactly as if it had
+      # worked. That is how an apply against throwaway state can look green. This
+      # asserts the backend Terraform actually selected, from the file Terraform
+      # itself writes.
+      - name: the backend is remote, not throwaway local state
+        run: |
+          python3 infra/terraform/scripts/check-backend.py \
+            infra/terraform/stacks/${{ matrix.stack }} ${{ matrix.stack }}/terraform.tfstate
+
+      # -lock is left at its default ON. role_github_plan.tf grants this role
+      # dynamodb:GetItem/PutItem/DeleteItem on the lock table and nothing else,
+      # and the comment there says why: a plan run with -lock=false reads state
+      # while a merge apply is writing it. The flag and the grant contradicted
+      # each other; the grant wins.
       - name: terraform plan
         id: plan
         run: |
           set -euo pipefail
           terraform -chdir=infra/terraform/stacks/${{ matrix.stack }} plan \
-            -input=false -lock=false -no-color \
-            -var 'github_repo=${{ github.repository }}' \
-            -out=tf.plan | tee plan.txt
+            -input=false -no-color -out=tf.plan | tee plan.txt
           terraform -chdir=infra/terraform/stacks/${{ matrix.stack }} \
             show -json tf.plan > plan.json
 
@@ -126,8 +219,25 @@ jobs:
       # that makes CLAUDE.md's rule enforceable rather than advisory — and it
       # runs BEFORE the comment step, so a red gate is not buried under a diff
       # nobody scrolls.
+      #
+      # `if: always()` because a gate that only runs when everything else worked
+      # is a gate that reports "skipped" for the same reasons it would report
+      # "failed". check-plan.py exits non-zero when plan.json is missing or is
+      # not a plan, so a failed plan step surfaces here as a failed gate rather
+      # than as a green one.
       - name: no stateful resource is replaced
+        if: always()
         run: python3 infra/terraform/scripts/check-plan.py plan.json
+
+      # The IAM assertions in spec 002 §5.1, run against the documents this very
+      # plan renders. They are what keeps BL-1 from recurring: the `child` rows
+      # hold an inline *:* and are denied only by the permissions boundary, so a
+      # guardrail added to the deploy role and forgotten in the boundary fails
+      # here. The plan role's ReadOnlyAccess already covers
+      # iam:SimulateCustomPolicy, iam:GetPolicy and iam:GetPolicyVersion.
+      - name: iam policy assertions
+        if: matrix.stack == 'iam'
+        run: python3 infra/terraform/stacks/iam/simulate/simulate.py plan.json
 
       - name: post the plan as a comment
         if: always() && github.event_name == 'pull_request'
@@ -180,28 +290,64 @@ jobs:
       fail-fast: true
       matrix:
         stack: [persistent]
+    env:
+      # Harmless for stacks/persistent, which declares no such variable, and
+      # correct in advance for any stack added to this matrix that does. See the
+      # plan job for why this is not a `-var` flag.
+      TF_VAR_github_repo: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.9.8
+          terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: us-east-1
+          aws-region: ${{ env.AWS_REGION }}
           role-session-name: gha-apply-${{ github.run_id }}
 
+      - name: resolve the state backend
+        id: backend
+        run: |
+          set -euo pipefail
+          acct="$(aws sts get-caller-identity --query Account --output text)"
+          echo "bucket=${TF_STATE_BUCKET:-talon-tfstate-$acct}" >> "$GITHUB_OUTPUT"
+          echo "table=${TF_STATE_LOCK_TABLE:-talon-tfstate-lock}" >> "$GITHUB_OUTPUT"
+        env:
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          TF_STATE_LOCK_TABLE: ${{ vars.TF_STATE_LOCK_TABLE }}
+
+      # THE REASON THIS IS NOT OPTIONAL ON THE APPLY PATH. Without it every merge
+      # initialised empty local state, planned stacks/persistent from nothing,
+      # applied, and threw the state file away with the runner: a NEW Cognito
+      # pool and app client per merge, orphaned pools accumulating, and
+      # check-plan.py passing every time because a plan from empty state contains
+      # only `create` and the check flags `delete`. Green, and wrong.
       - name: terraform init
-        run: terraform -chdir=infra/terraform/stacks/${{ matrix.stack }} init -input=false
+        run: |
+          set -euo pipefail
+          stack=infra/terraform/stacks/${{ matrix.stack }}
+          cp "$stack/backend.tf.example" "$stack/backend.tf"
+          terraform -chdir="$stack" init -input=false \
+            -backend-config="bucket=${{ steps.backend.outputs.bucket }}" \
+            -backend-config="key=${{ matrix.stack }}/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ steps.backend.outputs.table }}" \
+            -backend-config="encrypt=true"
+
+      - name: the backend is remote, not throwaway local state
+        run: |
+          python3 infra/terraform/scripts/check-backend.py \
+            infra/terraform/stacks/${{ matrix.stack }} ${{ matrix.stack }}/terraform.tfstate
 
       - name: terraform plan
         run: |
           set -euo pipefail
           terraform -chdir=infra/terraform/stacks/${{ matrix.stack }} plan \
-            -input=false -no-color -out=tf.plan
+            -input=false -no-color -out=tf.plan | tee plan.txt
           terraform -chdir=infra/terraform/stacks/${{ matrix.stack }} \
             show -json tf.plan > plan.json
 
@@ -209,6 +355,7 @@ jobs:
       # that gets applied is a different plan from the one the PR reviewed, made
       # against state that may have moved since.
       - name: no stateful resource is replaced
+        if: always()
         run: python3 infra/terraform/scripts/check-plan.py plan.json
 
       - name: terraform apply
