@@ -199,6 +199,28 @@ describe('the solver grid is a schema constraint, not a convention', () => {
       values (${randomUUID()}, ${ids.talon}, ${ids.anaLoop}, 'values', 50, 9)`);
   });
 
+  it('an off-grid duration is rejected on the INSTANCE too, not just the template', async () => {
+    // The instance is the row a placement writes (§7a), so it is the one that can carry a
+    // duration nothing checked. 50 minutes has no exact position on the 15-minute bitmap:
+    // without this it inserts cleanly and misplaces a slot somewhere far from here.
+    const insert = (tx: postgres.TransactionSql, durationMin: number) => tx`
+      insert into interviews (id, tenant_id, application_id, loop_id, round_id, kind,
+                              duration_min, scheduled_start, scheduled_end, status)
+      values (${randomUUID()}, ${ids.talon}, ${ids.anaApplication}, ${ids.anaLoop},
+              ${ids.anaUnscheduledRound}, 'values', ${durationMin}, now(),
+              now() + make_interval(mins => ${durationMin}), 'confirmed')
+      returning id`;
+
+    await rejectsWith('23514', (tx) => insert(tx, 50));
+
+    // The positive control. `rejectsWith` only pins the SQLSTATE, and every check on this
+    // table shares 23514 — without this, the test above would still pass if the row were
+    // being refused for some unrelated reason and the grid check had never been added.
+    await inRolledBackTx(async (tx) => {
+      expect(await insert(tx, 45)).toHaveLength(1);
+    });
+  });
+
   it('two rounds cannot occupy the same position in a loop', async () => {
     await rejectsWith('23505', (tx) => tx`
       insert into interview_rounds (id, tenant_id, loop_id, kind, duration_min, position)

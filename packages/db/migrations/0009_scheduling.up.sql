@@ -167,7 +167,12 @@ create table interviews (
   -- must still describe itself after someone edits the template it came from.
   kind text not null
     check (kind in ('coding', 'system_design', 'values', 'hiring_manager')),
-  duration_min int not null check (duration_min > 0),
+  -- Same 15-minute grid as interview_rounds, and for the same reason rather than for
+  -- symmetry: the solver and §7a's validateArrangement both work on a 15-minute bitmap,
+  -- so a 50-minute interview has no exact position on it. Copied from the round today,
+  -- but this is the row a placement writes, and an off-grid value here would surface far
+  -- from where it was written — as a slot that quietly rounds, not as a rejected insert.
+  duration_min int not null check (duration_min > 0 and duration_min % 15 = 0),
   scheduled_start timestamptz,
   scheduled_end timestamptz,
   status text not null check (
