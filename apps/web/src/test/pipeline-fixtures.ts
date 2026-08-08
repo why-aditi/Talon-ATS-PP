@@ -29,7 +29,7 @@
  * chosen. All nine match the screen exactly: Tess red, Omar green, Jordan and Priya
  * amber, Elena and Ana violet, Marcus and David blue, Sofia green.
  */
-import type { Board, BoardColumn } from './pipeline-contract';
+import type { Board, BoardColumn } from '../lib/pipeline-contract';
 
 export const ENG204_JOB_ID = '0198f3a2-0001-7000-8000-000000000001';
 
@@ -101,9 +101,9 @@ function card(
   name: string,
   currentTitle: string,
   currentCompany: string,
-  rest: Pick<import('./pipeline-contract').ApplicationCard, 'source' | 'skills' | 'daysInStage' | 'nextAction'> &
-    Partial<Pick<import('./pipeline-contract').ApplicationCard, 'status' | 'scoreAvg'>>,
-): import('./pipeline-contract').ApplicationCard {
+  rest: Pick<import('../lib/pipeline-contract').ApplicationCard, 'source' | 'skills' | 'daysInStage' | 'nextAction'> &
+    Partial<Pick<import('../lib/pipeline-contract').ApplicationCard, 'status' | 'scoreAvg'>>,
+): import('../lib/pipeline-contract').ApplicationCard {
   return {
     id: APPLICATION_IDS[who],
     candidateId: CANDIDATES[who],

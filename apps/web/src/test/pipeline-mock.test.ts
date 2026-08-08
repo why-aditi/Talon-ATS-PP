@@ -4,9 +4,9 @@
  * wrong, and they are invisible from the UI, so they are tested directly.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
-import { BoardSchema, PIPELINE_ERROR_TYPES, type ApplicationCard, type Board } from '../mocks/pipeline-contract';
-import { ENG204_JOB_ID, STAGE_IDS } from '../mocks/pipeline-fixtures';
-import { resetPipelineState } from '../mocks/pipeline-handlers';
+import { BoardSchema, PIPELINE_ERROR_TYPES, type ApplicationCard, type Board } from '../lib/pipeline-contract';
+import { ENG204_JOB_ID, STAGE_IDS } from './pipeline-fixtures';
+import { resetPipelineState } from './pipeline-handlers';
 import { MoveFailure } from '../lib/board-query';
 
 const API = 'http://localhost:3000';

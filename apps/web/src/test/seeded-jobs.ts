@@ -41,7 +41,7 @@ const NO_APPLICATIONS: StageDistribution = {
   withdrawn: 0,
 };
 
-export const JOBS: Job[] = [
+export const SEEDED_JOBS: Job[] = [
   {
     id: '0198f3a2-0001-7000-8000-000000000001',
     reqCode: 'ENG-204',
@@ -117,20 +117,3 @@ export const JOBS: Job[] = [
     activeCount: 9,
   },
 ];
-
-/**
- * Sidebar counts. Only Jobs is derived — Pipeline counts the cards on the default
- * board, which means picking a job arbitrarily, so it is pinned to the reference
- * value alongside the three that have no endpoint at all yet.
- *
- * ponytail: static until GET /v1/review-queue, /v1/interviews and /v1/offers exist —
- * those replace these constants one for one. Spec §11 open question 7 asks where these
- * come from: they are tenant-wide, so they cannot ride the {data, nextCursor} envelope.
- */
-export const NAV_COUNTS = {
-  jobs: JOBS.length,
-  pipeline: 9,
-  reviewInbox: 4,
-  scheduling: 4,
-  offers: 1,
-} as const;

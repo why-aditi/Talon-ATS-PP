@@ -13,7 +13,15 @@ Build the ENG-204 pipeline board as a real, interactive screen against MSW fixtu
 
 **The job, in one sentence:** render ENG-204's five stage columns with their nine seeded candidates, and make a candidate move between stages by mouse or by keyboard with an optimistic update that correctly survives both kinds of 409.
 
-**No API integration.** `PATCH /v1/applications/:id/stage` and `/rank` do not exist. The MSW layer implements them to the contract below so the client is written against real semantics, not a stub that always says yes.
+**No API integration.** `PATCH /v1/applications/:id/stage` and `/rank` do not exist. The mock layer implements them to the contract below so the client is written against real semantics, not a stub that always says yes.
+
+> **Amended 2026-08-08 — the mock is test-only now, and the board has no browser data.**
+>
+> This spec was built against MSW, which served the board in the *browser* as well as in tests. MSW has since been removed from `apps/web` (spec 001 step 5 branch), so the mock now runs only under Vitest, as `apps/web/src/test/pipeline-handlers.ts` on the fetch stub. Semantics are unchanged and all the mock-layer tests below still pass.
+>
+> The consequence, verified in Chrome on 2026-08-08: `/jobs/:id/pipeline` renders its chrome and then its error state — "The pipeline didn't load." — because `GET /v1/jobs/:jobId/board` returns 404 from the real API. The board is reachable from the jobs list (each row links to its own board) but shows no candidates until the api stream ships the three endpoints in §4. That is the honest state and it is written here rather than left for someone to discover by clicking.
+>
+> Also moved: `pipeline-contract.ts` now lives at `apps/web/src/lib/`, not under `mocks/` — `pipeline-board.tsx`, `pipeline-card.tsx` and `board-query.ts` import their types from it, and production code cannot depend on a directory of mocks. The single-commit migration into `packages/contracts/src/pipeline.ts` is unchanged.
 
 ---
 
