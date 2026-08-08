@@ -765,3 +765,22 @@ When a Google identity signs in for the first time, Cognito creates a **new user
 That is correct behaviour, not a failure: just-in-time provisioning is explicitly out of scope (§2), and spec 002 §5's exclusivity rule says one person has one sign-in method. Making a specific Google account work means pointing an existing `users` row's `external_id` at the sub Cognito allocates for that federated identity — a deliberate act, per person.
 
 The failure is *distinguishable* precisely so this reads as "this workspace has no account for you" rather than "sign-in failed", which is the distinction §11.6 exists to preserve.
+
+## 10.7 A name has been consumed — read before setting `user_pool_domain_prefix`
+
+The hosted-UI domain created by hand on 2026-08-08 is:
+
+```
+talon-dev-762079300828
+```
+
+It sits on the **throwaway** pool `talon-throwaway-spec002`, and `stacks/persistent/import.tf` records that the throwaway is deliberately *not* adopted — the stack creates a fresh `talon-dev` pool instead.
+
+**Cognito domain prefixes are globally unique across every AWS account in the region.** So if `var.user_pool_domain_prefix` is ever set to `talon-dev-762079300828`, the apply fails with `InvalidParameterException: Domain already associated with another user pool` — pointing at a pool Terraform does not manage and whose name gives no hint that it is the culprit.
+
+Two ways out, both cheap, neither automatic:
+
+1. Delete the throwaway's domain first — `aws cognito-idp delete-user-pool-domain --domain talon-dev-762079300828 --user-pool-id us-east-1_08d7fh6x5` — which frees the name and immediately breaks local Google sign-in until the fresh pool has one.
+2. Give the persistent stack a different prefix and leave the throwaway alone until it is deleted wholesale.
+
+Whichever is chosen, the Google Cloud OAuth client's **Authorized redirect URIs** must gain the new domain's `/oauth2/idpresponse` too. That list is the one part of this flow no AWS credential can change, so a domain rename is always a two-place change.
