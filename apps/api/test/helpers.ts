@@ -9,6 +9,7 @@
  */
 import { asValue, type AwilixContainer } from 'awilix';
 import type { FastifyInstance } from 'fastify';
+import { createHash } from 'node:crypto';
 import postgres from 'postgres';
 import { buildApp } from '../src/app.js';
 import { loadConfig, type ApiConfig } from '../src/config.js';
@@ -165,7 +166,12 @@ export async function loadFixtures(): Promise<Fixtures> {
     const [talonTemplate] = await sql<{ id: string }[]>`
       select id from stage_templates where tenant_id = ${talonTenant?.id ?? null} limit 1`;
     if (
-      !talonTenant || !acmeTenant || !talonJob || !acmeJob || !talonApplication || !talonNextStage ||
+      !talonTenant ||
+      !acmeTenant ||
+      !talonJob ||
+      !acmeJob ||
+      !talonApplication ||
+      !talonNextStage ||
       !talonTemplate
     ) {
       throw new Error('seed is incomplete');
@@ -199,7 +205,7 @@ export async function loadFixtures(): Promise<Fixtures> {
  * request 401s. Returns the subject, because it is what the token's `sub` is and
  * therefore what a hand-minted token has to carry.
  */
-export async function provision(test: TestApp, person: Person): Promise<string> {
+async function provision(test: TestApp, person: Person): Promise<string> {
   const { sub } = await test.container.cradle.identityService.provisionCredential({
     email: person.email,
     password: TEST_PASSWORD,
@@ -208,11 +214,125 @@ export async function provision(test: TestApp, person: Person): Promise<string> 
   // tenant transaction and must not be able to write this column at all.
   const sql = postgres(OWNER_URL, { max: 1, onnotice: () => {} });
   try {
-    await sql`update users set external_id = ${sub} where id = ${person.id}::uuid`;
+    const updated = await sql`
+      update users set external_id = ${sub} where id = ${person.id}::uuid returning id`;
+    // An UPDATE matching nothing is not an error in SQL, and the symptom arrives
+    // much later as a 401 from a route that looks unrelated. Say it here instead.
+    if (updated.length !== 1) {
+      throw new Error(
+        `provision: ${person.email} (${person.id}) matched ${updated.length} rows, expected 1`,
+      );
+    }
   } finally {
     await sql.end();
   }
   return sub;
+}
+
+/**
+ * A user this file alone owns.
+ *
+ * WHY THIS EXISTS. Nine suites authenticated as the same two seeded people, and
+ * signing in is a WRITE: `provision` sets `users.external_id`, `auth-chain`
+ * sets `tokens_valid_after`, and a role could be changed as easily. Suites were
+ * mutating a row other suites depended on, and vitest does not fix the file order,
+ * so which suite saw which state varied run to run.
+ *
+ * WHAT IS NOT CLAIMED. This is not a diagnosis of a specific observed flake, and
+ * an earlier version of this comment asserted one that the code contradicts. For
+ * the record, so nobody re-derives them:
+ *
+ *   - Files do NOT run in parallel. `vitest.config.ts` sets
+ *     `fileParallelism: false`.
+ *   - Re-provisioning does NOT churn the subject. `createUser` catches
+ *     `UsernameExistsException`, re-reads via `AdminGetUser` and returns the
+ *     ORIGINAL sub, so a second `signIn` for the same person writes the value
+ *     `external_id` already held.
+ *   - A second app in one file does NOT get an empty stub. `stub` above is a
+ *     module-level singleton, reference-counted, and `stop()` does not clear its
+ *     user map.
+ *
+ * So the mechanism behind the reported flake is UNKNOWN. What this removes is the
+ * shared mutable identity that made a mechanism possible at all; if a suite still
+ * goes red and green with no code change, this is not the cause and the search
+ * should start elsewhere.
+ *
+ * `label` is the test file. Deriving the id and address from it means a crashed
+ * run leaves rows that name their owner instead of rows to guess at, and that a
+ * file reuses its row rather than accumulating one per run. It does NOT prevent
+ * collisions — two files choosing the SAME label would share a row, which is the
+ * very thing this exists to stop. Labels are unique by inspection.
+ */
+export async function dedicatedUser(
+  test: TestApp,
+  label: string,
+  options: { role?: string; tenantId: string } & { name?: string },
+): Promise<{ person: Person; session: Session }> {
+  const slug = label
+    .replace(/[^a-z0-9]/gi, '')
+    .toLowerCase()
+    .slice(0, 20);
+  // Hex, from a digest of the label: a UUID has no room for words, and slicing the
+  // label straight in produced `ffffffff-auth-...`, which Postgres rejects outright.
+  // The leading `ffffffff` still marks it as test-made and sorts it after every
+  // UUIDv7 the seed produced.
+  const hex = createHash('sha256').update(label).digest('hex');
+  const id = `ffffffff-${hex.slice(0, 4)}-4000-8000-${hex.slice(4, 16)}`;
+  // The digest goes in the ADDRESS too, not just the id. `users.email` is citext
+  // and globally unique (0001), and the slug is lossy — it strips punctuation,
+  // folds case and truncates at 20 — so two labels can share a slug while holding
+  // different ids. That combination raises a unique violation on email instead of
+  // taking the `on conflict (id)` branch below, and it raises inside a `beforeAll`.
+  // The slug stays in front so the row is still readable at a glance.
+  const email = `${slug}-${hex.slice(0, 8)}@dedicated.test`;
+  const role = options.role ?? 'recruiter';
+
+  const sql = postgres(OWNER_URL, { max: 1, onnotice: () => {} });
+  try {
+    // Owner connection: the api role cannot write `users` outside a tenant
+    // transaction, and must not be able to write `external_id` at all.
+    await sql`
+      insert into users (id, tenant_id, email, name, role, timezone)
+      values (${id}::uuid, ${options.tenantId}::uuid, ${email},
+              ${options.name ?? `Dedicated ${slug}`}, ${role}, 'UTC')
+      on conflict (id) do update
+        set role = excluded.role, tenant_id = excluded.tenant_id, name = excluded.name`;
+  } finally {
+    await sql.end();
+  }
+
+  const person: Person = { id, email, name: options.name ?? `Dedicated ${slug}`, role };
+  return { person, session: await signIn(test, person) };
+}
+
+/**
+ * Removes the row `dedicatedUser` created, when history allows it — which is
+ * USUALLY NOT. Read this as "tidy up if possible", not as cleanup you can rely on.
+ *
+ * `dedicatedUser` completes a real sign-in, and a successful sign-in writes an
+ * `audit_log` row whose `actor_id` is the new user. `audit_log` and
+ * `stage_transitions` are append-only, and their FKs to `users` are exactly what
+ * stops a delete from quietly orphaning history. So the delete raises for nearly
+ * every caller by construction — `audit.test.ts` is the only one where it lands,
+ * because its `afterAll` removes the authentication rows first. Everywhere else
+ * this call is a no-op that reads like cleanup, and that is fine: forcing it would
+ * mean deleting the history those tables exist to keep.
+ *
+ * Leaving the row costs nothing. `seed()` truncates `users ... cascade` before
+ * every run, so a survivor lives until the next `pnpm test` and no further.
+ */
+export async function removeDedicatedUser(person: Person): Promise<void> {
+  const sql = postgres(OWNER_URL, { max: 1, onnotice: () => {} });
+  try {
+    await sql`delete from users where id = ${person.id}::uuid`;
+  } catch (error) {
+    // 23503 only — foreign_key_violation, the expected outcome above. A blanket
+    // catch here would also swallow a dropped connection, a revoked grant or a
+    // typo in the statement, and report all three as successful cleanup.
+    if ((error as { code?: string }).code !== '23503') throw error;
+  } finally {
+    await sql.end();
+  }
 }
 
 export interface Session {

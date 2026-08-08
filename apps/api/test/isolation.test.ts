@@ -14,12 +14,14 @@ import { afterAll, beforeAll, expect, it } from 'vitest';
 import { ERROR_TYPES } from '@talon/contracts';
 import {
   bearer,
+  dedicatedUser,
   deleteApplications,
   deleteJobs,
   loadFixtures,
-  signIn,
+  removeDedicatedUser,
   startApp,
   type Fixtures,
+  type Person,
   type Session,
   type TestApp,
 } from './helpers.js';
@@ -176,12 +178,31 @@ let test: TestApp;
 let fixtures: Fixtures;
 let victim: Session;
 let attacker: Session;
+/**
+ * This file's OWN users. See `dedicatedUser` — signing in re-provisions, which
+ * rewrites `users.external_id`, so a shared row leaves every other suite naming a
+ * subject that no longer resolves.
+ */
+let ownedVictim: Person;
+let ownedAttacker: Person;
 
 beforeAll(async () => {
   test = await startApp();
   fixtures = await loadFixtures();
-  victim = await signIn(test, fixtures.talon.recruiter); // tenant A
-  attacker = await signIn(test, fixtures.acme.admin); // tenant B, an admin at home
+  // The attacker is an ADMIN at home on purpose: maximum privilege in tenant B
+  // still sees nothing of tenant A.
+  const a = await dedicatedUser(test, 'isolationvictim', {
+    tenantId: fixtures.talon.tenantId,
+    role: 'recruiter',
+  });
+  const b = await dedicatedUser(test, 'isolationattacker', {
+    tenantId: fixtures.acme.tenantId,
+    role: 'admin',
+  });
+  ownedVictim = a.person;
+  ownedAttacker = b.person;
+  victim = a.session;
+  attacker = b.session;
 });
 
 /*
@@ -195,8 +216,11 @@ const createdJobs: string[] = [];
 const createdApplications: string[] = [];
 
 afterAll(async () => {
+  // Applications first: they reference the jobs, which reference the users.
   await deleteApplications(createdApplications);
   await deleteJobs(createdJobs);
+  await removeDedicatedUser(ownedVictim);
+  await removeDedicatedUser(ownedAttacker);
   await test.close();
 });
 
@@ -214,7 +238,12 @@ it('the same requests succeed for the tenant that owns the resource', async () =
   // Without this, a 404 everywhere would pass the suite by being broken.
   for (const [key, hostile] of Object.entries(HOSTILE_REQUESTS)) {
     const { method, url, payload } = hostile.request(fixtures);
-    const res = await test.app.inject({ method, url, headers: bearer(victim), ...(payload ? { payload } : {}) });
+    const res = await test.app.inject({
+      method,
+      url,
+      headers: bearer(victim),
+      ...(payload ? { payload } : {}),
+    });
     // Any row this created is this file's to remove — see `createdJobs`.
     if (res.statusCode === 201 && url === '/v1/jobs') {
       createdJobs.push((res.json() as { id: string }).id);
@@ -232,7 +261,12 @@ it('the same requests succeed for the tenant that owns the resource', async () =
 it('tenant B against tenant A resources gets 404 — never 403, never 200', async () => {
   for (const [key, hostile] of Object.entries(HOSTILE_REQUESTS)) {
     const { method, url, payload } = hostile.request(fixtures);
-    const res = await test.app.inject({ method, url, headers: bearer(attacker), ...(payload ? { payload } : {}) });
+    const res = await test.app.inject({
+      method,
+      url,
+      headers: bearer(attacker),
+      ...(payload ? { payload } : {}),
+    });
     // 403 would confirm the resource exists, which is itself the leak (§6.4).
     expect(res.statusCode, key).toBe(hostile.hostileStatus ?? 404);
     if ((hostile.hostileStatus ?? 404) === 404) {
@@ -269,5 +303,7 @@ it('an id that never existed is indistinguishable from another tenant’s', asyn
     headers: bearer(attacker),
   });
   expect(otherTenants.statusCode).toBe(nonexistent.statusCode);
-  expect(otherTenants.json<{ type: string }>().type).toBe(nonexistent.json<{ type: string }>().type);
+  expect(otherTenants.json<{ type: string }>().type).toBe(
+    nonexistent.json<{ type: string }>().type,
+  );
 });

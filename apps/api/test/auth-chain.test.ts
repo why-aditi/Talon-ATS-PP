@@ -9,12 +9,14 @@ import postgres from 'postgres';
 import { signJwt } from '../src/modules/identity/jwt.js';
 import {
   bearer,
+  dedicatedUser,
   loadFixtures,
-  signIn,
+  removeDedicatedUser,
   startApp,
   testConfig,
   TEST_PASSWORD,
   type Fixtures,
+  type Person,
   type Session,
   type TestApp,
 } from './helpers.js';
@@ -23,6 +25,14 @@ import { OWNER_URL } from './urls.js';
 let test: TestApp;
 let fixtures: Fixtures;
 let session: Session;
+/**
+ * This file's OWN user, not the seeded recruiter. See `dedicatedUser`.
+ *
+ * This file writes `tokens_valid_after` on the row and mints tokens against it.
+ * Both are reasonable things to do to a user you own; neither is reasonable on a
+ * row eight other suites also authenticate as.
+ */
+let owned: Person;
 
 const auth = testConfig().auth;
 const now = () => Math.floor(Date.now() / 1000);
@@ -40,7 +50,7 @@ function mint(claims: Record<string, unknown>): string {
   return signJwt(
     {
       sub: session.sub,
-      email: fixtures.talon.recruiter.email,
+      email: owned.email,
       tenant_id: fixtures.talon.tenantId,
       role: 'recruiter',
       iss: auth.issuer,
@@ -64,10 +74,14 @@ const get = (token: string) =>
 beforeAll(async () => {
   test = await startApp();
   fixtures = await loadFixtures();
-  session = await signIn(test, fixtures.talon.recruiter);
+  ({ person: owned, session } = await dedicatedUser(test, 'authchain', {
+    tenantId: fixtures.talon.tenantId,
+    role: 'recruiter',
+  }));
 });
 
 afterAll(async () => {
+  await removeDedicatedUser(owned);
   await test.close();
 });
 
@@ -172,7 +186,7 @@ it('a token issued before users.tokens_valid_after is refused while still unexpi
     // second resolution and the api's clock is not the database's, so an
     // instant cut-off makes this assertion a race rather than a test.
     await sql`update users set tokens_valid_after = date_trunc('second', now() - interval '60 seconds')
-              where id = ${fixtures.talon.recruiter.id}::uuid`;
+              where id = ${owned.id}::uuid`;
     const after = await get(token);
     expect(after.statusCode).toBe(401);
     expect(after.json<{ type: string }>().type).toBe(ERROR_TYPES.TOKEN_INVALIDATED);
@@ -181,14 +195,12 @@ it('a token issued before users.tokens_valid_after is refused while still unexpi
     const fresh = await test.app.inject({
       method: 'POST',
       url: '/v1/auth/sign-in',
-      payload: { email: fixtures.talon.recruiter.email, password: TEST_PASSWORD },
+      payload: { email: owned.email, password: TEST_PASSWORD },
     });
     expect(fresh.statusCode).toBe(200);
-    expect(
-      (await get(fresh.json<{ accessToken: string }>().accessToken)).statusCode,
-    ).toBe(200);
+    expect((await get(fresh.json<{ accessToken: string }>().accessToken)).statusCode).toBe(200);
   } finally {
-    await sql`update users set tokens_valid_after = null where id = ${fixtures.talon.recruiter.id}::uuid`;
+    await sql`update users set tokens_valid_after = null where id = ${owned.id}::uuid`;
     await sql.end();
   }
 });
@@ -199,7 +211,13 @@ it('sign-in with a wrong password is 401 and says nothing about the account', as
   const res = await test.app.inject({
     method: 'POST',
     url: '/v1/auth/sign-in',
-    payload: { email: fixtures.talon.recruiter.email, password: 'not the password' },
+    // `owned.email`, and the whole test turns on it: this arm must be an account
+    // that EXISTS with a password that is wrong, so the provider raises
+    // NotAuthorizedException here and UserNotFoundException below. Naming a person
+    // this file never provisioned makes both arms UserNotFoundException — the
+    // assertion then compares an unknown account to an unknown account and holds
+    // no matter how loudly the api distinguishes the two.
+    payload: { email: owned.email, password: 'not the password' },
   });
   const unknown = await test.app.inject({
     method: 'POST',
@@ -229,7 +247,7 @@ it('sign-in rejects unknown fields rather than ignoring them', async () => {
   const res = await test.app.inject({
     method: 'POST',
     url: '/v1/auth/sign-in',
-    payload: { email: fixtures.talon.recruiter.email, password: TEST_PASSWORD, role: 'admin' },
+    payload: { email: owned.email, password: TEST_PASSWORD, role: 'admin' },
   });
   expect(res.statusCode).toBe(400);
 });
