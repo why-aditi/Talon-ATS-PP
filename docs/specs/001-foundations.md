@@ -535,6 +535,75 @@ CI gates, all blocking, each wired in the step that first has something for it t
 
 A gate is not "declared blocking" before its step: the script exists and the workflow runs it, or the row above says which step it arrives in. A named-but-missing gate cannot be a required status check, and its absence is silent.
 
+**Amended 2026-08-08 — `e2e` is green but not yet wired as a check.**
+The Cognito-only refactor (`f41ac45`) deleted `LocalIdentityProvider`, so the api
+refuses to boot without a reachable user pool and the suite now needs Cognito
+configuration. `e2e/playwright.config.ts` forwards it and fails fast with the
+list of missing variables rather than a raw stack trace from `dist/config.js`.
+
+**Credentials are not the blocker.** `stacks/iam` already provisions the GitHub
+OIDC provider and a plan role, so CI can assume a role rather than hold a static
+key, and the pool id and client id are ordinary configuration. Wiring it is three
+additions to `ci.yml`: `permissions: id-token: write`,
+`aws-actions/configure-aws-credentials@v4`, and the two `COGNITO_*` values as
+repository variables (they are identifiers, not secrets — `TALON_JWT_SECRET` is
+the only secret in the set).
+
+What is left is a trade, and it should be made deliberately rather than
+discovered:
+
+- **Determinism.** The suite only *reads* from Cognito — it signs in as seeded
+  users and creates none — so concurrent runs do not collide there. But
+  `seed:identities` must have run against the CI database **and** that pool, and
+  sign-in throttling (429, added in `f41ac45`) is a shared-pool resource that
+  concurrent runs do contend for.
+- **Coupling.** A pool deleted, renamed, or reconfigured turns every PR red for a
+  reason unrelated to the PR. That is the cost of a gate that depends on AWS.
+
+The hermetic alternative is to extract `apps/api/test/cognito-stub.ts` — which
+already fakes Cognito at the network layer, but by mutating `process.env` and
+`globalThis.fetch` **inside the test process**, where Playwright's separately
+spawned api cannot reach it — into a standalone server the api is pointed at with
+`AWS_ENDPOINT_URL`. Owner: api stream.
+
+**Decision:** wire the gate against the real dev pool now (cheap, and it catches
+regressions today), and keep the stub extraction as the thing that removes the
+AWS coupling later.
+
+### The `e2e` job — wired, inert until configured
+
+`ci.yml` now carries an `e2e` job: its own runner, chromium, a Postgres service,
+`pnpm db:migrate && pnpm db:seed` (which chains `seed:identities`), and
+`pnpm e2e`. Separate from `ci` because installing a browser and talking to AWS do
+not belong in the job every PR waits on.
+
+It is guarded by `if: vars.AWS_E2E_ROLE_ARN != '' && vars.COGNITO_USER_POOL_ID != ''`
+and **skips** until those exist. That is deliberate and it is the honest half of
+this row: **do not mark `e2e` a required check while it skips.** A required check
+that never runs is a green tick that means nothing — worse than an absent gate,
+because it looks like coverage.
+
+Serialised with `concurrency: e2e-cognito-pool`, `cancel-in-progress: false`. The
+database is per-job, but the pool is shared and sign-in throttling is pool-wide,
+so two runs can throttle each other into a failure unrelated to either change.
+Queueing costs latency; a flaky shared-pool gate costs trust in the gate.
+
+**Blocked on infra: the role does not exist.** Neither existing role fits.
+`github_plan` is read-only and cannot provision a pool user; `github_deploy` can
+run `terraform apply` — far too much for a test job, and unassumable from a PR
+anyway because its trust policy pins the default branch. What is needed is a
+third, narrow role trusted on `pull_request` and the default branch, allowing
+only `AdminCreateUser`, `AdminSetUserPassword`, `AdminGetUser` and
+`AdminInitiateAuth`, scoped to the dev pool's ARN alone.
+
+| Setting | Kind | Why |
+|---|---|---|
+| `AWS_E2E_ROLE_ARN` | variable | The role above. Owner: infra |
+| `COGNITO_USER_POOL_ID` | variable | An identifier, not a secret |
+| `COGNITO_CLIENT_ID` | variable | An identifier, not a secret |
+| `COGNITO_REGION` | variable | Optional, defaults to `us-east-1` |
+| `TALON_JWT_SECRET` | **secret** | The only real secret. Boot refuses the published local constant |
+
 ## 11. Open questions
 
 1. **Can one email belong to two tenants?** **Answered 2026-08-07: no.** One tenant per email, enforced with a unique constraint. `tenant_id` stays in the token.
