@@ -244,9 +244,15 @@ all.
    (`talon-prod-*`, `manav-*`, `playpower-*`), and `talon/terraform.tfstate` in
    the state bucket belongs to one of them. Every operation must be scoped to
    `talon-dev-*`. `down.sh` must never sweep by prefix `talon-`.
-3. **One OIDC provider per account.** It already exists, so `stacks/iam` must be
-   given `TF_VAR_github_oidc_provider_arn` or apply fails `EntityAlreadyExists`.
-   `up.sh` stage 2 must detect and pass it.
+3. **One OIDC provider per account.** It already exists, so creating it fails
+   with `EntityAlreadyExists`. Handled in the config rather than by the caller:
+   `stacks/iam` reads the existing provider through a data source by default and
+   creates one only under `create_github_oidc_provider = true`. `up.sh` stage 2
+   passes nothing — the earlier plan, to detect the ARN and pass
+   `TF_VAR_github_oidc_provider_arn`, was the bug it was meant to avoid. A `-var`
+   does not persist, so the next plan proposed creating the provider all over
+   again; that is what turned CI's iam plan red, and it is the same defect as
+   `user_pool_domain_prefix` in §4.4.
 4. **Aurora cold start.** The first request after auto-pause may exceed the
    ALB health-check timeout. Stage 9 must poll `/v1/readyz` with a generous
    deadline rather than failing on the first non-200.
