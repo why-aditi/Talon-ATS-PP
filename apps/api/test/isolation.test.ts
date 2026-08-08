@@ -56,6 +56,10 @@ interface HostileCase {
   victimStatus?: number;
 }
 
+/** Minimal mapping that PASSES ImportMappingSchema — a body that 400s on the schema
+ *  would never reach the tenancy check and this gate would prove nothing. */
+const MAPPING = { columns: { name: 'name' }, duplicateStrategy: 'skip', defaultJobId: null };
+
 const HOSTILE_REQUESTS: Record<string, HostileCase> = {
   'GET /v1/jobs': {
     request: () => ({ method: 'GET', url: '/v1/jobs?limit=100' }),
@@ -153,6 +157,44 @@ const HOSTILE_REQUESTS: Record<string, HostileCase> = {
     there is no stale-version trick available on a create — so the row is removed
     in afterAll alongside the jobs.
   */
+  // Imports — spec 008 §6. The three file-reading routes answer 409 for their OWNER
+  // because the fixture import has no uploaded object; that is the point of giving
+  // "missing file" its own status rather than reusing 404, since a 404 owner answer
+  // would make this gate unable to tell isolation from an empty bucket.
+  'POST /v1/imports': {
+    request: () => ({
+      method: 'POST',
+      url: '/v1/imports',
+      payload: { filename: 'people.csv', byteSize: 1024 },
+    }),
+    // A collection: it names no resource of tenant A's, so the hostile answer is a
+    // successful create over the attacker's OWN rows.
+    hostileStatus: 201,
+    victimStatus: 201,
+  },
+  'POST /v1/imports/:id/analyze': {
+    request: (f) => ({ method: 'POST', url: `/v1/imports/${f.talon.importId}/analyze` }),
+    victimStatus: 409,
+  },
+  'POST /v1/imports/:id/dry-run': {
+    request: (f) => ({
+      method: 'POST',
+      url: `/v1/imports/${f.talon.importId}/dry-run`,
+      payload: MAPPING,
+    }),
+    victimStatus: 409,
+  },
+  'POST /v1/imports/:id/commit': {
+    request: (f) => ({
+      method: 'POST',
+      url: `/v1/imports/${f.talon.importId}/commit`,
+      payload: MAPPING,
+    }),
+    victimStatus: 409,
+  },
+  'GET /v1/imports/:id': {
+    request: (f) => ({ method: 'GET', url: `/v1/imports/${f.talon.importId}` }),
+  },
   'POST /v1/applications': {
     request: (f) => ({
       method: 'POST',
