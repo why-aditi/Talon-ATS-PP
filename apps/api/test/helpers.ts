@@ -9,7 +9,6 @@
  */
 import { asValue, type AwilixContainer } from 'awilix';
 import type { FastifyInstance } from 'fastify';
-import { createHash } from 'node:crypto';
 import postgres from 'postgres';
 import { buildApp } from '../src/app.js';
 import { loadConfig, type ApiConfig } from '../src/config.js';
@@ -199,82 +198,6 @@ export async function provision(test: TestApp, person: Person): Promise<string> 
     await sql.end();
   }
   return sub;
-}
-
-/**
- * A user this file alone owns.
- *
- * WHY THIS EXISTS. `signIn` calls `provision`, and `provision` allocates a NEW
- * subject and rewrites `users.external_id` to it. Every token already issued for
- * that person then names a subject `auth_user_by_sub` no longer matches, so the
- * session dies. That is fine when one file owns the user and catastrophic when
- * seven share two of them: vitest runs files in parallel, so any suite signing in
- * silently invalidates every other suite's live token, and `auth-chain.test.ts`
- * additionally sets `tokens_valid_after` on the same row on purpose.
- *
- * The symptom was a suite that went red and then green with no code change. It is
- * not fixable by re-provisioning less often — every file genuinely must provision
- * for itself, because the Cognito stub holds subjects in memory and a fresh app
- * does not inherit them. What must not be shared is the `users` ROW.
- *
- * `label` is the test file. Ids are derived from it so a crashed run leaves rows
- * that can be identified rather than guessed at, and so two files cannot collide
- * by picking the same name.
- */
-export async function dedicatedUser(
-  test: TestApp,
-  label: string,
-  options: { role?: string; tenantId: string } & { name?: string },
-): Promise<{ person: Person; session: Session }> {
-  const slug = label.replace(/[^a-z0-9]/gi, '').toLowerCase().slice(0, 20);
-  // Hex, from a digest of the label: a UUID has no room for words, and slicing the
-  // label straight in produced `ffffffff-auth-...`, which Postgres rejects outright.
-  // The leading `ffffffff` still marks it as test-made and sorts it after every
-  // UUIDv7 the seed produced.
-  const hex = createHash('sha256').update(label).digest('hex');
-  const id = `ffffffff-${hex.slice(0, 4)}-4000-8000-${hex.slice(4, 16)}`;
-  const email = `${slug}@dedicated.test`;
-  const role = options.role ?? 'recruiter';
-
-  const sql = postgres(OWNER_URL, { max: 1, onnotice: () => {} });
-  try {
-    // Owner connection: the api role cannot write `users` outside a tenant
-    // transaction, and must not be able to write `external_id` at all.
-    await sql`
-      insert into users (id, tenant_id, email, name, role, timezone)
-      values (${id}::uuid, ${options.tenantId}::uuid, ${email},
-              ${options.name ?? `Dedicated ${slug}`}, ${role}, 'UTC')
-      on conflict (id) do update set role = excluded.role, tenant_id = excluded.tenant_id`;
-  } finally {
-    await sql.end();
-  }
-
-  const person: Person = { id, email, name: options.name ?? `Dedicated ${slug}`, role };
-  return { person, session: await signIn(test, person) };
-}
-
-/**
- * Removes the row `dedicatedUser` created — BEST EFFORT, deliberately.
- *
- * A suite that wrote anything is the actor on it, and `stage_transitions` and
- * `audit_log` are append-only by design: their FKs to `users` are what stops a
- * deletion quietly orphaning history. Forcing the delete would mean deleting that
- * history, which is the one thing those tables exist to prevent.
- *
- * Leaving the row costs nothing. `setup.global.ts` truncates and re-seeds before
- * every run, so a survivor lives until the next `pnpm test` and no further; and
- * because the id is derived from the file name, the same file reuses the same row
- * rather than accumulating new ones.
- */
-export async function removeDedicatedUser(person: Person): Promise<void> {
-  const sql = postgres(OWNER_URL, { max: 1, onnotice: () => {} });
-  try {
-    await sql`delete from users where id = ${person.id}::uuid`;
-  } catch {
-    // Referenced by history it created. See above — that is the correct outcome.
-  } finally {
-    await sql.end();
-  }
 }
 
 export interface Session {
