@@ -206,12 +206,9 @@ create table interviews (
   constraint interviews_schedule_pair_ck check (
     (scheduled_start is null) = (scheduled_end is null)
   ),
-  constraint interviews_schedule_order_ck check (
-    scheduled_end is null or scheduled_end > scheduled_start
-  ),
-  -- The row states its duration twice — `duration_min` and the span — and until this check
-  -- nothing reconciled them: duration_min = 45 with a 10:00–11:00 span satisfied every
-  -- other constraint on the table. That is precisely the "slot that quietly rounds" the
+  -- The row states its duration twice — `duration_min` and the span — and nothing used to
+  -- reconcile them: duration_min = 45 with a 10:00–11:00 span satisfied every other
+  -- constraint on the table. That is precisely the "slot that quietly rounds" the
   -- duration_min comment above claims to prevent, arriving by a different door.
   --
   -- `scheduled_end is null` first, so this says nothing about null-ness: the pair check
@@ -221,6 +218,12 @@ create table interviews (
   -- make_interval(mins => ...) yields a pure time interval with no day or month field, so
   -- the addition is an exact number of seconds on the UTC instant and does not shift at a
   -- DST boundary — an interval '1 day' here would.
+  --
+  -- THIS ALSO CARRIES `scheduled_end > scheduled_start`, which used to be its own
+  -- `interviews_schedule_order_ck`. Equality with a strictly positive interval (duration_min
+  -- is checked > 0 above) implies the ordering, so the separate check asserted nothing this
+  -- one does not. If this is ever relaxed — a tolerance, a break allowed inside a round —
+  -- the ordering stops being implied and the order check has to come back with it.
   constraint interviews_schedule_span_ck check (
     scheduled_end is null or scheduled_end = scheduled_start + make_interval(mins => duration_min)
   ),

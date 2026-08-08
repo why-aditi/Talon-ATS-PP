@@ -260,6 +260,9 @@ describe('a committed interview always has a time', () => {
   });
 
   it('an end before its start is rejected', async () => {
+    // Now carried by interviews_schedule_span_ck rather than a separate order check: an end
+    // that precedes its start cannot equal start + a positive duration. Asserted here as
+    // behaviour, so removing the redundant check did not remove the property from the suite.
     await rejectsWith('23514', (tx) => tx`
       update interviews set scheduled_end = scheduled_start - interval '1 hour'
       where loop_id = ${ids.anaLoop}`);
