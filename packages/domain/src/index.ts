@@ -17,3 +17,13 @@ export {
 } from './stages.js';
 export { between, rebalance, FIRST_RANK } from './lexorank.js';
 export { nextActionFor } from './next-action.js';
+export {
+  escapeCsvCell,
+  writeCsv,
+  decodeCsv,
+  sniffDelimiter,
+  normaliseHeader,
+  UnsupportedEncodingError,
+  type Encoding,
+  type Delimiter,
+} from './csv.js';
