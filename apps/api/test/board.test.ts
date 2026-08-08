@@ -10,12 +10,23 @@
 import postgres from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { BoardSchema, ERROR_TYPES, type ApplicationCard, type Board } from '@talon/contracts';
-import { bearer, loadFixtures, signIn, startApp, type Fixtures, type TestApp } from './helpers.js';
+import {
+  bearer,
+  dedicatedUser,
+  loadFixtures,
+  removeDedicatedUser,
+  startApp,
+  type Fixtures,
+  type Person,
+  type TestApp,
+} from './helpers.js';
 import { OWNER_URL } from './urls.js';
 
 let test: TestApp;
 let fixtures: Fixtures;
 let auth: Record<string, string>;
+/** This file's own user — see `dedicatedUser`. */
+let owned: Person;
 const owner = postgres(OWNER_URL, { max: 1, onnotice: () => {} });
 
 /** The seed as this suite found it, restored before every test that writes. */
@@ -49,6 +60,9 @@ let seedHighWater: number;
 beforeAll(async () => {
   test = await startApp();
   fixtures = await loadFixtures();
+  const dedicated = await dedicatedUser(test, 'board', { tenantId: fixtures.talon.tenantId, role: 'recruiter' });
+  owned = dedicated.person;
+  auth = bearer(dedicated.session);
   const [mark] = await owner`select coalesce(max(id), 0)::int as id from stage_transitions`;
   seedHighWater = mark?.['id'] as number;
   pristine = await owner`
@@ -66,6 +80,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await removeDedicatedUser(owned);
   await owner.end();
   await test.close();
 });
@@ -79,13 +94,13 @@ afterAll(async () => {
  * stats assertions below run against a restored board rather than assuming ordering.
  */
 beforeEach(async () => {
-  // Signed in per test, not once in `beforeAll`. `auth-chain.test.ts` deliberately
-  // sets `tokens_valid_after` on this same recruiter to prove that an unexpired token
-  // is still refused — and vitest runs files in parallel, so a token minted once at
-  // the top of this file lands inside that window and every request here 401s. A suite
-  // should not depend on its credential outliving another file's deliberate
-  // invalidation.
-  auth = bearer(await signIn(test, fixtures.talon.recruiter));
+  // Signed in ONCE, in beforeAll, on a user this file owns.
+  //
+  // An earlier version signed in per test to survive `auth-chain.test.ts`
+  // invalidating the shared recruiter. That treated the symptom and worsened the
+  // cause: `signIn` re-provisions, rewriting `users.external_id`, so twenty
+  // sign-ins meant twenty rewrites of a row other files also read. Owning the user
+  // removes the interference rather than out-running it.
 
   for (const row of pristine) {
     await owner`
@@ -95,9 +110,22 @@ beforeEach(async () => {
           stage_entered_at = ${row.enteredAt}
       where id = ${row.id}`;
   }
-  await owner`delete from stage_transitions where id > ${seedHighWater}`;
-  await owner`delete from outbox where tenant_id = ${fixtures.talon.tenantId}`;
-  await owner`delete from audit_log where tenant_id = ${fixtures.talon.tenantId} and entity_type = 'application'`;
+  // Scoped to THIS job, not the whole tenant. An unscoped delete reaches rows that
+  // belong to other suites, so a cleanup meant to isolate this one was reaching
+  // past its own data. The high-water mark says "mine, not the seed's"; the job
+  // predicate says "mine, not another file's".
+  await owner`
+    delete from stage_transitions
+    where id > ${seedHighWater}
+      and application_id in (select id from applications where job_id = ${fixtures.talon.jobId})`;
+  await owner`
+    delete from outbox
+    where tenant_id = ${fixtures.talon.tenantId}
+      and aggregate_id in (select id from applications where job_id = ${fixtures.talon.jobId})`;
+  await owner`
+    delete from audit_log
+    where tenant_id = ${fixtures.talon.tenantId} and entity_type = 'application'
+      and entity_id in (select id from applications where job_id = ${fixtures.talon.jobId})`;
 });
 
 const getBoard = async (): Promise<Board> => {
@@ -296,7 +324,7 @@ describe('a stage move', () => {
       from audit_log where entity_id = ${elena.id} order by id desc limit 1`;
     expect(row?.['action']).toBe('application.stage_changed');
     expect(row?.['entity_type']).toBe('application');
-    expect(row?.['actor_id']).toBe(fixtures.talon.recruiter.id);
+    expect(row?.['actor_id']).toBe(owned.id);
     expect(row?.['before']).toMatchObject({ stageId: column(before, 'Screen').stageId, version: elena.version });
     expect(row?.['after']).toMatchObject({ stageId: column(before, 'Onsite').stageId, version: elena.version + 1 });
     // Not merely present — populated. A null ip or request id is the audit trail
@@ -318,7 +346,7 @@ describe('a stage move', () => {
     const [row] = await owner`
       select action, actor_id from audit_log where entity_id = ${tess.id} order by id desc limit 1`;
     expect(row?.['action']).toBe('application.reordered');
-    expect(row?.['actor_id']).toBe(fixtures.talon.recruiter.id);
+    expect(row?.['actor_id']).toBe(owned.id);
   });
 
   it('refuses a move to rejected rather than half-applying it', async () => {
@@ -515,7 +543,7 @@ describe('a stage re-entered after a correction', () => {
     const marcus = card(before, 'Marcus Webb');
     const screen = column(before, 'Screen').stageId;
     const onsite = column(before, 'Onsite').stageId;
-    const actor = fixtures.talon.recruiter.id;
+    const actor = owned.id;
     const tenant = fixtures.talon.tenantId;
 
     // Marcus entered Screen 5 days ago (seed). He leaves, is put back — the

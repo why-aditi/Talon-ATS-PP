@@ -10,23 +10,37 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ERROR_TYPES, SignInResponseSchema } from '@talon/contracts';
 import postgres from 'postgres';
-import { loadFixtures, provision, startApp, type Fixtures, type TestApp } from './helpers.js';
+import {
+  dedicatedUser,
+  loadFixtures,
+  removeDedicatedUser,
+  startApp,
+  type Fixtures,
+  type Person,
+  type TestApp,
+} from './helpers.js';
 import { OWNER_URL } from './urls.js';
 
 let test: TestApp;
 let fixtures: Fixtures;
 let sub: string;
+/** This file's own user — see `dedicatedUser`. */
+let owned: Person;
 const owner = postgres(OWNER_URL, { max: 1, onnotice: () => {} });
 
 beforeAll(async () => {
   test = await startApp();
   fixtures = await loadFixtures();
   // Provisioning points `users.external_id` at the sub Cognito allocated — the join
-  // this entire design rests on.
-  sub = await provision(test, fixtures.talon.recruiter);
+  // this entire design rests on. On a user this file owns, so re-provisioning cannot
+  // invalidate another suite's live session.
+  const dedicated = await dedicatedUser(test, 'sso', { tenantId: fixtures.talon.tenantId, role: 'recruiter' });
+  owned = dedicated.person;
+  sub = dedicated.session.sub;
 });
 
 afterAll(async () => {
+  await removeDedicatedUser(owned);
   await owner.end();
   await test.close();
 });
@@ -35,7 +49,7 @@ const sso = (body: unknown) =>
   test.app.inject({ method: 'POST', url: '/v1/auth/sso', payload: body as object });
 
 const idToken = (overrides = {}) =>
-  test.stub.mintIdToken(sub, fixtures.talon.recruiter.email, overrides);
+  test.stub.mintIdToken(sub, owned.email, overrides);
 
 describe('a completed Google flow', () => {
   it('returns a session indistinguishable from a password sign-in', async () => {
@@ -46,7 +60,7 @@ describe('a completed Google flow', () => {
     // parses. A session that differed by how it was obtained is a session two code
     // paths have to handle forever.
     const session = SignInResponseSchema.parse(res.json());
-    expect(session.user.email).toBe(fixtures.talon.recruiter.email);
+    expect(session.user.email).toBe(owned.email);
     expect(session.tokenType).toBe('Bearer');
     // Cognito's refresh token, handed straight back: leaving the long-lived half under
     // Cognito's control is what makes a global sign-out actually end this session.
@@ -116,13 +130,13 @@ describe('refusals', () => {
   it('refuses a session issued before tokens_valid_after', async () => {
     await owner`
       update users set tokens_valid_after = date_trunc('second', now() + interval '60 seconds')
-      where id = ${fixtures.talon.recruiter.id}::uuid`;
+      where id = ${owned.id}::uuid`;
     try {
       const res = await sso({ idToken: idToken(), refreshToken: 'r' });
       expect(res.statusCode).toBe(401);
       expect(res.json().type).toBe(ERROR_TYPES.TOKEN_INVALIDATED);
     } finally {
-      await owner`update users set tokens_valid_after = null where id = ${fixtures.talon.recruiter.id}::uuid`;
+      await owner`update users set tokens_valid_after = null where id = ${owned.id}::uuid`;
     }
   });
 
