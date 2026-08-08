@@ -1,0 +1,13 @@
+# Copy to backend.tf to move this stack off local state. backend.tf is
+# gitignored (see /.gitignore) so the checked-in default stays local state and
+# `terraform init` keeps working on a clean clone with no AWS infrastructure —
+# which is what ARCHITECTURE §9.5a stage 1 depends on.
+#
+# The block is intentionally EMPTY. A backend block cannot interpolate
+# variables, and the bucket name embeds the account id
+# (`talon-tfstate-<account_id>`), so the values arrive as partial configuration
+# at init time. See README.md in this directory for the exact command.
+
+terraform {
+  backend "s3" {}
+}

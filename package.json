@@ -16,7 +16,8 @@
     "typecheck": "turbo run typecheck",
     "lint": "eslint . --max-warnings 0",
     "gen:module": "node scripts/gen-module.mjs",
-    "prepare": "husky"
+    "prepare": "husky",
+    "e2e": "pnpm --filter e2e e2e"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

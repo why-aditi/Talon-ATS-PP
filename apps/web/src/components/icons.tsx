@@ -23,6 +23,12 @@ function Icon({ className, children }: IconProps & { children: React.ReactNode }
   );
 }
 
+export const CheckIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M3.25 8.5 6.4 11.65 12.75 5.3" />
+  </Icon>
+);
+
 export const BriefcaseIcon = (p: IconProps) => (
   <Icon {...p}>
     <rect x="1.75" y="4.75" width="12.5" height="8.5" rx="1.5" />
@@ -110,5 +116,26 @@ export const TalonMark = ({ className }: IconProps) => (
 export const ChevronDownIcon = (p: IconProps) => (
   <Icon {...p}>
     <path d="m4.5 6.5 3.5 3.5 3.5-3.5" />
+  </Icon>
+);
+
+/**
+ * The 2×3 dot grip at the bottom-right of a kanban card. Filled rather than stroked —
+ * at 1.1px radius a stroked circle is mostly outline and reads as grey mush.
+ */
+export const GripIcon = ({ className }: IconProps) => (
+  <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true" focusable="false" className={className}>
+    {[5.5, 8, 10.5].map((cy) => (
+      <g key={cy}>
+        <circle cx="6" cy={cy} r="1.1" />
+        <circle cx="10" cy={cy} r="1.1" />
+      </g>
+    ))}
+  </svg>
+);
+
+export const PlusIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M8 3.5v9M3.5 8h9" />
   </Icon>
 );

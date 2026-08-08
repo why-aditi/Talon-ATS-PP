@@ -341,6 +341,17 @@ ones, which says the display face is narrower than Inter and must be settled fir
 (§2.1's letterform comparison against `01-sign-in@2x.png`). Nothing was applied;
 `_meta.confidence.typography` stays `LOW`. **Owner: design.**
 
+**Resolved 2026-08-08 (spec 003 step 6). The table above is superseded — read this instead.**
+
+The ramp is not stretched monotonically. **The two font families were wrong in different directions**, which is what produced the apparent monotonic climb:
+
+- **Body family (Inter) — ~25% too large across every token.** Multiplied by 0.80. Six independent long runs on `03-pipeline-kanban@2x` gave 0.755–0.817, and `code` independently implied 10.4px against its new 10px.
+- **Display family (Inter Tight) — already correct, unchanged.** `pageTitle` measures **0.99** against "Welcome back" (12 chars, `01-sign-in@2x`) and `sectionTitle` **1.03** against "Senior Product Engineer" (23 chars).
+
+The `pageTitle 0.73` row above is a **cap-height artifact**. Deriving it from ink extents, or from a 4-character sample ("Jobs" on the jobs list), reproduces that wrong figure reliably — which is why it looked credible. Measuring the rendered *width* of a long run instead puts it at 0.99: the endpoints of a long string are strong stems that survive anti-aliasing, and cap heights do not. The `cardTitle 0.80` row was right, and matches the new value exactly.
+
+The note above that "width-derived sizes land ~8% below height-derived ones" was the real clue and is still true — that residual is the family, not the sizes. Pin the family before `_meta.confidence.typography` goes to `HIGH`. `metricXl` and `eyebrow` remain unverified: no clean sample exists for either yet.
+
 #### Token findings
 
 Six measured pairs fall below AA, each pinned with its exact ratio in

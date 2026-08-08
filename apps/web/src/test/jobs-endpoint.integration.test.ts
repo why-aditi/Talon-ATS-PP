@@ -19,7 +19,7 @@
  */
 import { ListJobsResponseSchema, type Job } from '@talon/contracts';
 import { describe, expect, it } from 'vitest';
-import { JOBS } from '../mocks/fixtures';
+import { SEEDED_JOBS } from './seeded-jobs';
 
 const API_URL = process.env['TALON_API_URL'];
 const API_TOKEN = process.env['TALON_API_TOKEN'];
@@ -53,13 +53,16 @@ describe.skipIf(!API_URL)('GET /v1/jobs against the seeded tenant', () => {
         'GET /v1/jobs returned 401. Set TALON_API_TOKEN, or the step-4 auth chain is not wired yet.',
       );
     }
-    expect(response.status, await response.text().catch(() => '')).toBe(200);
+    // Read once: a Response body is a stream, so consuming it for the failure
+    // message would leave nothing for the parse below.
+    const raw = await response.text();
+    expect(response.status, raw).toBe(200);
 
     // Parsing with the contract is half the assertion: a payload that does not satisfy
     // ListJobsResponseSchema fails here rather than surfacing as a render bug.
-    const body = ListJobsResponseSchema.parse(await response.json());
+    const body = ListJobsResponseSchema.parse(JSON.parse(raw));
 
-    expect(body.data.map(seededShape)).toEqual(JOBS.map(seededShape));
+    expect(body.data.map(seededShape)).toEqual(SEEDED_JOBS.map(seededShape));
 
     // Six jobs fit one page, so a cursor would mean the API is paginating differently
     // than the screen assumes — "N open" is currently counted client-side over one page.

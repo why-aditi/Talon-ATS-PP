@@ -1,11 +1,11 @@
 'use client';
 
 import { ERROR_TYPES } from '@talon/contracts';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useId, useState, type FormEvent } from 'react';
 import { AuthError, useSession } from '../lib/session';
 import { TalonMark } from './icons';
-import { Avatar, Button, cx } from './ui';
+import { Avatar, Button, buttonClass, cx } from './ui';
 
 /* ── Hero (left) ───────────────────────────────────────────────────────────── */
 
@@ -103,8 +103,24 @@ const FAILURES: Record<string, string> = {
 
 const FALLBACK = 'Sign-in isn’t working right now. Try again in a moment.';
 
+/**
+ * Off unless a Cognito pool is configured (spec 004 §6). A button that redirects
+ * to an unconfigured pool is worse than one that says it isn't ready.
+ */
+const GOOGLE_SSO_ENABLED = process.env['NEXT_PUBLIC_SSO_GOOGLE'] === 'on';
+
+/** How the callback's `?sso=` reason reads to the person who just came back. */
+const SSO_FAILURES: Record<string, string> = {
+  cancelled: 'Google sign-in was cancelled.',
+  expired: 'That sign-in link expired. Start again.',
+  not_provisioned:
+    'Your Google account signed in, but this workspace has no account for you yet. Ask an admin to add you.',
+  failed: 'Google sign-in didn’t complete. Try again, or use your email and password.',
+};
+
 export function SignInForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { signIn } = useSession();
   const emailId = useId();
   const passwordId = useId();
@@ -113,7 +129,9 @@ export function SignInForm() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Seeded from the callback's ?sso= reason, so a failed Google round-trip lands
+  // in the same alert region as a failed password attempt rather than a second one.
+  const [error, setError] = useState<string | null>(SSO_FAILURES[searchParams.get('sso') ?? ''] ?? null);
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -141,10 +159,24 @@ export function SignInForm() {
           token colors rather than opacity, so the labels stay legible.
         */}
         <div className="mt-6 space-y-3">
-          <Button variant="secondary" size="lg" disabled className="w-full">
-            <GoogleMark />
-            Continue with Google
-          </Button>
+          {GOOGLE_SSO_ENABLED ? (
+            // A link, not a fetch: the hosted-UI flow is a top-level navigation and
+            // the browser has to own it, or the redirect back carries no cookies.
+            <a href="/api/auth/sso/google" className={buttonClass('secondary', 'w-full', 'lg')}>
+              <GoogleMark />
+              Continue with Google
+            </a>
+          ) : (
+            <Button variant="secondary" size="lg" disabled className="w-full">
+              <GoogleMark />
+              Continue with Google
+            </Button>
+          )}
+          {/*
+            SAML stays disabled regardless of the flag. Spec 002 open question 2: a
+            persistent NameID does not satisfy AccessTokenClaimsSchema.sub, so it
+            would fail validation at the moment sign-in succeeded.
+          */}
           <Button variant="secondary" size="lg" disabled className="w-full">
             <LockMark />
             Continue with SAML SSO
@@ -156,7 +188,11 @@ export function SignInForm() {
           Copy rule (§6): name the real blocker and the next move, and don't point
           at machinery. This says what is true and what to do instead.
         */}
-        <p className="mt-2 text-meta text-text-tertiary">Single sign-on isn’t available yet. Use your email and password.</p>
+        <p className="mt-2 text-meta text-text-tertiary">
+          {GOOGLE_SSO_ENABLED
+            ? 'SAML single sign-on isn’t available yet.'
+            : 'Single sign-on isn’t available yet. Use your email and password.'}
+        </p>
 
         <div className="my-6 flex items-center gap-3">
           <span className="h-px flex-1 bg-border-default" />

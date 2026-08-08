@@ -1,13 +1,12 @@
 import { ERROR_TYPES } from '@talon/contracts';
-import { render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import axe from 'axe-core';
-import { HttpResponse, http } from 'msw';
 import { describe, expect, it, vi } from 'vitest';
 import { SignInForm, SignInHero } from '../components/sign-in';
 import { SessionProvider } from '../lib/session';
-import { server } from '../mocks/node';
-import { routerPush } from './setup';
+import { json, route } from './fetch-stub';
+import { routerPush, searchParams } from './setup';
 
 function renderSignIn() {
   return render(
@@ -20,7 +19,7 @@ function renderSignIn() {
 
 /** The BFF route handler is server-side, so the browser-facing contract is what we drive. */
 function bff(status: number, body: Record<string, unknown>) {
-  server.use(http.post('/api/auth/sign-in', () => HttpResponse.json(body, { status })));
+  route((url) => (url.pathname === '/api/auth/sign-in' ? json(body, status) : undefined));
 }
 
 const problem = (type: string) => ({ type, title: 'nope', status: 401 });
@@ -95,12 +94,11 @@ describe('default state', () => {
 
 describe('submitting', () => {
   it('disables the button and says what it is doing', async () => {
-    server.use(
-      http.post('/api/auth/sign-in', async () => {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        return HttpResponse.json({ accessToken: 'a', expiresIn: 3600, user: {} });
-      }),
-    );
+    route(async (url) => {
+      if (url.pathname !== '/api/auth/sign-in') return undefined;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return json({ accessToken: 'a', expiresIn: 3600, user: {} });
+    });
     renderSignIn();
     await submit();
     const button = screen.getByRole('button', { name: 'Signing in…' });
@@ -137,7 +135,7 @@ describe('failure states', () => {
   });
 
   it('distinguishes an unreachable server from a rejected credential', async () => {
-    server.use(http.post('/api/auth/sign-in', () => HttpResponse.error()));
+    route((url) => { if (url.pathname === '/api/auth/sign-in') throw new TypeError('Failed to fetch'); return undefined; });
     const { container } = renderSignIn();
     await submit();
     expect(await screen.findByRole('alert')).toHaveTextContent(/couldn’t reach the server/);
@@ -155,22 +153,18 @@ describe('failure states', () => {
 
 describe('success', () => {
   it('routes to /jobs and keeps no token in storage', async () => {
-    server.use(
-      http.post('/api/auth/sign-in', () =>
-        HttpResponse.json({
-          accessToken: 'access-token-value',
-          expiresIn: 3600,
-          user: {
-            id: '0198f3a1-0007-7000-8000-000000000001',
-            tenantId: '0198f3a1-0000-7000-8000-000000000001',
-            email: 'maya@taloninc.com',
-            name: 'Maya Reyes',
-            role: 'recruiter',
-            timezone: 'America/Los_Angeles',
-          },
-        }),
-      ),
-    );
+    bff(200, {
+      accessToken: 'access-token-value',
+      expiresIn: 3600,
+      user: {
+        id: '0198f3a1-0007-7000-8000-000000000001',
+        tenantId: '0198f3a1-0000-7000-8000-000000000001',
+        email: 'maya@taloninc.com',
+        name: 'Maya Reyes',
+        role: 'recruiter',
+        timezone: 'America/Los_Angeles',
+      },
+    });
     renderSignIn();
     await submit();
 
@@ -182,6 +176,39 @@ describe('success', () => {
     expect(window.localStorage.length).toBe(0);
     expect(window.sessionStorage.length).toBe(0);
     expect(document.cookie).not.toContain('access-token-value');
+  });
+});
+
+describe('a Google round-trip that failed', () => {
+  /*
+    The callback cannot render anything — it is a redirect — so it hands back a
+    reason in the query string and the form is what speaks. Same alert region as
+    a failed password attempt, because to the person signing in it is one failure.
+  */
+  it('reports the reason in the form’s alert region', async () => {
+    searchParams.current = new URLSearchParams('sso=not_provisioned');
+    renderSignIn();
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('this workspace has no account for you yet');
+  });
+
+  it('says cancelled when the user backed out at Google', () => {
+    searchParams.current = new URLSearchParams('sso=cancelled');
+    renderSignIn();
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Google sign-in was cancelled.');
+  });
+
+  it('stays quiet on a plain visit, and on a reason it does not recognise', () => {
+    renderSignIn();
+    expect(screen.getByRole('alert')).toHaveTextContent('');
+
+    cleanup();
+    searchParams.current = new URLSearchParams('sso=something-invented');
+    renderSignIn();
+    // Better an empty alert than a message assembled from an attacker's query
+    // string — the copy is ours, keyed by reason, never echoed from the URL.
+    expect(screen.getByRole('alert')).toHaveTextContent('');
   });
 });
 

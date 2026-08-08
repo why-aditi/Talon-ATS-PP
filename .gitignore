@@ -5,4 +5,22 @@ dist/
 coverage/
 *.tsbuildinfo
 .next/
+
+# Terraform: provider binaries and plan/state artifacts. The lock file IS committed.
+**/.terraform/
+*.tfplan
+*.tfplan.binary
+tfplan.binary
+plan.json
+*.tfstate
+*.tfstate.*
+
+# Backend configuration is per-operator and opt-in: the checked-in default is
+# local state, so `terraform init` works on a clean clone before the state bucket
+# exists (ARCHITECTURE §9.5a stage 1). Copy backend.tf.example to backend.tf to
+# opt in. See infra/terraform/stacks/iam/README.md.
+backend.tf
 next-env.d.ts
+
+# Playwright MCP scratch output (snapshots, console logs)
+.playwright-mcp/

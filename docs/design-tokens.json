@@ -6,11 +6,12 @@
     "confidence": {
       "color": "HIGH — every value under color.primitive marked (measured) was sampled pixel-wise from the 2x originals. Unmarked ramp steps are interpolated between measured anchors.",
       "layout": "HIGH — measured by scanning for border transitions on the 2x originals and halving. Values are exact to +/-1 CSS px.",
-      "typography": "LOW — sizes are still estimated. Glyph metrics cannot be recovered reliably from raster without knowing the font. Confirm against the live reference or the source file before shipping; treat the ratios as sound and the absolute sizes as provisional.",
+      "typography": "MEDIUM — pinned 2026-08-08 (spec 003 step 6) against 03-pipeline-kanban, 02-jobs-list and 01-sign-in. Method: compare RENDERED TEXT-RUN WIDTHS of long strings, not glyph heights — the endpoints of a long run are strong stems that survive anti-aliasing, while cap heights do not. FINDING: the two families were wrong in different directions, so there is no single scale factor. The BODY family (Inter) was ~25% too large across every token and was multiplied by 0.80: six independent runs gave 0.755-0.817, and code independently implied 10.4px against its new 10px. The DISPLAY family (Inter Tight) was already correct and is UNCHANGED — pageTitle measured 0.99 on 'Welcome back' (12 chars) and sectionTitle 1.03 on 'Senior Product Engineer' (23 chars). This CORRECTS spec 001 §2.1, which recorded pageTitle at 0.73 and cardTitle at 0.80 from cap-height ink extents; the cardTitle figure was right, the pageTitle figure was a cap-height artifact and a 4-character sample ('Jobs') reproduces it misleadingly. STILL UNVERIFIED: metricXl (Reports is not built, no sample exists) and eyebrow (no clean run isolated; it keeps its step below caption). RESIDUAL: hero measures 0.913 on one run and vertical metrics run ~0.87 against widths of ~0.79 — both point at the FONT FAMILY rather than the sizes, since the reference face is narrower than Inter. Pin the family before calling this HIGH.",
+
       "shadow": "LOW — estimated. The reference separates surfaces with borders, so there is little shadow to sample.",
       "motion": "NONE — static screenshots carry no timing information. These are conventions, not observations."
     },
-    "correctionNote": "An earlier draft of this file was measured from a 1389px-wide render and was ~3.7% small throughout. All layout values below are re-measured at true scale. Type sizes have NOT been rescaled and remain provisional.",
+    "correctionNote": "An earlier draft of this file was measured from a 1389px-wide render and was ~3.7% small throughout. All layout values below are re-measured at true scale. Type sizes WERE rescaled on 2026-08-08 by 0.80 - see confidence.typography.",
     "generatedFor": "packages/tokens - emits CSS custom properties + Tailwind v4 @theme",
     "namingConvention": "semantic layer on top of a primitive ramp; components consume ONLY semantic tokens"
   },
@@ -172,14 +173,14 @@
       "metricXl":    { "fontSize": "32px", "lineHeight": "36px", "fontWeight": 700, "letterSpacing": "-0.02em", "family": "display", "$description": "KPI tiles: 24d, 86%, 1,240" },
       "pageTitle":   { "fontSize": "26px", "lineHeight": "32px", "fontWeight": 700, "letterSpacing": "-0.015em", "family": "display", "$description": "'Jobs', 'Reports', 'Welcome back'" },
       "sectionTitle":{ "fontSize": "19px", "lineHeight": "26px", "fontWeight": 600, "letterSpacing": "-0.01em", "family": "display", "$description": "'Senior Product Engineer' detail header, candidate name" },
-      "cardTitle":   { "fontSize": "15px", "lineHeight": "20px", "fontWeight": 600, "family": "body", "$description": "job row title, candidate card name" },
-      "bodyLg":      { "fontSize": "15px", "lineHeight": "24px", "fontWeight": 400, "family": "body", "$description": "cover note, offer letter" },
-      "body":        { "fontSize": "14px", "lineHeight": "20px", "fontWeight": 400, "family": "body" },
-      "bodyStrong":  { "fontSize": "14px", "lineHeight": "20px", "fontWeight": 600, "family": "body" },
-      "meta":        { "fontSize": "13px", "lineHeight": "18px", "fontWeight": 400, "family": "body", "$description": "'4d in stage', 'Remote (US)'" },
-      "caption":     { "fontSize": "12px", "lineHeight": "16px", "fontWeight": 500, "family": "body", "$description": "pills, tags, counts" },
-      "eyebrow":     { "fontSize": "11px", "lineHeight": "14px", "fontWeight": 600, "letterSpacing": "0.07em", "textTransform": "uppercase", "family": "body", "$description": "'RECRUIT', 'ENGINEERING · 3 OPEN', 'COVER NOTE', 'DETAILS'" },
-      "code":        { "fontSize": "12px", "lineHeight": "16px", "fontWeight": 400, "family": "mono", "$description": "ENG-204, ⌘K" }
+      "cardTitle":   { "fontSize": "12px", "lineHeight": "16px", "fontWeight": 600, "family": "body", "$description": "job row title, candidate card name" },
+      "bodyLg":      { "fontSize": "12px", "lineHeight": "19px", "fontWeight": 400, "family": "body", "$description": "cover note, offer letter" },
+      "body":        { "fontSize": "11px", "lineHeight": "16px", "fontWeight": 400, "family": "body" },
+      "bodyStrong":  { "fontSize": "11px", "lineHeight": "16px", "fontWeight": 600, "family": "body" },
+      "meta":        { "fontSize": "10px", "lineHeight": "14px", "fontWeight": 400, "family": "body", "$description": "'4d in stage', 'Remote (US)'" },
+      "caption":     { "fontSize": "10px", "lineHeight": "13px", "fontWeight": 500, "family": "body", "$description": "pills, tags, counts" },
+      "eyebrow":     { "fontSize": "9px",  "lineHeight": "12px", "fontWeight": 600, "letterSpacing": "0.07em", "textTransform": "uppercase", "family": "body", "$description": "'RECRUIT', 'ENGINEERING · 3 OPEN', 'COVER NOTE', 'DETAILS'" },
+      "code":        { "fontSize": "10px", "lineHeight": "13px", "fontWeight": 400, "family": "mono", "$description": "ENG-204, ⌘K" }
     },
     "numeric": {
       "$value": "tabular-nums",
@@ -236,7 +237,10 @@
     "progressRuleHeight": { "$value": "3px",  "$description": "thin capsule under kanban column headers and in job rows (DESIGN_SYSTEM §3)" },
     "navMarkerWidth":   { "$value": "2px",    "$description": "indigo left marker on the active sidebar item" },
     "notificationDotSize": { "$value": "6px", "$description": "unread dot on the topbar bell" },
+    "stageDotSize": { "$value": "6px", "$description": "stage-hue square in the kanban column header (DESIGN_SYSTEM §4). Same 6px as the notification dot today and deliberately separate from it — they are unrelated elements, and one moving should not move the other" },
     "searchFieldWidth": { "$value": "290px",  "$description": "measured - topbar search field" },
+    "modalMaxHeight":  { "$value": "85vh",    "$description": "a modal never fills the viewport — the canvas behind it is what makes it read as a layer" },
+    "filterFieldWidth": { "$value": "205px",  "$description": "measured on 03-pipeline-kanban@2x - the 'Filter candidates' field. Border box x=502..913 at 2x, so 251..456.5 CSS; its left edge sits on the board's own left edge" },
     "signIn": {
       "_note": "Measured on 01-sign-in@2x.png at 1440 CSS. The split is 747 hero / 693 form.",
       "heroWidth":     { "$value": "747px" },
