@@ -156,3 +156,8 @@ export function useSession(): SessionValue {
   if (!value) throw new Error('useSession must be used inside SessionProvider');
   return value;
 }
+
+/** Optional for component-test seams that intentionally render outside the app shell. */
+export function useOptionalSession(): SessionValue | null {
+  return useContext(SessionContext);
+}

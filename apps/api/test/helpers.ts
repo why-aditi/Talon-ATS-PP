@@ -135,6 +135,7 @@ export interface Fixtures {
     /** A talon import row, so the id-addressed import routes have something real for a
      *  hostile tenant to name and the owner to reach (spec 008). */
     importId: string;
+    interviewLoopId: string;
   };
   acme: { tenantId: string; admin: Person; jobId: string };
 }
@@ -174,6 +175,8 @@ export async function loadFixtures(): Promise<Fixtures> {
     // attacker sends a body that VALIDATES and is refused on tenancy alone.
     const [talonTemplate] = await sql<{ id: string }[]>`
       select id from stage_templates where tenant_id = ${talonTenant?.id ?? null} limit 1`;
+    const [talonLoop] = await sql<{ id: string }[]>`
+      select id from interview_loops where tenant_id = ${talonTenant?.id ?? null} limit 1`;
     if (
       !talonTenant ||
       !acmeTenant ||
@@ -181,7 +184,8 @@ export async function loadFixtures(): Promise<Fixtures> {
       !acmeJob ||
       !talonApplication ||
       !talonNextStage ||
-      !talonTemplate
+      !talonTemplate ||
+      !talonLoop
     ) {
       throw new Error('seed is incomplete');
     }
@@ -197,6 +201,7 @@ export async function loadFixtures(): Promise<Fixtures> {
         nextStageId: talonNextStage.id,
         importId: talonImport?.id as string,
         stageTemplateId: talonTemplate.id,
+        interviewLoopId: talonLoop.id,
       },
       acme: { tenantId: acmeTenant.id, admin: find('beth@acme.test'), jobId: acmeJob.id },
     };

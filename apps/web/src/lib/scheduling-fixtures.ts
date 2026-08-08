@@ -182,6 +182,8 @@ export type SchedulingLoop = {
   holdByOther: HoldByOther | null;
   /** §10 — availability moved under the hold, so nothing was sent. */
   drift: Drift[] | null;
+  /** Optimistic concurrency from the live loop. Fixtures predate writes and default to 1. */
+  version?: number;
 };
 
 /* ── The reference loop ─────────────────────────────────────────────────────── */

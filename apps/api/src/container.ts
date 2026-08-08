@@ -17,6 +17,7 @@ import { registerApplications } from './modules/applications/index.public.js';
 import { registerImports } from './modules/imports/index.public.js';
 import { registerJobs } from './modules/jobs/index.public.js';
 import { registerUsers } from './modules/users/index.public.js';
+import { registerScheduling } from './modules/scheduling/index.public.js';
 
 export function buildContainer(config: ApiConfig): AwilixContainer<Cradle> {
   const container = createContainer<Cradle>({ injectionMode: InjectionMode.PROXY });
@@ -30,5 +31,6 @@ export function buildContainer(config: ApiConfig): AwilixContainer<Cradle> {
   registerApplications(container);
   registerImports(container);
   registerUsers(container);
+  registerScheduling(container);
   return container;
 }

@@ -33,3 +33,20 @@ services:
       SERVICES: s3,sqs
     ports:
       - '4566:4566'
+
+  radicale:
+    image: tomsquest/docker-radicale:3.3.3.0
+    ports:
+      - '5232:5232'
+    volumes:
+      - ./docker/radicale/config:/config/config:ro
+      - ./docker/radicale/users:/config/users:ro
+      - radicale-data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -q --spider http://127.0.0.1:5232/.web/ || exit 1']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  radicale-data:

@@ -2,11 +2,13 @@
 
 import { useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { useLoop } from '../lib/scheduling-query';
+import { useHoldLoop, useLoop, useSendLoop } from '../lib/scheduling-query';
+import type { Arrangement } from '@talon/contracts';
 import {
   LoopLoadError,
   isScenario,
   type InterviewStatus,
+  type Drift,
   type Panelist,
   type Placement,
   type Scenario,
@@ -270,6 +272,8 @@ export function SchedulingScreen({
   const scenario: Scenario = isScenario(raw) ? raw : 'default';
 
   const query = useLoop(loopId, scenario);
+  const holdMutation = useHoldLoop(loopId);
+  const sendMutation = useSendLoop(loopId);
   const loop = query.data;
 
   const [view, setView] = useState<View>('day');
@@ -301,8 +305,10 @@ export function SchedulingScreen({
     mutations and changes nothing else on the screen.
   */
   const [heldUntil, setHeldUntil] = useState<string | null>(null);
+  const [heldVersion, setHeldVersion] = useState<number | null>(null);
   const [sentAt, setSentAt] = useState<string | null>(null);
   const [driftCleared, setDriftCleared] = useState(false);
+  const [serverDrift, setServerDrift] = useState<Drift[] | null>(null);
 
   if (query.isPending) {
     return (
@@ -366,7 +372,7 @@ export function SchedulingScreen({
     saying *why* somebody shows fully busy.
   */
   const unreadable = unreadableGroups(loop, busy);
-  const drift = driftCleared ? null : loop.drift;
+  const drift = driftCleared ? null : (serverDrift ?? loop.drift);
 
   /*
     The live conflict in the arrangement on screen, or the solver's own blocker when
@@ -586,6 +592,19 @@ export function SchedulingScreen({
   const canSend = sendBlockers.length === 0;
   const commitment = selected ? `${clockLabel(selected, zone)} ${dateLabel(selected, zone)}` : null;
 
+  const wireArrangement = (): Arrangement | null => {
+    const placed = loop.rounds.flatMap((round) => {
+      const startUtc = arrangement[round.id];
+      if (!startUtc) return [];
+      return [{ roundId: round.id, startUtc, endUtc: new Date(Date.parse(startUtc) + round.durationMin * 60_000).toISOString(), panelistIds: round.panelists.map((p) => p.userId) }];
+    });
+    if (placed.length !== loop.rounds.length || placed.length === 0) return null;
+    const start = Math.min(...placed.map((p) => Date.parse(p.startUtc)));
+    const end = Math.max(...placed.map((p) => Date.parse(p.endUtc)));
+    const duration = loop.rounds.reduce((sum, round) => sum + round.durationMin, 0);
+    return { startUtc: new Date(start).toISOString(), endUtc: new Date(end).toISOString(), spanMin: (end - start) / 60_000, totalGapMin: Math.max(0, (end - start) / 60_000 - duration), rounds: placed };
+  };
+
   const windowLabel = `${hourLabel(loop.candidateWindow.startUtc, zone)} to ${hourLabel(loop.candidateWindow.endUtc, zone)}`;
   const candidateZoneNote =
     loop.candidate.zone === zone ? '' : ` (${loop.candidate.name.split(' ')[0]} is in ${zoneLabel(loop.candidateWindow.startUtc, loop.candidate.zone)})`;
@@ -736,7 +755,13 @@ export function SchedulingScreen({
                 quantity is a commitment the screen cannot keep. */}
             <Button
               disabled={!selected || loop.holdByOther !== null}
-              onClick={() => selected && setHeldUntil(new Date(now() + 24 * 60 * 60 * 1000).toISOString())}
+              onClick={() => {
+                const value = wireArrangement(); if (!value) return;
+                void holdMutation.mutateAsync({ arrangement: value, version: loop.version ?? 1 }).then((result) => {
+                  setHeldUntil(result.loop?.hold?.expiresUtc ?? new Date(now() + 24 * 60 * 60 * 1000).toISOString());
+                  setHeldVersion(result.loop?.version ?? loop.version ?? 1);
+                });
+              }}
             >
               Hold slot for 24h
             </Button>
@@ -750,7 +775,16 @@ export function SchedulingScreen({
               variant="primary"
               disabled={!canSend}
               title={canSend ? undefined : sendBlockers[0]}
-              onClick={() => selected && setSentAt(selected)}
+              onClick={() => {
+                const value = wireArrangement(); if (!value || !selected) return;
+                void sendMutation.mutateAsync({ arrangement: value, version: heldVersion ?? loop.version ?? 1, idempotencyKey: crypto.randomUUID() }).then((result) => {
+                  if (result.status === 'drifted') {
+                    setServerDrift(result.drift.map((d) => ({ panelistName: d.panelistName, fromUtc: d.fromUtc, toUtc: d.toUtc })));
+                    return;
+                  }
+                  setSentAt(selected);
+                });
+              }}
             >
               {commitment ? `Send invites, ${commitment}` : 'Send invites'}
             </Button>

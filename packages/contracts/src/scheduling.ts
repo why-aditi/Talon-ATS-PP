@@ -250,6 +250,40 @@ export const InterviewLoopSchema = z.object({
    *  one interval covering the whole window, with `calendarConnected: false` saying why. */
   busy: z.record(z.string().uuid(), z.array(BusyIntervalSchema)),
   hold: LoopHoldSchema.nullable(),
+  /** Freshly solved against the same availability snapshot carried in `busy`. */
+  solve: SolveResultSchema.optional(),
   version: z.number().int().min(1),
 });
 export type InterviewLoop = z.infer<typeof InterviewLoopSchema>;
+
+export const GetInterviewLoopParamsSchema = z.object({ id: z.string().uuid() }).strict();
+
+export const HoldLoopRequestSchema = z
+  .object({ arrangement: ArrangementSchema, version: z.number().int().min(1) })
+  .strict();
+export type HoldLoopRequest = z.infer<typeof HoldLoopRequestSchema>;
+
+export const HoldLoopResponseSchema = z.object({ loop: InterviewLoopSchema });
+export type HoldLoopResponse = z.infer<typeof HoldLoopResponseSchema>;
+
+export const SendLoopRequestSchema = z
+  .object({
+    arrangement: ArrangementSchema,
+    version: z.number().int().min(1),
+    idempotencyKey: z.string().uuid(),
+  })
+  .strict();
+export type SendLoopRequest = z.infer<typeof SendLoopRequestSchema>;
+
+export const AvailabilityDriftSchema = z.object({
+  panelistId: z.string().uuid(),
+  panelistName: z.string(),
+  fromUtc: IsoUtc,
+  toUtc: IsoUtc,
+});
+
+export const SendLoopResponseSchema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('sent'), loop: InterviewLoopSchema, candidateIcs: z.string() }),
+  z.object({ status: z.literal('drifted'), drift: z.array(AvailabilityDriftSchema).min(1) }),
+]);
+export type SendLoopResponse = z.infer<typeof SendLoopResponseSchema>;
