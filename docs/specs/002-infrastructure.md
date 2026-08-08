@@ -1,6 +1,6 @@
 # Spec 002 — Infrastructure (M0b)
 
-**Status:** in progress — the IAM stack is built (§4); the rest is not started
+**Status:** in progress — the IAM stack is built (§4), the persistent stack holds Cognito (§4a), the CI workflow is wired (§4b); `ephemeral`, `global/state` and the provisioning scripts are not started
 **Milestone:** M0b (AWS). Spec 001 is M0a and runs entirely locally.
 **Depends on:** spec 001
 **Blocks:** any deploy
@@ -17,9 +17,15 @@ This document currently covers **only the IAM stack**, because that is what has 
 
 ## 2. Scope
 
-**In (now):** `infra/terraform/stacks/iam` — the GitHub Actions OIDC provider, the CI plan and deploy roles, the ECS execution and task roles, the Cognito pre-token Lambda role, and the project permissions boundary. Plus `README.md` and `backend.tf.example` for that stack, and `.gitignore` rules for Terraform artifacts including `backend.tf`.
+**In (now):**
 
-**In (later, not yet built):** `stacks/persistent` (ECR, Cognito, S3, KMS), `stacks/ephemeral` (VPC, Aurora, Redis, ECS, ALB), `global/state` bootstrap, `scripts/up.sh` / `down.sh`, CI `fmt`/`tflint`/`checkov` and the plan-on-PR workflow.
+- `infra/terraform/stacks/iam` — the GitHub Actions OIDC provider, the CI plan and deploy roles, the ECS execution and task roles, the Cognito pre-token Lambda role, and the project permissions boundary.
+- `infra/terraform/stacks/persistent` — the Cognito user pool, its app client, and the hosted auth domain (§4a). Named `persistent` because ARCHITECTURE §9.6 splits stacks by **lifetime**, not by service: this half survives the teardown that destroys the NAT gateway.
+- `.github/workflows/terraform.yml` — `fmt`, `tflint`, `checkov`, `validate`, plan-on-PR as a comment, apply on merge, and the **protected-resource plan check** (§4b).
+- `infra/terraform/scripts/check-plan.py` — the check itself.
+- Plus `README.md` and `backend.tf.example` per stack, and `.gitignore` rules for Terraform artifacts including `backend.tf`.
+
+**In (later, not yet built):** ECR, S3 and KMS inside `stacks/persistent`; `stacks/ephemeral` (VPC, Aurora, Redis, ECS, ALB); `global/state` bootstrap; `scripts/up.sh` / `down.sh`.
 
 **Out:** anything in spec 001. Multi-account or AWS Organizations — ARCHITECTURE §9.5 settles on **one account** with environments separated by name prefix and tag. A custom domain.
 
@@ -296,6 +302,193 @@ This is **not fixable by the permissions boundary** — the boundary binds the t
 
 The fix is the per-service task-role split ARCHITECTURE §9.9 asks for — a scanner role with `GetObject` on quarantine and an api role without it — which is **open question 2** and needs the worker entrypoints to exist first. Recorded here so it is a decision rather than an oversight.
 
+## 4a The persistent stack — Cognito
+
+### 4a.1 Why this stack exists now
+
+The pool the API currently signs users into was created by an agent running the
+AWS CLI. It works, and **none of the protections CLAUDE.md §4 requires applied
+to it**: no `ignore_changes = [schema]`, no deletion protection, and nothing for
+a CI plan check to check. A pool Terraform does not know about cannot be
+protected by a rule about Terraform plans.
+
+### 4a.2 The pool
+
+Written to match the live configuration exactly, so adoption plans no
+replacement (§4a.4). MFA `OPTIONAL` with software tokens, `email` as both the
+username attribute and the auto-verified attribute, minimum password length 12
+with lowercase required only, recovery by verified email then phone.
+
+Three defences against the replacement hazard, in order of how much they do:
+
+1. **No custom attributes, ever.** With none, the schema has no legitimate reason
+   to change at all. `tenant_id`, roles and job membership live in `users` keyed
+   by `sub`, injected as claims by the pre-token Lambda. Confirmed against the
+   live pool: 21 schema attributes, all standard OIDC, zero `custom:`.
+2. **`lifecycle { ignore_changes = [schema] }`.** Not optional even with rule 1:
+   the provider populates `schema` from the standard attributes AWS creates
+   automatically, so an imported pool without this line shows a permanent schema
+   diff and therefore a permanent replacement.
+3. **The CI gate**, §4b. Rules 1 and 2 are properties of `cognito.tf`; the gate
+   is what catches someone editing `cognito.tf`.
+
+`deletion_protection` defaults to `ACTIVE`. Deliberately **not**
+`prevent_destroy` — §9.5a rules it out because it cannot be parameterized and
+blocks `scripts/down.sh`. `deletion_protection` is the parameterizable
+equivalent: `down.sh --all` can flip it, `prevent_destroy` cannot be flipped at
+all.
+
+`lambda_config` is written only when `var.pretoken_lambda_arn` is supplied, the
+same late-binding pattern `stacks/iam` uses for its Cognito and KMS ARNs, and
+for the same reason — the function is deployed by a later stage and referencing
+it here would invert the dependency. **Until it is supplied the pool issues
+tokens with no tenant claims**: a working sign-in and a broken authorization
+story, which is why it is a variable rather than something to be forgotten.
+
+### 4a.3 The domain, and what it unblocks
+
+There is no domain today, and that is the thing actually blocking SSO:
+`/oauth2/authorize` and `/oauth2/token` **do not exist** without one. Two
+consequences follow, and neither is obvious from the pool's configuration:
+
+- Google and per-tenant SAML sign-in are unreachable, because a federated
+  sign-in *is* a redirect to `/oauth2/authorize`.
+- The 30-day refresh window is **absolute, not sliding**, because rotation
+  happens at `/oauth2/token`. `refresh_token_rotation` is written explicitly as
+  `DISABLED` to record that rather than leave it to a default.
+
+A prefix domain, not a custom one — §9.4 rules out a Route 53 zone and an ACM
+cert, and Google OAuth callbacks work against `*.amazoncognito.com`.
+
+**The prefix is globally unique across every AWS account in the region**, and a
+collision fails at *apply*, not at plan. Check with
+`aws cognito-idp describe-user-pool-domain --domain <prefix>` first; an empty
+`DomainDescription` means it is free. Verified free for `talon-dev-auth` at the
+time of writing.
+
+Every OAuth setting defaults to empty or off, so **adding the domain changes
+nothing for the password flow the API uses today**. `allowed_oauth_flows_user_pool_client`
+is derived from whether callback URLs were supplied, which matches the live
+client's `false`. Spec 003 owns the real values.
+
+### 4a.4 Adoption — measured, not asserted
+
+`import` blocks gated on `var.adopt_user_pool`, **not** `terraform import`. An
+`import` block is visible in `terraform plan` before anything is written, so
+"no replacement" is reviewable rather than discovered after the state file has
+moved.
+
+Three plans, all run against the live account:
+
+| Path | Result |
+|---|---|
+| From zero (no variables) | `2 to add, 0 to change, 0 to destroy` |
+| From zero with a domain | `3 to add, 0 to change, 0 to destroy` |
+| **Adopt the live pool** | **`2 to import, 0 to add, 1 to change, 0 to destroy`** |
+
+**Zero to destroy, and no replacement** — that is the requirement that matters.
+"0 to change" is *not* achievable and asking for it would be asking for the
+wrong thing: the one change is the pool moving `deletion_protection`
+`INACTIVE → ACTIVE` and its tags `ManagedBy: manual-cli → terraform`, which is
+the entire point of bringing it under management. Both are in-place.
+
+Two findings from doing it, both of which would have destroyed something:
+
+1. **`generate_secret` forces replacement on an imported client.** The Cognito
+   API returns no `ClientSecret` field at all for a client that has none, so an
+   imported client carries `null` — and an explicit `generate_secret = false`,
+   which is *also the provider default*, reads as a change from null and plans
+   `-/+ ... # forces replacement`. That would mint a new client id and break
+   every running API instance's `COGNITO_CLIENT_ID`. The attribute is now
+   omitted, and its absence is load-bearing.
+2. **`refresh_token_rotation` is planned for removal** on an imported client that
+   has it. Harmless, but it made the client's plan non-empty; writing the block
+   explicitly makes the client's diff exactly zero and records that rotation is
+   off.
+
+### 4a.5 The adoption hazard, and why the variable is an object
+
+Adoption pins the pool's name to the live value **forever**. The name is
+immutable in Cognito and ForceNew in the provider, so the day someone runs a
+plan without `var.adopt_user_pool` set, Terraform proposes to destroy that pool
+and every user in it.
+
+`adopt_user_pool` is therefore a single **object** — `{id, name, client_id,
+client_name}` — not four scalars. The specific mistake of supplying the id while
+leaving the name at its default is *unrepresentable*, and that mistake is
+precisely the one that plans a replacement. Verified: with a deliberately
+mismatched name, the plan becomes `2 to import, 2 to add, 0 to change, 2 to
+destroy` and §4b's check fails with
+`REPLACE aws_cognito_user_pool.main ... forced by: name`.
+
+The residual risk is that the variable is simply not supplied on a later run.
+Mitigation is documentation — put it in `terraform.tfvars`, not on the command
+line — plus the §4b gate. A value that must be remembered on every invocation is
+a value that will be forgotten once, and once is enough.
+
+### 4a.6 Open decision: the adopted pool is named `talon-throwaway-spec002`
+
+**This needs a human and is deliberately not decided here.** The live pool is
+named `talon-throwaway-spec002` and tagged `Environment=throwaway`,
+`ManagedBy=manual-cli`. Adopting it makes that name permanent — Cognito pool
+names cannot be changed, so the only way to a `talon-dev` pool is a new pool.
+
+| | Adopt (`-var adopt_user_pool=...`) | Create fresh (the default) |
+|---|---|---|
+| The 6 existing users | preserved | gone; re-seeded by `up.sh`'s demo-user stage, which §9.5a puts outside Terraform anyway |
+| Pool name | `talon-throwaway-spec002`, forever | `talon-dev`, per §9.4 |
+| Naming convention (§9.5) | broken for this one resource | intact |
+| Prefix-scoped IAM grant | unaffected — pool ARNs embed the pool **id**, not the name | unaffected |
+
+The default in the code is **create fresh**, because §9.5a's acceptance test is
+"tear everything down, run it again from nothing, sign in" and a stack whose
+default path requires something to already exist fails it. Adoption is one
+variable away and is proven clean above.
+
+The argument for creating fresh is that the 6 users are seeded demo users whose
+creation is already a scripted stage of `up.sh`; the argument for adopting is
+that they are real sign-ins today and losing them is a self-inflicted outage.
+Owner: Aditi.
+
+## 4b The protected-resource plan check
+
+`infra/terraform/scripts/check-plan.py`, run from
+`.github/workflows/terraform.yml` on **both** the plan-on-PR path and the
+apply-on-merge path. CLAUDE.md §4 and ARCHITECTURE §9.5 both require it; spec
+§5 previously listed it as "not wired", and until it existed the Cognito rule
+was advisory.
+
+It reads `terraform show -json` and fails on any `delete` action against
+`aws_cognito_user_pool`, `aws_rds_cluster`, `aws_db_instance`, `aws_kms_key`,
+`aws_kms_replica_key`, `aws_s3_bucket` or `aws_dynamodb_table`, or any resource
+type prefixed by one of those.
+
+Three decisions worth stating:
+
+- **A bare destroy is flagged, not just a replacement.** A `delete` without a
+  matching `create` loses every user just as completely.
+- **`aws_cognito_user_pool_client` is included** via the prefix rule. Replacing
+  the client mints a new client id and breaks every running API instance. Not as
+  bad as losing the pool, still not routine.
+- **The override is awkward on purpose.** `TALON_ALLOW_STATEFUL_REPLACE` must
+  contain a reason of at least 20 characters, which is printed into the log;
+  `TALON_ALLOW_STATEFUL_REPLACE=true` is rejected. A flag that can be flipped
+  with `true` gets flipped with `true`.
+
+Verified both directions against real plans: the adoption plan passes, a plan
+with a mismatched pool name fails and names `forced by: name`, a weak override
+still fails, and a written reason passes with the reason on the record.
+
+The `plan` and `apply` jobs are gated on `vars.AWS_PLAN_ROLE_ARN` /
+`vars.AWS_DEPLOY_ROLE_ARN` being set, and are skipped until then. `stacks/iam`
+has not been applied, so those roles do not exist; a job that is always red is a
+job people learn to ignore. `static` (fmt, tflint, checkov, validate) needs no
+credentials and runs on every PR immediately.
+
+**`stacks/iam` is not in the apply matrix and cannot be** — the deploy role is
+explicitly denied writing `role/talon-<env>-github-*`, so a CI apply of it fails
+on its first IAM write. That is §4.8's deliberate consequence, not an oversight.
+
 ## 5. Test plan
 
 | Layer | Covers | Status |
@@ -306,8 +499,11 @@ The fix is the per-service task-role split ARCHITECTURE §9.9 asks for — a sca
 | `terraform plan`, reuse path | `-var github_oidc_provider_arn=…`; same 18 minus the provider, trust policies fully rendered | passing |
 | Variable validation | six wildcard/foreign-repo/`pull_request` claim shapes rejected at plan time, exit 1 | passing |
 | `aws iam simulate-custom-policy` | 58 assertions over the rendered documents, across **four** simulated principals — see §5.1. Runnable: `python infra/terraform/stacks/iam/simulate/simulate.py plan.json` | passing |
-| `tflint`, `checkov` | ARCHITECTURE §9.5 requires both on every PR | **not wired** — lands with the CI workflow, §2 "in (later)" |
-| Protected-resource plan check | fails any plan replacing `aws_cognito_user_pool`, `aws_rds_cluster`, a KMS key or a state bucket; manual override needs a written reason (ARCHITECTURE §9.5, CLAUDE.md §4) | **not wired** — lands with the plan-on-PR workflow, in the same step as `tflint`/`checkov`, and cannot land before it because it is an assertion over that workflow's `terraform show -json` output |
+| `terraform plan`, persistent from zero | `2 to add, 0 to change, 0 to destroy`; `3 to add` with a domain | passing |
+| `terraform plan`, persistent adoption | `2 to import, 0 to add, 1 to change, 0 to destroy` — **no replacement**; §4a.4 | passing |
+| Protected-resource plan check | fails any plan replacing `aws_cognito_user_pool`, `aws_rds_cluster`, a KMS key or a state bucket; manual override needs a written reason (ARCHITECTURE §9.5, CLAUDE.md §4) | **wired** — `infra/terraform/scripts/check-plan.py`, run on the plan and apply paths of `.github/workflows/terraform.yml`. Verified in both directions against real plans, §4b |
+| `tflint`, `checkov` | ARCHITECTURE §9.5 requires both on every PR | **wired but unproven locally** — steps exist in `.github/workflows/terraform.yml`'s `static` job, which needs no credentials and runs on every PR. Neither tool is installed on the authoring machine, so **no claim is made here that they pass**; the first PR run is the proof |
+| Plan posted as a PR comment | ARCHITECTURE §9.5 | **wired, unproven** — needs `vars.AWS_PLAN_ROLE_ARN`, which needs `stacks/iam` applied |
 | Trust-policy assertion | `sub` is pinned to `var.github_repo`; no `repo:*` reaches an apply | **not written** — see open question 3, re-scoped by §4.3a |
 
 ### 5.1 Simulator results
@@ -461,8 +657,10 @@ A6 and A7 are the load-bearing rows: the new mirrors do **not** prevent the huma
    - The list is **duplicated**: items 15-19 reappear as 20, 15, 16, 17. So "non-negotiable #16" is ambiguous — it is both *"Never change the Cognito pool schema"* and *"Every outbox consumer is idempotent"*, and this spec and the code comments cite it by number.
    - Item 16 (the Cognito one) says the pool "carries `prevent_destroy`". ARCHITECTURE §9.4 and §9.5a both supersede that: §9.5a states plainly that `prevent_destroy` cannot be parameterized, blocks `scripts/down.sh`, and is used **nowhere** in this project. `ignore_changes = [schema]` stays; `prevent_destroy` does not.
    Owner: Aditi.
+8. **Is the adopted pool's name acceptable, or should a `talon-dev` pool be created instead?** §4a.6, with the trade-off table. The code defaults to creating fresh; adoption is one variable and is proven not to replace anything. This is the only decision in this spec that is irreversible in the wrong direction — a Cognito pool name cannot be changed, so a pool adopted today is named `talon-throwaway-spec002` for as long as it has users. Owner: Aditi.
+9. **A pool created by an agent running the AWS CLI is how this started.** It predates the Terraform that now manages it, and the only reason that was recoverable is that Cognito pools can be imported and this one's configuration happened to be reproducible. Worth deciding whether "no AWS resource is created outside Terraform" becomes an explicit rule — noting it cannot be absolute, because §9.5a deliberately puts image build/push, in-VPC migration and demo-user creation outside Terraform's graph. The rule needs a stated boundary, not a slogan. Owner: Aditi.
 
-## 8. Definition of done — IAM stack only
+## 8. Definition of done — the IAM stack, the persistent stack, and CI
 
 - [x] `terraform validate` and `fmt -check` pass
 - [x] `terraform plan` is clean on **both** paths — provider create and provider reuse
@@ -471,8 +669,11 @@ A6 and A7 are the load-bearing rows: the new mirrors do **not** prevent the huma
 - [x] The deploy role cannot escalate to administrator, cannot modify itself or the plan role, and cannot rewrite its own boundary — simulator evidence in §5.1
 - [x] **A role the deploy role creates cannot do any of those things either** — the boundary mirrors all six guardrails, verified by the `child` principal in §5.1 (§4.7a, BL-1)
 - [x] The operator identity is not locked out of the next apply by the new mirrors — §5.1, rows A1–A10
-- [x] No `aws_iam_role` anywhere else in the repo
+- [x] No `aws_iam_role` anywhere else in the repo — including `stacks/persistent`, which takes role ARNs as input variables
+- [x] `tflint` + `checkov` wired into CI — steps exist and need no credentials. Neither is installed on the authoring machine, so **no claim is made that they pass**; the first PR run is the proof
+- [x] Protected-resource plan check wired into CI (§4b), verified in both directions against real plans
+- [x] Cognito user pool under Terraform with `ignore_changes = [schema]`, deletion protection, and an adoption path proven not to replace it (§4a)
+- [x] A hosted auth domain is one variable away, with every OAuth setting defaulted off so it changes nothing for today's password flow (§4a.3)
+- [ ] The `talon-throwaway-spec002` naming decision (§4a.6) — **needs a human**
 - [ ] `terraform apply` run against the account — **not done; needs a human (CLAUDE.md §4)**
-- [ ] `tflint` + `checkov` wired into CI — neither is installed on the authoring machine, so **no claim is made here that they pass**
-- [ ] Protected-resource plan check wired into CI (§5)
 - [ ] Open questions 1–7 answered
