@@ -112,7 +112,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   // satisfied by an operator pasting the constant they found in this file or in
   // an old .env — which is the exact outcome it exists to prevent, and it would
   // read as configured. Whitespace is treated as unset for the same reason.
-  const secret = env['TALON_JWT_SECRET']?.trim() ? env['TALON_JWT_SECRET'] : undefined;
+  // Trimmed BEFORE the blocklist compares, not after. Testing `.trim()` for
+  // truthiness while assigning the raw value let `<constant>\n` through — and a
+  // trailing newline is the most common way this variable gets set (a .env file,
+  // `echo >>`, a multi-line Secrets Manager value). The result booted as
+  // "configured" and signed every §6.2 token with a one-character variant of a
+  // constant published in this repository, which is a forged admin token for any
+  // tenant to anyone who tries the obvious padded variants.
+  const secret = env['TALON_JWT_SECRET']?.trim() || undefined;
   if (!secret || secret === LOCAL_JWT_SECRET) {
     throw new Error(
       'TALON_JWT_SECRET must be set to a real value. The built-in key is a ' +

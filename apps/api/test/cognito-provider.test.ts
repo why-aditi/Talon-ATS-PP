@@ -203,7 +203,17 @@ it('refuses to run with the published local signing key', () => {
   // The case the title actually claims: supplying the published constant
   // explicitly must be refused too. A presence-only guard passes the assertion
   // above while leaving every token forgeable, so this is the one that matters.
-  for (const secret of [LOCAL_JWT_SECRET, ' ', '\t\n']) {
+  // The padded variants are the ones that actually shipped broken: the guard
+  // trimmed to decide "is it set" but compared the untrimmed value, so a trailing
+  // newline — how this variable is usually set — defeated the blocklist entirely.
+  for (const secret of [
+    LOCAL_JWT_SECRET,
+    `${LOCAL_JWT_SECRET}\n`,
+    `  ${LOCAL_JWT_SECRET}  `,
+    `\t${LOCAL_JWT_SECRET}`,
+    ' ',
+    '\t\n',
+  ]) {
     expect(
       () => loadConfig({ ...COGNITO_ENV, TALON_JWT_SECRET: secret }),
       JSON.stringify(secret),
