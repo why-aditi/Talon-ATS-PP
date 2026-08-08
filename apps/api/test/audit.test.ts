@@ -22,10 +22,12 @@ import postgres from 'postgres';
 import { ERROR_TYPES } from '@talon/contracts';
 import {
   loadFixtures,
-  provision,
+  dedicatedUser,
+  removeDedicatedUser,
   startApp,
   TEST_PASSWORD,
   type Fixtures,
+  type Person,
   type TestApp,
 } from './helpers.js';
 import { OWNER_URL } from './urls.js';
@@ -44,6 +46,12 @@ interface AuditRow {
 
 let test: TestApp;
 let fixtures: Fixtures;
+/**
+ * This file's OWN user. See `dedicatedUser` — signing in re-provisions, which
+ * rewrites `users.external_id`, so a shared row leaves every other suite naming a
+ * subject that no longer resolves.
+ */
+let owned: Person;
 let owner: postgres.Sql;
 
 const signInRequest = (email: string, password: string) =>
@@ -59,7 +67,10 @@ beforeAll(async () => {
   test = await startApp();
   fixtures = await loadFixtures();
   owner = postgres(OWNER_URL, { max: 1, onnotice: () => {} });
-  await provision(test, fixtures.talon.recruiter);
+  ({ person: owned } = await dedicatedUser(test, 'audit', {
+    tenantId: fixtures.talon.tenantId,
+    role: 'recruiter',
+  }));
 });
 
 beforeEach(async () => {
@@ -75,11 +86,12 @@ beforeEach(async () => {
 afterAll(async () => {
   await owner`delete from audit_log where entity_type = 'authentication'`;
   await owner?.end();
+  await removeDedicatedUser(owned);
   await test.close();
 });
 
 it('a successful sign-in writes one row naming the actor, the tenant, the ip and the request', async () => {
-  const response = await signInRequest(fixtures.talon.recruiter.email, TEST_PASSWORD);
+  const response = await signInRequest(owned.email, TEST_PASSWORD);
   expect(response.statusCode).toBe(200);
 
   const rows = await auditRows();
@@ -87,14 +99,14 @@ it('a successful sign-in writes one row naming the actor, the tenant, the ip and
   const [row] = rows;
   expect(row).toMatchObject({
     tenant_id: fixtures.talon.tenantId,
-    actor_id: fixtures.talon.recruiter.id,
+    actor_id: owned.id,
     action: 'auth.sign_in.succeeded',
     entity_type: 'authentication',
     entity_id: null,
     // Authenticating changes no entity, so there is no prior state to record.
     before: null,
   });
-  expect(row?.after).toEqual({ outcome: 'succeeded', email: fixtures.talon.recruiter.email });
+  expect(row?.after).toEqual({ outcome: 'succeeded', email: owned.email });
   expect(row?.ip).toBe('127.0.0.1');
   // Correlates the row with the server log line and with the problem document a
   // client would have been handed.
@@ -102,7 +114,7 @@ it('a successful sign-in writes one row naming the actor, the tenant, the ip and
 });
 
 it('a failed sign-in is recorded, and carries no tenant and no actor', async () => {
-  const response = await signInRequest(fixtures.talon.recruiter.email, 'not the password');
+  const response = await signInRequest(owned.email, 'not the password');
   expect(response.statusCode).toBe(401);
 
   const rows = await auditRows();
@@ -116,7 +128,7 @@ it('a failed sign-in is recorded, and carries no tenant and no actor', async () 
   });
   expect(rows[0]?.after).toEqual({
     outcome: 'failed',
-    email: fixtures.talon.recruiter.email,
+    email: owned.email,
     // Exactly the `type` the caller was given, and nothing more.
     reason: ERROR_TYPES.INVALID_CREDENTIALS,
   });
@@ -127,7 +139,7 @@ it('the audit trail does not say whether the account exists', async () => {
   // The response side of this is asserted in auth-chain.test.ts. This is the
   // other half: a log that distinguishes the two cases is the same leak, moved
   // somewhere nobody thought to check.
-  const known = await signInRequest(fixtures.talon.recruiter.email, 'not the password');
+  const known = await signInRequest(owned.email, 'not the password');
   const unknown = await signInRequest('nobody-at-all@taloninc.com', 'not the password');
   expect(unknown.statusCode).toBe(known.statusCode);
 
@@ -145,8 +157,8 @@ it('the audit trail does not say whether the account exists', async () => {
 
 it('never records the password, and never records a token', async () => {
   const secret = 'a-password-that-must-not-be-logged';
-  await signInRequest(fixtures.talon.recruiter.email, secret);
-  const success = await signInRequest(fixtures.talon.recruiter.email, TEST_PASSWORD);
+  await signInRequest(owned.email, secret);
+  const success = await signInRequest(owned.email, TEST_PASSWORD);
   const { accessToken, refreshToken } = success.json<{
     accessToken: string;
     refreshToken: string;

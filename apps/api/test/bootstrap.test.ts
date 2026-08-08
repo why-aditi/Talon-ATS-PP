@@ -15,11 +15,14 @@ import { APP_URL, OWNER_URL } from './urls.js';
 let sql: postgres.Sql;
 let fixtures: Fixtures;
 /**
- * The recruiter's TOKEN SUBJECT, which is not the same thing as their id: other
- * files in this suite provision against the fake pool and write
- * `users.external_id`, and `auth_user_by_sub` matches `users.id` only where
- * `external_id is null` (migration 0004). Reading it here rather than assuming
- * keeps this file order-independent.
+ * The recruiter's TOKEN SUBJECT, which is not the same thing as their id.
+ *
+ * `auth_user_by_sub` matches `external_id` first and falls back to `users.id`
+ * only where `external_id is null` (migration 0004). Since every suite now
+ * provisions its OWN user, nothing writes the seeded recruiter's `external_id`
+ * and this resolves to her id in practice. It is still read rather than assumed:
+ * the day a suite does provision her, this file keeps working instead of failing
+ * somewhere that looks unrelated.
  */
 let subject: string;
 
@@ -78,8 +81,10 @@ it('the app role cannot call the email lookup, because nothing calls it yet', as
 
 it('the bootstrap functions expose no password material and no other columns', async () => {
   const columns = Object.keys(
-    (await sql<Record<string, unknown>[]>`
-      select * from auth_user_by_sub(${subject}::text)`)[0] ?? {},
+    (
+      await sql<Record<string, unknown>[]>`
+      select * from auth_user_by_sub(${subject}::text)`
+    )[0] ?? {},
   ).sort();
   expect(columns).toEqual([
     'email',

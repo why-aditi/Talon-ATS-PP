@@ -18,7 +18,16 @@ import {
   openTenantTransaction,
   resolveTenant,
 } from '../src/hooks/auth.js';
-import { loadFixtures, signIn, startApp, testConfig, type Fixtures, type TestApp } from './helpers.js';
+import {
+  dedicatedUser,
+  loadFixtures,
+  removeDedicatedUser,
+  startApp,
+  testConfig,
+  type Fixtures,
+  type Person,
+  type TestApp,
+} from './helpers.js';
 import { OWNER_URL } from './urls.js';
 
 // A pool of exactly one: a single leaked connection makes the next request hang
@@ -29,13 +38,24 @@ let harness: TestApp;
 let app: FastifyInstance;
 let fixtures: Fixtures;
 let token: string;
+/**
+ * This file's OWN user. See `dedicatedUser` — signing in re-provisions, which
+ * rewrites `users.external_id`, so a shared row leaves every other suite naming a
+ * subject that no longer resolves.
+ */
+let owned: Person;
 
 beforeAll(async () => {
   // startApp is used only to mint a session over the real sign-in route; the app
   // under test below is built by hand so it can carry a throwing handler.
   harness = await startApp();
   fixtures = await loadFixtures();
-  token = (await signIn(harness, fixtures.talon.recruiter)).accessToken;
+  const dedicated = await dedicatedUser(harness, 'tenanttransaction', {
+    tenantId: fixtures.talon.tenantId,
+    role: 'recruiter',
+  });
+  owned = dedicated.person;
+  token = dedicated.session.accessToken;
 
   const container = buildContainer(testConfig({ poolMax: POOL_MAX }));
   app = fastify({ exposeHeadRoutes: false });
@@ -44,39 +64,43 @@ beforeAll(async () => {
   app.addHook('onClose', async () => {
     await container.cradle.sql.end();
   });
-  await app.register(async (scoped) => {
-    scoped.addHook('onRequest', authenticate);
-    scoped.addHook('onRequest', resolveTenant);
-    scoped.addHook('preHandler', openTenantTransaction);
-    scoped.addHook('onSend', finishTenantTransaction);
+  await app.register(
+    async (scoped) => {
+      scoped.addHook('onRequest', authenticate);
+      scoped.addHook('onRequest', resolveTenant);
+      scoped.addHook('preHandler', openTenantTransaction);
+      scoped.addHook('onSend', finishTenantTransaction);
 
-    scoped.get('/boom', async () => {
-      throw new Error('handler exploded');
-    });
-    scoped.get('/write', async (request) => {
-      const tx = requireTx(request);
-      await tx.sql`insert into candidates (id, tenant_id, name) values (gen_random_uuid(), ${tx.tenantId}::uuid, 'Rollback Probe')`;
-      const [row] = await tx.sql<{ n: number }[]>`
+      scoped.get('/boom', async () => {
+        throw new Error('handler exploded');
+      });
+      scoped.get('/write', async (request) => {
+        const tx = requireTx(request);
+        await tx.sql`insert into candidates (id, tenant_id, name) values (gen_random_uuid(), ${tx.tenantId}::uuid, 'Rollback Probe')`;
+        const [row] = await tx.sql<{ n: number }[]>`
         select count(*)::int as n from candidates where name = 'Rollback Probe'`;
-      return { visibleInTransaction: row?.n ?? 0 };
-    });
-    scoped.get('/write-then-fail', async (request) => {
-      const tx = requireTx(request);
-      await tx.sql`insert into candidates (id, tenant_id, name) values (gen_random_uuid(), ${tx.tenantId}::uuid, 'Never Committed')`;
-      throw new Error('handler exploded after writing');
-    });
-    scoped.get('/settings', async (request) => {
-      const tx = requireTx(request);
-      const [row] = await tx.sql<{ tenant: string; user: string }[]>`
+        return { visibleInTransaction: row?.n ?? 0 };
+      });
+      scoped.get('/write-then-fail', async (request) => {
+        const tx = requireTx(request);
+        await tx.sql`insert into candidates (id, tenant_id, name) values (gen_random_uuid(), ${tx.tenantId}::uuid, 'Never Committed')`;
+        throw new Error('handler exploded after writing');
+      });
+      scoped.get('/settings', async (request) => {
+        const tx = requireTx(request);
+        const [row] = await tx.sql<{ tenant: string; user: string }[]>`
         select current_setting('app.tenant_id', true) as tenant,
                current_setting('app.user_id', true) as user`;
-      return row;
-    });
-  }, { prefix: '/v1' });
+        return row;
+      });
+    },
+    { prefix: '/v1' },
+  );
   await app.ready();
 }, 180_000);
 
 afterAll(async () => {
+  await removeDedicatedUser(owned);
   // Guarded: if beforeAll failed, the real error should be what the run reports.
   await app?.close();
   await harness?.close();
@@ -90,7 +114,7 @@ it('sets app.tenant_id and app.user_id on the transaction', async () => {
   expect(res.statusCode).toBe(200);
   expect(res.json()).toEqual({
     tenant: fixtures.talon.tenantId,
-    user: fixtures.talon.recruiter.id,
+    user: owned.id,
   });
 });
 
