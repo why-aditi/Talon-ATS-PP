@@ -112,6 +112,13 @@ export {
   type ReorderBody,
   StageConflictSchema,
   type StageConflict,
+  // Candidate intake (spec 005 §4.5)
+  CreateCandidateSchema,
+  type CreateCandidate,
+  CreateApplicationBodySchema,
+  type CreateApplicationBody,
+  CreateApplicationResponseSchema,
+  type CreateApplicationResponse,
 } from './pipeline.js';
 
 export { ProblemSchema, type Problem } from './problem.js';

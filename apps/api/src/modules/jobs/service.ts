@@ -51,11 +51,15 @@ export function applyOverrides(
   overrides: readonly { position: number; slaDays: number | null }[],
 ): { name: string; position: number; canonical: CanonicalStage; slaDays: number | null; isTerminal: boolean }[] {
   const byPosition = new Map(overrides.map((o) => [o.position, o.slaDays]));
-  return stages.map((stage, position) => ({
+  return stages.map((stage, index) => ({
     name: stage.name,
-    position,
+    // 1-based, matching the seed (`position: i + 1`). Overrides stay keyed on the
+    // 0-based template index, so the client contract is unchanged and the two
+    // conventions meet in exactly this one line rather than across the codebase.
+    position: index + 1,
     canonical: stage.canonical,
-    slaDays: byPosition.has(position) ? (byPosition.get(position) ?? null) : stage.slaDays,
+    // Keyed on the 0-based template index, which is what the client sent.
+    slaDays: byPosition.has(index) ? (byPosition.get(index) ?? null) : stage.slaDays,
     isTerminal: stage.isTerminal,
   }));
 }

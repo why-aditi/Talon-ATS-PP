@@ -10,6 +10,8 @@ import {
   ApplicationCardSchema,
   ApplicationParamsSchema,
   BoardSchema,
+  CreateApplicationBodySchema,
+  CreateApplicationResponseSchema,
   GetBoardParamsSchema,
   MoveStageBodySchema,
   ReorderBodySchema,
@@ -57,5 +59,19 @@ export const applicationsRoutes: FastifyPluginAsync = async (app) => {
       { ip: request.ip, requestId: request.id },
     );
     return reply.send(ApplicationCardSchema.parse(card));
+  });
+
+  app.post('/applications', async (request, reply) => {
+    const body = parseOrThrow(CreateApplicationBodySchema, request.body, 'body');
+    const created = await services(request).applicationsService.createApplication(
+      requireTx(request),
+      requireUser(request),
+      body,
+      { ip: request.ip, requestId: request.id },
+    );
+    return reply
+      .code(201)
+      .header('location', `/v1/applications/${created.application.id}`)
+      .send(CreateApplicationResponseSchema.parse(created));
   });
 };
