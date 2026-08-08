@@ -229,3 +229,24 @@ No comp fields on this surface. `scoreAvg` is out of scope entirely, so scorecar
 | 6 | `applications/routes.ts`, `events.ts` |
 | 7 | Integration + isolation tests |
 | 8 | UI migration: import from `@talon/contracts`, drop `skills`/`scoreAvg`, delete the mock handlers |
+
+---
+
+## 12. Found while testing (step 7)
+
+**The re-entry test passed twice before it tested anything.** Both failures are the same shape and both are worth recording: an assertion that holds for a reason other than the one intended.
+
+1. The first construction inserted history that **predated** the candidate's seeded entry, so the buggy query answered with *negative* dwells — which satisfied a "must not inflate" assertion perfectly. Rebuilt so the two queries genuinely disagree: the correct one reports **4**, the naive self-join reports **3**.
+2. The cleanup deleted by **time window** (`occurred_at` between one and six days ago), which is exactly where the seeded history lives. It destroyed Marcus Webb's `applied -> screen` transition, and the test then asserted against the wreckage. `stage_transitions` is append-only with monotonic ids, so a **high-water mark** taken in `beforeAll` is the only predicate that can tell this suite's rows from the seed's.
+
+Both were caught by reverting the query to the naive join and checking that the test failed. It did not, twice. It does now.
+
+**Cross-file token invalidation.** `auth-chain.test.ts` sets `tokens_valid_after` on the same recruiter to prove an unexpired token is still refused, and vitest runs files in parallel — so a token minted once in `beforeAll` lands inside that window and every request 401s. This suite signs in per test instead. A suite should not depend on its credential outliving another file's deliberate invalidation.
+
+**The board served seven columns** until a real database showed it. `rejected` and `withdrawn` are genuine `job_stages` rows; the MSW fixture never had them because it was written from the reference screen. The mock was right by construction and the endpoint wrong by construction, and nothing in between could tell.
+
+## 13. Still open
+
+- **OQ-2 answered:** 200 cards per column. No truncation flag — `count` carries the column's true size, so `count > cards.length` is the signal. The UI does not yet say "200 of 340"; it renders the true count in the header and a shorter list.
+- Spec numbers collide across streams: `003-job-template-modal` / `003-pipeline-board`, and `004-google-sso` / `004-board-api`. Branch names key off spec numbers (CLAUDE.md §8).
+- The api suites across worktrees share one database (`talon_api_test`). Whichever session runs last wins; this produced a phantom `audit_sign_in` failure during step 4 that had nothing to do with this branch.
