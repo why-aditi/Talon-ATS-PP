@@ -156,7 +156,7 @@ variable "state_lock_table_name" {
 }
 
 variable "restrict_deploy_regions" {
-  description = "Deny the apply role in every region except aws_region and us-east-1 (global services live there). Cost control per §9.6: a resource created in a region nobody watches is a bill nobody sees. Set false if an apply fails with AccessDenied on a global service that is not in the exclusion list in role_github_deploy.tf, and add that service in the same PR."
+  description = "Deny every region except aws_region and us-east-1 (global services live there), on the apply role AND in the permissions boundary — so a role the apply role creates cannot go region-shopping either. Cost control per §9.6: a resource created in a region nobody watches is a bill nobody sees. Set false if an apply fails with AccessDenied on a global service that is not in local.region_exempt_actions, and add that service there in the same PR instead if you can."
   type        = bool
   default     = true
 }
