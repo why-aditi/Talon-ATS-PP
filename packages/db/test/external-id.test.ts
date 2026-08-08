@@ -182,6 +182,7 @@ describe('0004 down → up', () => {
     // `down` steps back exactly one migration, so everything stacked above 0004 has
     // to come off first. Asserted rather than looped: a down that quietly took two
     // would be worth knowing about here, in the file that tests reversibility.
+    expect(await migrate('down', OWNER_URL)).toEqual(['0009_async_jobs_and_imports']);
     expect(await migrate('down', OWNER_URL)).toEqual(['0008_jobs_version']);
     expect(await migrate('down', OWNER_URL)).toEqual(['0007_definer_rls_exemption']);
     expect(await migrate('down', OWNER_URL)).toEqual(['0006_outbox']);
@@ -210,6 +211,7 @@ describe('0004 down → up', () => {
       '0006_outbox',
       '0007_definer_rls_exemption',
       '0008_jobs_version',
+      '0009_async_jobs_and_imports',
     ]);
 
     const [reapplied] = await subFn();
