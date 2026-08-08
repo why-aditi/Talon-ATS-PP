@@ -4,8 +4,15 @@
  * Drizzle because they are two function calls and a transaction primitive, which
  * a query builder makes longer, not clearer).
  *
- * It owns three things: the local credential store, the two §11b bootstrap
- * lookups, and the per-request tenant transaction primitive.
+ * It owns two things: the §11b bootstrap lookup, and the per-request tenant
+ * transaction primitive.
+ *
+ * The local credential store is gone with `LocalIdentityProvider` (spec 002 open
+ * question 1). `local_identities` and `auth_user_by_email` are deliberately
+ * still in the database — dropping a table holding password hashes is a
+ * migration with a real rollback story (spec 003 §6 owns it), and a table
+ * nothing reads is harmless where a rushed `drop table` is not. Nothing in
+ * `src/` reaches either any more, which is the part that matters here.
  */
 import { isRole, type Role } from '@talon/domain';
 import type postgres from 'postgres';
@@ -22,13 +29,6 @@ export interface UserRecord {
   tokensValidAfter: Date | null;
 }
 
-export interface LocalIdentityRecord {
-  sub: string;
-  email: string;
-  passwordHash: string;
-  totpSecret: string | null;
-}
-
 interface UserRow {
   id: string;
   tenant_id: string;
@@ -38,13 +38,6 @@ interface UserRow {
   timezone: string;
   mfa_enabled: boolean;
   tokens_valid_after: Date | null;
-}
-
-interface IdentityRow {
-  sub: string;
-  email: string;
-  password_hash: string;
-  totp_secret: string | null;
 }
 
 function toUser(row: UserRow | undefined): UserRecord | null {
@@ -66,16 +59,6 @@ function toUser(row: UserRow | undefined): UserRecord | null {
   };
 }
 
-function toIdentity(row: IdentityRow | undefined): LocalIdentityRecord | null {
-  if (!row) return null;
-  return {
-    sub: row.sub,
-    email: row.email,
-    passwordHash: row.password_hash,
-    totpSecret: row.totp_secret,
-  };
-}
-
 export class IdentityRepository {
   readonly #sql: postgres.Sql;
   #roleAudited = false;
@@ -85,14 +68,15 @@ export class IdentityRepository {
   }
 
   // ── §11b bootstrap: runs before app.tenant_id exists ──────────────────────
-  // Both go through a security definer function with a pinned search_path
-  // (migration 0003). The app role has no other way past the users policy, and
-  // neither function returns password material.
-
-  async findUserByEmail(email: string): Promise<UserRecord | null> {
-    const rows = await this.#sql<UserRow[]>`select * from auth_user_by_email(${email}::citext)`;
-    return toUser(rows[0]);
-  }
+  // Goes through a security definer function with a pinned search_path
+  // (migrations 0003/0004). The app role has no other way past the users policy,
+  // and the function returns no password material.
+  //
+  // `auth_user_by_email` has no caller any more — it existed for the local
+  // provider's "verify the hash, then find the person" step, and Cognito answers
+  // both halves. The function stays in the database (see the file header); the
+  // wrapper does not, because a repository method nothing calls is a query
+  // surface nothing reviews.
 
   /**
    * `::text`, not `::uuid`. Migration 0004 retyped the parameter and dropped the
@@ -105,45 +89,43 @@ export class IdentityRepository {
     return toUser(rows[0]);
   }
 
-  // ── local credential store ────────────────────────────────────────────────
-
-  async findIdentityByEmail(email: string): Promise<LocalIdentityRecord | null> {
-    const rows = await this.#sql<IdentityRow[]>`
-      select sub, email, password_hash, totp_secret
-      from local_identities where email = ${email}::citext`;
-    return toIdentity(rows[0]);
-  }
-
-  async findIdentityBySub(sub: string): Promise<LocalIdentityRecord | null> {
-    const rows = await this.#sql<IdentityRow[]>`
-      select sub, email, password_hash, totp_secret
-      from local_identities where sub = ${sub}::uuid`;
-    return toIdentity(rows[0]);
-  }
+  // ── the sign-in audit row (CLAUDE.md §4) ──────────────────────────────────
 
   /**
-   * Upsert keyed on EMAIL, not sub: email is the login identifier here, and
-   * re-provisioning a person who was re-created upstream (a re-seeded database
-   * hands the same people new ids) must replace the credential rather than
-   * collide with the unique email. A new credential resets TOTP — an
-   * authenticator enrolled against the old one is not this identity's.
+   * Records one sign-in attempt, successful or not.
+   *
+   * Outside any transaction, and it has to be: sign-in runs before tenant
+   * context exists, so there is no `openTenantTransaction` to enlist in, and a
+   * failed attempt never acquires a tenant at all. It goes through
+   * `audit_sign_in` (migration 0005), a `security definer` writer granted only
+   * this one row shape — see that migration for why a second owner-privileged
+   * connection was refused.
+   *
+   * Not wrapped in a try/catch anywhere down this path. A sign-in that cannot be
+   * audited does not happen (CLAUDE.md §4), and swallowing the failure would
+   * make the guarantee a hope. It is also uniform: nothing here depends on
+   * whether the address exists, so a broken audit path cannot become the
+   * enumeration oracle the sign-in path refuses to be.
    */
-  async putIdentity(input: { sub: string; email: string; passwordHash: string }): Promise<void> {
-    await this.#sql`
-      insert into local_identities (sub, email, password_hash)
-      values (${input.sub}::uuid, ${input.email}::citext, ${input.passwordHash})
-      on conflict (email) do update
-        set sub = excluded.sub,
-            password_hash = excluded.password_hash,
-            totp_secret = null,
-            totp_enrolled_at = null`;
-  }
-
-  async setTotpSecret(sub: string, secret: string): Promise<void> {
-    await this.#sql`
-      update local_identities
-      set totp_secret = ${secret}, totp_enrolled_at = now()
-      where sub = ${sub}::uuid`;
+  async recordSignIn(input: {
+    outcome: 'succeeded' | 'failed';
+    /** The RFC 9457 `type` the caller was given. Never more than that. */
+    reason: string | null;
+    email: string;
+    /** Non-null only on success — a failure proves no identity to attribute. */
+    tenantId: string | null;
+    actorId: string | null;
+    ip: string | null;
+    requestId: string | null;
+  }): Promise<void> {
+    await this.#sql`select audit_sign_in(
+      ${input.outcome}::text,
+      ${input.reason}::text,
+      ${input.email}::text,
+      ${input.tenantId}::uuid,
+      ${input.actorId}::uuid,
+      ${input.ip}::text,
+      ${input.requestId}::text)`;
   }
 
   // ── the request transaction (spec 001 §6.3) ───────────────────────────────

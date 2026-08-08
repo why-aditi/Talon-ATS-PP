@@ -1,6 +1,22 @@
 /**
  * A fake Cognito, stubbed at the NETWORK layer (CLAUDE.md §6).
  *
+ * ── LOAD-BEARING ───────────────────────────────────────────────────────────
+ * `LocalIdentityProvider` is gone (spec 002 open question 1), so Cognito is the
+ * only identity provider and this file is the ONLY reason `pnpm test` runs
+ * without an AWS account. It is no longer a test convenience: if it breaks, the
+ * suite does not degrade — it either cannot authenticate at all, or it starts
+ * talking to a real user pool from CI. Both failure modes are worse than a red
+ * test, so treat a change here with the care of production code:
+ *
+ *   - Every fetch that is not the pool's JWKS URL THROWS. That is deliberate:
+ *     an un-stubbed call must be a loud failure, never a silent request to AWS.
+ *   - The AWS credentials it exports are dummies. The suite is verified green
+ *     with every `AWS_*` variable unset and `AWS_CONFIG_FILE` /
+ *     `AWS_SHARED_CREDENTIALS_FILE` pointed at paths that do not exist.
+ *   - It rejects a request addressed at the wrong pool or client, so a command
+ *     built without `UserPoolId`/`ClientId` fails here rather than only in AWS.
+ *
  * Two boundaries, both intercepted where the bytes leave the process rather than
  * where the code is convenient to mock:
  *
@@ -51,6 +67,8 @@ interface AwsError {
   status: number;
   type: string;
   message: string;
+  /** Sent as a `retry-after` response header, the way a throttling service does. */
+  retryAfterHeader?: string;
 }
 
 function awsError(type: string, message = type): AwsError {
@@ -88,6 +106,12 @@ export class CognitoStub {
    * the opposite of what it claims.
    */
   authError: string | undefined;
+  /**
+   * `retry-after` header value returned alongside `authError`, when set. The
+   * adapter is supposed to honour the service's own number rather than always
+   * inventing one, and that cannot be asserted without a service that sends one.
+   */
+  authErrorRetryAfter: string | undefined;
 
   constructor() {
     const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -99,7 +123,12 @@ export class CognitoStub {
     return `${this.issuer}/.well-known/jwks.json`;
   }
 
-  addUser(email: string, password: string, sub = randomUUID()): StubUser {
+  // `sub: string`, not the inferred `${string}-${string}-…` that `randomUUID`'s
+  // return type would impose. A pool subject is an opaque string — a SAML
+  // NameID is not a UUID — and letting the default narrow the parameter would
+  // make the type system enforce the very assumption spec 002 open question 2
+  // removed.
+  addUser(email: string, password: string, sub: string = randomUUID()): StubUser {
     const user: StubUser = { sub, email, password };
     this.users.set(email.toLowerCase(), user);
     return user;
@@ -132,6 +161,9 @@ export class CognitoStub {
           response.writeHead(error.status ?? 400, {
             'content-type': 'application/x-amz-json-1.1',
             'x-amzn-errortype': error.type,
+            ...(error.retryAfterHeader === undefined
+              ? {}
+              : { 'retry-after': error.retryAfterHeader }),
           });
           response.end(JSON.stringify({ __type: error.type, message: error.message }));
         }
@@ -148,7 +180,14 @@ export class CognitoStub {
     this.#setEnv('AWS_ACCESS_KEY_ID', 'stub-access-key');
     this.#setEnv('AWS_SECRET_ACCESS_KEY', 'stub-secret-key');
     this.#setEnv('AWS_SESSION_TOKEN', undefined);
+    // A developer's ambient profile must not be able to make the suite pass —
+    // nor to make it reach a real pool. Point the credential resolution chain at
+    // nothing, and turn IMDS off so a machine with an instance role cannot be
+    // the difference between green and red.
     this.#setEnv('AWS_PROFILE', undefined);
+    this.#setEnv('AWS_CONFIG_FILE', '/nonexistent/talon-suite/config');
+    this.#setEnv('AWS_SHARED_CREDENTIALS_FILE', '/nonexistent/talon-suite/credentials');
+    this.#setEnv('AWS_EC2_METADATA_DISABLED', 'true');
 
     this.#previousFetch = globalThis.fetch;
     const jwksUri = this.jwksUri;
@@ -240,7 +279,9 @@ export class CognitoStub {
   }
 
   #adminInitiateAuth(body: Record<string, unknown>): Record<string, unknown> {
-    if (this.authError) throw awsError(this.authError);
+    if (this.authError) {
+      throw { ...awsError(this.authError), retryAfterHeader: this.authErrorRetryAfter };
+    }
     const flow = String(body['AuthFlow']);
     const parameters = (body['AuthParameters'] ?? {}) as Record<string, string>;
 

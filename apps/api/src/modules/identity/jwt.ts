@@ -1,5 +1,5 @@
 /**
- * HS256 JWT sign/verify for the local provider.
+ * HS256 JWT sign/verify for Talon's OWN session tokens — the §6.2 bearer token.
  *
  * Hand-rolled over `node:crypto` rather than pulling in a JWT library: the whole
  * surface is one algorithm plus base64url, and the claim rules that actually
@@ -9,8 +9,11 @@
  * algorithm is pinned (never read from the token) and the signature is checked
  * before a single claim is read.
  *
- * This file is local-provider machinery. Cognito verifies RS256 against a JWKS
- * and will bring its own verifier inside its own adapter.
+ * This is the token WE mint and verify (`session.ts`). Cognito's own id tokens
+ * are RS256 against a JWKS and go through `jwks.ts` instead — two verifiers,
+ * because they answer to two different key authorities. When the
+ * pre-token-generation Lambda lands and the bearer token becomes Cognito's, this
+ * file goes with it.
  */
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 

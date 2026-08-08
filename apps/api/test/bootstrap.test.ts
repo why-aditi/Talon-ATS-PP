@@ -10,14 +10,32 @@
 import postgres from 'postgres';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { loadFixtures, type Fixtures } from './helpers.js';
-import { APP_URL } from './urls.js';
+import { APP_URL, OWNER_URL } from './urls.js';
 
 let sql: postgres.Sql;
 let fixtures: Fixtures;
+/**
+ * The recruiter's TOKEN SUBJECT, which is not the same thing as their id: other
+ * files in this suite provision against the fake pool and write
+ * `users.external_id`, and `auth_user_by_sub` matches `users.id` only where
+ * `external_id is null` (migration 0004). Reading it here rather than assuming
+ * keeps this file order-independent.
+ */
+let subject: string;
 
 beforeAll(async () => {
   fixtures = await loadFixtures();
   sql = postgres(APP_URL, { max: 1, onnotice: () => {} });
+  const owner = postgres(OWNER_URL, { max: 1, onnotice: () => {} });
+  try {
+    const [row] = await owner<{ sub: string }[]>`
+      select coalesce(external_id, id::text) as sub from users
+      where id = ${fixtures.talon.recruiter.id}::uuid`;
+    if (!row) throw new Error('seed is missing the recruiter');
+    subject = row.sub;
+  } finally {
+    await owner.end();
+  }
 });
 
 afterAll(async () => {
@@ -51,7 +69,7 @@ it('the bootstrap function returns exactly the one row sign-in needs', async () 
 it('the bootstrap functions expose no password material and no other columns', async () => {
   const columns = Object.keys(
     (await sql<Record<string, unknown>[]>`
-      select * from auth_user_by_sub(${fixtures.talon.recruiter.id}::text)`)[0] ?? {},
+      select * from auth_user_by_sub(${subject}::text)`)[0] ?? {},
   ).sort();
   expect(columns).toEqual([
     'email',
@@ -76,13 +94,20 @@ it('the bootstrap is an exact-match lookup, not a query surface', async () => {
   ).toHaveLength(1);
 });
 
-it('these two functions are the only SECURITY DEFINER surface, and their search_path is pinned', async () => {
+it('the SECURITY DEFINER surface is three functions, and their search_path is pinned', async () => {
   const rows = await sql<{ proname: string; proconfig: string[] | null }[]>`
     select p.proname, p.proconfig
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
     where n.nspname = 'public' and p.prosecdef
     order by p.proname`;
-  expect(rows.map((r) => r.proname)).toEqual(['auth_user_by_email', 'auth_user_by_sub']);
+  // Two readers (0003/0004) and one writer (0005). Every one of them exists
+  // because sign-in runs before app.tenant_id does; anything else appearing in
+  // this list is a privilege escalation waiting to be found by someone else.
+  expect(rows.map((r) => r.proname)).toEqual([
+    'audit_sign_in',
+    'auth_user_by_email',
+    'auth_user_by_sub',
+  ]);
   for (const row of rows) {
     // An unpinned search_path on a definer function is the classic way to have
     // it execute someone else's `users`.

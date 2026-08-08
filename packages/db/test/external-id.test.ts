@@ -179,6 +179,10 @@ describe('0004 down → up', () => {
   }
 
   it('down restores 0003’s uuid-typed function exactly, then up restores the text one', async () => {
+    // `down` steps back exactly one migration, so 0005 has to come off first.
+    // Asserted rather than looped: a down that quietly took two would be worth
+    // knowing about here, in the file that tests reversibility.
+    expect(await migrate('down', OWNER_URL)).toEqual(['0005_audit_authentication']);
     expect(await migrate('down', OWNER_URL)).toEqual(['0004_users_external_id']);
 
     const [reverted] = await subFn();
@@ -197,7 +201,10 @@ describe('0004 down → up', () => {
     expect(await owner`select * from auth_user_by_sub(${localUser.id}::uuid)`).toHaveLength(1);
     expect(await externalIdColumn()).toHaveLength(0);
 
-    expect(await migrate('up', OWNER_URL)).toEqual(['0004_users_external_id']);
+    expect(await migrate('up', OWNER_URL)).toEqual([
+      '0004_users_external_id',
+      '0005_audit_authentication',
+    ]);
 
     const [reapplied] = await subFn();
     expect(reapplied?.['args']).toBe('p_sub text');
