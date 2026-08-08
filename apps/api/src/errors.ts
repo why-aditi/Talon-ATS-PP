@@ -4,6 +4,15 @@
  */
 import type { FastifyError, FastifyReply, FastifyRequest } from 'fastify';
 import { ERROR_TYPES, ProblemSchema, type Problem } from '@talon/contracts';
+import { brandError, isBrandedError } from './branded-error.js';
+
+/** Checked instead of `instanceof`. `branded-error.ts` carries the reasoning. */
+const PROBLEM_BRAND = Symbol.for('talon.httpProblem');
+
+/** True for an HttpProblem from ANY copy of this module. */
+export function isHttpProblem(error: unknown): error is HttpProblem {
+  return isBrandedError(error, PROBLEM_BRAND);
+}
 
 export class HttpProblem extends Error {
   constructor(
@@ -23,6 +32,7 @@ export class HttpProblem extends Error {
   ) {
     super(detail ?? title);
     this.name = 'HttpProblem';
+    brandError(this, PROBLEM_BRAND);
   }
 }
 
@@ -76,7 +86,7 @@ export function parseOrThrow<T>(schema: SafeParser<T>, value: unknown, source: s
 }
 
 function render(error: unknown, request: FastifyRequest): Problem {
-  if (error instanceof HttpProblem) {
+  if (isHttpProblem(error)) {
     return ProblemSchema.parse({
       type: error.type,
       title: error.title,
@@ -114,7 +124,7 @@ function render(error: unknown, request: FastifyRequest): Problem {
 export function problemErrorHandler(error: unknown, request: FastifyRequest, reply: FastifyReply): void {
   const problem = render(error, request);
   if (problem.status >= 500) request.log.error({ err: error }, 'unhandled error');
-  sendProblem(reply, problem, error instanceof HttpProblem ? error.headers : undefined);
+  sendProblem(reply, problem, isHttpProblem(error) ? error.headers : undefined);
 }
 
 export function sendProblem(

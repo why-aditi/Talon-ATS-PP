@@ -9,10 +9,11 @@ import { ERROR_TYPES, type RefreshResponse, type SignInResponse, type SsoRequest
 import { scopesFor } from '@talon/domain';
 import { uuidv7 } from 'uuidv7';
 import type { AuthConfig } from '../../config.js';
-import { HttpProblem } from '../../errors.js';
+import { HttpProblem, isHttpProblem } from '../../errors.js';
 import type { AuthenticatedUser, TenantTransaction } from '../../request-context.js';
 import {
   IdentityFailure,
+  isIdentityFailure,
   type IdentityProvider,
   type UnprovisionedSubject,
   type VerifiedIdentity,
@@ -111,13 +112,13 @@ const domainOf = (email: string): string => email.slice(email.indexOf('@') + 1);
  * `user_not_provisioned` raised without a subject, passes straight through.
  */
 function unprovisioned(error: unknown): UnprovisionedSubject | null {
-  if (!(error instanceof IdentityFailure)) return null;
+  if (!isIdentityFailure(error)) return null;
   if (error.code !== 'user_not_provisioned') return null;
   return error.subject ?? null;
 }
 
 function asProblem(error: unknown): unknown {
-  if (!(error instanceof IdentityFailure)) return error;
+  if (!isIdentityFailure(error)) return error;
   const problem = PROBLEMS[error.code];
   if (error.code !== 'rate_limited') {
     return new HttpProblem(problem.status, problem.type, problem.title, error.detail);
@@ -203,7 +204,10 @@ export class IdentityService {
         // The `type` the caller is about to receive, and nothing beyond it. A
         // log that knows more about why a sign-in failed than the response did
         // is the oracle the response was written to avoid.
-        reason: err instanceof HttpProblem ? err.type : ERROR_TYPES.INTERNAL,
+        // Branded, not `instanceof`: the audit row and the response must not be
+        // able to disagree about why a sign-in failed, and a class-identity
+        // check is the one way this could answer differently from `render`.
+        reason: isHttpProblem(err) ? err.type : ERROR_TYPES.INTERNAL,
         tenantId: null,
         actorId: null,
       });
