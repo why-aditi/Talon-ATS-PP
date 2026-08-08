@@ -10,12 +10,20 @@ IAM grant.
 
 **A human or admin identity — not CI.**
 
-The deploy role this stack creates is explicitly denied `UpdateAssumeRolePolicy`,
-`PutRolePolicy`, `AttachRolePolicy`, `DeleteRole` and the permissions-boundary
-actions on `role/talon-<env>-github-*`, so it cannot modify itself or the plan
-role. That denial is what makes the `sub` pin in `oidc.tf` a real boundary rather
-than a comment: without it, one workflow run on the default branch could add a
-subject claim for any repository on github.com, permanently.
+The deploy role this stack creates is explicitly denied every role-write action
+in `local.ci_role_write_actions` on `role/talon-<env>-github-*`, so it cannot
+modify itself or the plan role. That denial is what makes the `sub` pin in
+`oidc.tf` a real boundary rather than a comment: without it, one workflow run on
+the default branch could add a subject claim for any repository on github.com,
+permanently.
+
+**The same denial is in the permissions boundary**, and it has to be. Denying it
+only on the deploy role leaves a three-call path around it: create a child role
+*with* the boundary, give it an inline `*:*`, assume it. Every step of that is
+permitted by design — the ceiling is supposed to make it harmless — and it is
+harmless only if the ceiling denies what the deploy role denies. It did not, for
+four of six guardrails, and rewriting the deploy role's trust policy was
+reachable. See spec 002 §4.7a.
 
 The consequence is that a CI job cannot apply this stack. That matches
 ARCHITECTURE §9.5a: `scripts/up.sh` stage 2 runs as the operator, and CI sets
@@ -81,6 +89,25 @@ when `iam:PermissionsBoundary` equals that ARN, and is denied rewriting or
 detaching it. Read the header comment in that file for the escalation it closes
 before changing anything in it.
 
+**If you add a guardrail to the deploy role, add it to the boundary too**, and
+put its action list in `locals.tf` so the two statements read the same value.
+That is not tidiness: a guardrail the deploy role carries and the boundary does
+not is a guardrail the deploy role can create a child role to walk around. The
+shared locals are `ci_role_write_actions`, `pass_role_services`,
+`ec2_pass_role_arn_pattern`, `stateful_delete_actions`, `account_org_actions`,
+`state_bucket_protection_actions`, `state_lock_protection_actions` and
+`region_exempt_actions`. Spec 002 §5.1 has a `child` principal — a role holding
+inline `*:*` and nothing else, so only the boundary can deny it — and a new
+guardrail needs a row there in the same PR.
+
+Two naming contracts this stack places on later stacks, both of which fail as an
+`AccessDenied` at apply rather than at plan:
+
+| Contract | Why |
+|---|---|
+| EventBridge bus is `talon-<env>-*` | the task role's `events:PutEvents` (§4.5a) |
+| NAT / EC2 instance role is `talon-<env>-ec2-*` | `iam:PassRole` to `ec2.amazonaws.com` is denied for every other name, so the ECS task role cannot be handed to an instance (§4.7b) |
+
 Adding the boundary to a role that **already exists** needs
 `iam:PutRolePermissionsBoundary`, which is not in the granted addendum listed in
 ARCHITECTURE §9.5. Creating a role with one does not — it is a parameter of
@@ -100,3 +127,20 @@ all five roles with the boundary and the question does not arise.
 | `locals.tf` | Names, ARNs, subject claims |
 | `variables.tf` | Inputs and their validations |
 | `outputs.tf` | Role ARNs, and `role_arns_env` for `TALON_ROLE_ARNS` |
+| `simulate/simulate.py` | The §5.1 assertions, runnable against a plan |
+
+## Checking the policies
+
+```bash
+terraform -chdir=infra/terraform/stacks/iam plan \
+  -var 'github_repo=OWNER/REPO' -out=tf.plan
+terraform -chdir=infra/terraform/stacks/iam show -json tf.plan > plan.json
+python infra/terraform/stacks/iam/simulate/simulate.py plan.json
+```
+
+Runs `aws iam simulate-custom-policy` over the documents as Terraform renders
+them, for four principals: the deploy role, the plan role, the operator (no
+boundary), and a **`child`** — a hypothetical role holding inline `*:*` and
+carrying the boundary, which is what the deploy role can actually build. The
+`child` rows are the ones with teeth: because the child's own policy allows
+everything, the only thing that can deny it is the boundary.
