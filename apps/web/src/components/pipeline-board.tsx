@@ -16,7 +16,11 @@ import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { TOKENS } from '@talon/tokens';
+import { hasScope } from '@talon/domain';
 import { MoveFailure, useBoard, useMoveStage, useReorder, type MoveInput } from '../lib/board-query';
+import { useJob } from '../lib/jobs-query';
+import { useSession } from '../lib/session';
+import { EditJobModal } from './edit-job-modal';
 import { boardCoordinateGetter, locate, neighboursFor, prefersReducedMotion } from '../lib/board-state';
 import { SOURCE_LABELS } from '../lib/labels';
 import { CardBody } from './pipeline-card';
@@ -107,6 +111,14 @@ function DisabledTab({ label, count }: { label: string; count?: number }) {
 }
 
 function JobHeader({ job, total }: { job: Board['job']; total: number }) {
+  const [editing, setEditing] = useState(false);
+  // Fetched only once the editor is asked for: the board's BoardJob has no
+  // department, no band and no `version`, and a board load should not pay for a
+  // dialog most visits never open.
+  const full = useJob(job.id, editing);
+  const { session } = useSession();
+  const canReadComp = session ? hasScope(session.user.role, 'comp:read') : false;
+
   return (
     <div>
       <div className="flex items-center gap-3">
@@ -122,11 +134,23 @@ function JobHeader({ job, total }: { job: Board['job']; total: number }) {
           {job.location}
           {job.recruiter ? ` · ${job.recruiter.name}` : ''}
         </span>
-        <Button disabled>Edit job</Button>
-        <Button variant="primary" disabled>
+        <Button onClick={() => setEditing(true)} disabled={editing && full.isPending}>
+          {editing && full.isPending ? 'Opening…' : 'Edit job'}
+        </Button>
+        {/*
+          Still disabled, and the title says why rather than leaving it a mystery.
+          POST /v1/applications does not exist (spec 005 §12 step 4), and a button
+          that opens a form which cannot submit is the same mistake as a link to a
+          page that errors — just with more typing in between.
+        */}
+        <Button variant="primary" disabled title="Adding candidates needs POST /v1/applications — spec 005 §12">
           + Add candidate
         </Button>
       </div>
+
+      {editing && full.data ? (
+        <EditJobModal job={full.data} canReadComp={canReadComp} onClose={() => setEditing(false)} />
+      ) : null}
 
       <div className="mt-4 flex items-center gap-6 border-b border-border-default">
         <span

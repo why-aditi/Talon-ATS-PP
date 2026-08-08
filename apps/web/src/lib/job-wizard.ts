@@ -96,6 +96,9 @@ export const resolveChoice = (choice: string, other: string): string =>
  */
 export const kToCents = (k: number): bigint => BigInt(Math.round(k * 100_000));
 
+/** The inverse, for editing a band that already exists. */
+export const centsToK = (cents: bigint): number => Number(cents) / 100_000;
+
 /** Empty is "not entered", which is different from zero and must stay different. */
 const parseK = (raw: string): number | null => {
   const trimmed = raw.trim();

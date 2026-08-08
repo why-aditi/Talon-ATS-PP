@@ -1,5 +1,5 @@
 import { ListStageTemplatesResponseSchema, ListUsersResponseSchema } from '@talon/contracts';
-import type { StageTemplate, UserSummary } from '@talon/contracts';
+import { JobSchema, type Job, type StageTemplate, type UserSummary } from '@talon/contracts';
 import { useQuery } from '@tanstack/react-query';
 import { useSession } from './session';
 
@@ -100,16 +100,21 @@ export function useAssignableUsers(role: 'recruiter' | 'hiring_manager'): Unbuil
  * has one submit path, so the extra state machine would be ceremony. What it
  * does need is the failure distinguished, which `JobCreateError` carries.
  */
-export class JobCreateError extends Error {
+export class JobWriteError extends Error {
   constructor(
     readonly type: string,
     readonly status: number,
     readonly detail?: string,
+    /** The 409 body's `current` — what the caller is conflicting with. */
+    readonly current?: Job,
   ) {
     super(detail ?? type);
-    this.name = 'JobCreateError';
+    this.name = 'JobWriteError';
   }
 }
+
+/** Kept so the wizard's imports do not churn; one class, two names. */
+export { JobWriteError as JobCreateError };
 
 export async function createJob(
   payload: unknown,
@@ -129,13 +134,53 @@ export async function createJob(
   } catch {
     // Genuinely offline — the one failure where retrying the same request is
     // the right advice, so it must not read as "the job was rejected".
-    throw new JobCreateError('urn:talon:client:network', 0);
+    throw new JobWriteError('urn:talon:client:network', 0);
   }
 
   const body: unknown = await response.json().catch(() => null);
   if (!response.ok) {
     const problem = (body ?? {}) as { type?: string; detail?: string };
-    throw new JobCreateError(problem.type ?? 'urn:talon:error:internal', response.status, problem.detail);
+    throw new JobWriteError(problem.type ?? 'urn:talon:error:internal', response.status, problem.detail);
   }
   return body as { id: string; reqCode: string };
+}
+
+/**
+ * PATCH /v1/jobs/:id — spec 005 §4.3.
+ *
+ * A 409 is not an error to report and forget: it carries the current resource,
+ * and the caller needs it to offer reload-or-overwrite rather than making the
+ * user discard their edit blind.
+ */
+export async function updateJob(
+  id: string,
+  patch: Record<string, unknown>,
+  accessToken: string | undefined,
+): Promise<Job> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/v1/jobs/${id}`, {
+      method: 'PATCH',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json',
+        ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
+      },
+      body: JSON.stringify(patch),
+    });
+  } catch {
+    throw new JobWriteError('urn:talon:client:network', 0);
+  }
+
+  const body: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const problem = (body ?? {}) as { type?: string; detail?: string; current?: Job };
+    throw new JobWriteError(
+      problem.type ?? 'urn:talon:error:internal',
+      response.status,
+      problem.detail,
+      problem.current,
+    );
+  }
+  return JobSchema.parse(body);
 }

@@ -1,4 +1,4 @@
-import { ListJobsResponseSchema, type ListJobsResponse } from '@talon/contracts';
+import { JobSchema, ListJobsResponseSchema, type ListJobsResponse } from '@talon/contracts';
 import { useQuery } from '@tanstack/react-query';
 import { useSession } from './session';
 
@@ -65,5 +65,34 @@ export function useJobs(filters: JobFilters) {
     // out — a guaranteed 401 whose only effect is to leave a failed entry in a
     // cache that was just deliberately cleared.
     enabled: ready && session !== null,
+  });
+}
+
+/**
+ * One job, in full. The board carries a `BoardJob` — id, title, req code,
+ * status, location, recruiter — which is everything the header renders and not
+ * enough to edit: no department, no band, and no `version`, without which a
+ * write cannot be safe.
+ *
+ * `enabled` so nothing is fetched until somebody opens the editor. A board load
+ * should not pay for a dialog most visits never see.
+ */
+export function useJob(id: string, enabled: boolean) {
+  const { session, ready } = useSession();
+  return useQuery({
+    queryKey: ['jobs', 'one', id, session?.user.id ?? null],
+    queryFn: async ({ signal }) => {
+      const response = await fetch(`${API_BASE}/v1/jobs/${id}`, {
+        headers: {
+          accept: 'application/json',
+          ...(session ? { authorization: `Bearer ${session.accessToken}` } : {}),
+        },
+        signal,
+      });
+      if (!response.ok) throw new Error(`GET /v1/jobs/${id} failed with ${response.status}`);
+      return JobSchema.parse(await response.json());
+    },
+    enabled: enabled && ready && session !== null,
+    retry: false,
   });
 }
