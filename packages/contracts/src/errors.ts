@@ -32,6 +32,20 @@ export const ERROR_TYPES = {
   /** Sign-in: MFA is required for this user but no authenticator is enrolled. */
   MFA_NOT_ENROLLED: 'urn:talon:error:mfa-not-enrolled',
   /**
+   * The identity provider is throttling us — 429, with `Retry-After` and a
+   * `retryAfter` extension member carrying the same number of seconds.
+   *
+   * SERVICE-level throttling only, and the distinction is load-bearing: this
+   * says nothing about any account, because a rate limit that fires only for
+   * addresses that exist is an enumeration oracle wearing a status code. A
+   * per-account attempt limit is deliberately reported as
+   * `invalid-credentials`, exactly like a wrong password.
+   *
+   * The client should back off and retry; unlike every other 4xx here, retrying
+   * unchanged is the correct behaviour.
+   */
+  RATE_LIMITED: 'urn:talon:error:rate-limited',
+  /**
    * The endpoint exists and the caller is fine, but the configured provider
    * cannot perform the operation — Cognito's TOTP enrolment is session-scoped
    * and the §6.1 `enrollTotp(sub)` signature cannot carry a session (spec 002).

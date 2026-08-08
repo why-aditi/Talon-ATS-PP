@@ -23,6 +23,8 @@ import { buildApp } from '../src/app.js';
 import { LOCAL_JWT_SECRET, loadConfig, type ApiConfig } from '../src/config.js';
 import { buildContainer } from '../src/container.js';
 import type { Cradle } from '../src/context.js';
+import { ERROR_TYPES } from '@talon/contracts';
+import { retryAfterOf } from '../src/modules/identity/cognito-provider.js';
 import { IdentityFailure, type AuthResult } from '../src/modules/identity/provider.js';
 import { CognitoStub, type IdTokenOverrides } from './cognito-stub.js';
 import { APP_URL, OWNER_URL } from './urls.js';
@@ -130,6 +132,7 @@ beforeEach(async () => {
   stub.refreshTokens.clear();
   stub.calls.length = 0;
   stub.authError = undefined;
+  stub.authErrorRetryAfter = undefined;
   stub.nextIdTokenOverrides = undefined;
   await setRole('recruiter');
   await setExternalId(null);
@@ -467,21 +470,115 @@ it.each([
   ).rejects.toMatchObject({ code: 'invalid_credentials' });
 });
 
-it('does not swallow an error it has no answer for', async () => {
+it.each(['TooManyRequestsException', 'ThrottlingException'])(
+  'maps a sustained %s to rate_limited, after the SDK has retried',
+  async (error) => {
+    await provision();
+    stub.authError = error;
+    const failure = await failureOf(
+      cognito.cradle.identityProvider.initiatePasswordAuth(EMAIL, PASSWORD),
+    );
+    expect(failure.code).toBe('rate_limited');
+    // The SDK retries throttling itself, so a TRANSIENT throttle never reaches
+    // the mapping at all — only a sustained one does. Asserting the retry
+    // happened is what keeps this a test of the real client rather than of a
+    // double: `stub.authError` is sticky for exactly this reason.
+    expect(stub.calls.filter((call) => call.target === 'AdminInitiateAuth').length).toBeGreaterThan(
+      1,
+    );
+  },
+);
+
+it('reads the service’s own Retry-After off the deserialised error', async () => {
   await provision();
   stub.authError = 'TooManyRequestsException';
-  // Deliberately NOT mapped: `IdentityFailureCode` has no `rate_limited`, so a
-  // sustained throttle surfaces as a 500 where it should be a 429 with
-  // `Retry-After`. Recorded as a known gap rather than papered over — inventing
-  // the code here would give the local provider, which cannot throttle at all, a
-  // failure mode it never produces.
-  //
-  // The SDK retries throttling itself (three attempts), so a transient throttle
-  // never reaches this line. Only a sustained one does.
+  // Small, deliberately: the SDK honours `retry-after` in its OWN backoff, so a
+  // large value here would be a multi-second sleep inside the suite. What this
+  // proves is the one thing a unit test cannot — that the header survives the
+  // SDK's deserialiser and is reachable on the error. The clamping rules are
+  // asserted below, where they cost nothing.
+  stub.authErrorRetryAfter = '2';
+  const failure = await failureOf(
+    cognito.cradle.identityProvider.initiatePasswordAuth(EMAIL, PASSWORD),
+  );
+  expect(failure.code).toBe('rate_limited');
+  expect(failure.retryAfterSeconds).toBe(2);
+});
+
+it.each([
+  ['absent', undefined, 5],
+  ['unparseable', 'soon', 5],
+  // RFC 9110 also permits an HTTP-date. Cognito does not send one, and inventing
+  // a parse for it would mean emitting a header shape we have never seen.
+  ['an HTTP-date', 'Wed, 21 Oct 2015 07:28:00 GMT', 5],
+  ['zero — which would invite the retry storm the throttle exists to stop', '0', 1],
+  ['negative', '-30', 1],
+  ['a day, which would take the sign-in screen out for a day', '86400', 300],
+  ['fractional', '7.9', 7],
+  ['ordinary', '30', 30],
+])('Retry-After %s becomes %s → %ds', (_label, header, expected) => {
+  const error = header === undefined ? {} : { $response: { headers: { 'retry-after': header } } };
+  expect(retryAfterOf(error)).toBe(expected);
+});
+
+it.each(['LimitExceededException', 'TooManyFailedAttemptsException'])(
+  'reports a per-account limit (%s) as invalid_credentials, not as throttling',
+  async (error) => {
+    await provision();
+    stub.authError = error;
+    // A per-ACCOUNT limit is account state, and account state is only reachable
+    // for an account that exists. A distinguishable answer here would turn
+    // lockout into an enumeration oracle — so it gets the same answer a wrong
+    // password does, message included.
+    const failure = await failureOf(
+      cognito.cradle.identityProvider.initiatePasswordAuth(EMAIL, PASSWORD),
+    );
+    expect(failure.code).toBe('invalid_credentials');
+    expect(failure.message).toBe('Email or password is incorrect.');
+  },
+);
+
+it('does not swallow an error it has no answer for', async () => {
+  await provision();
+  stub.authError = 'InternalErrorException';
+  // Not every AWS error is an authentication failure. One the adapter has no
+  // mapping for is a bug or an outage, and dressing it as a 401 would send a
+  // user to retype a password that was fine.
   await expect(
     cognito.cradle.identityProvider.initiatePasswordAuth(EMAIL, PASSWORD),
   ).rejects.not.toBeInstanceOf(IdentityFailure);
-  expect(stub.calls.filter((call) => call.target === 'AdminInitiateAuth').length).toBeGreaterThan(1);
+});
+
+it('a throttled sign-in is a 429 with Retry-After, over the whole chain', async () => {
+  await provision();
+  const app = await buildApp({ config: cognito.config, container: cognito.container });
+  try {
+    // No `retry-after` from the service, which is the common case: the client
+    // still gets a number, because a 429 without one leaves every caller to
+    // invent its own backoff and the ones that invent "immediately" are what
+    // turn a throttle into an outage.
+    stub.authError = 'TooManyRequestsException';
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/sign-in',
+      payload: { email: EMAIL, password: PASSWORD },
+    });
+    expect(response.statusCode).toBe(429);
+    expect(response.headers['content-type']).toContain('application/problem+json');
+    expect(response.headers['retry-after']).toBe('5');
+    // Also in the body: `Retry-After` is not CORS-safelisted, so a cross-origin
+    // browser client cannot read the header without extra server configuration.
+    expect(response.json()).toMatchObject({
+      type: ERROR_TYPES.RATE_LIMITED,
+      status: 429,
+      retryAfter: 5,
+    });
+    // Not a 401, which would have sent the user to retype a correct password,
+    // and not a 500, which is what this was before `rate_limited` existed.
+    expect(response.statusCode).not.toBe(401);
+  } finally {
+    await app.close();
+  }
 });
 
 it('authenticates a person Cognito knows but this deployment does not', async () => {

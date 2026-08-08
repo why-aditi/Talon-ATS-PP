@@ -31,13 +31,20 @@ const PROBLEMS: Record<IdentityFailure['code'], { status: number; type: string; 
     type: ERROR_TYPES.TOKEN_NOT_YET_VALID,
     title: 'Token not yet valid',
   },
-  // The one entry here that is not 401: nothing about the caller is wrong.
+  // The two entries here that are not 401. In both, nothing about the caller's
+  // credential is wrong, so a 401 would send them to retype a password that was
+  // fine — and in the throttling case it would also hide an operational problem
+  // behind a user-facing one.
+  rate_limited: { status: 429, type: ERROR_TYPES.RATE_LIMITED, title: 'Too many requests' },
   not_implemented: {
     status: 501,
     type: ERROR_TYPES.NOT_IMPLEMENTED,
     title: 'Not implemented',
   },
 };
+
+/** Only used if a provider raises `rate_limited` without one. RFC 9110 §10.2.3. */
+const DEFAULT_RETRY_AFTER_SECONDS = 5;
 
 /**
  * What the audit row records about the caller rather than the credential
@@ -53,7 +60,22 @@ export interface AuditContext {
 function asProblem(error: unknown): unknown {
   if (!(error instanceof IdentityFailure)) return error;
   const problem = PROBLEMS[error.code];
-  return new HttpProblem(problem.status, problem.type, problem.title, error.detail);
+  if (error.code !== 'rate_limited') {
+    return new HttpProblem(problem.status, problem.type, problem.title, error.detail);
+  }
+  const seconds = error.retryAfterSeconds ?? DEFAULT_RETRY_AFTER_SECONDS;
+  return new HttpProblem(
+    problem.status,
+    problem.type,
+    problem.title,
+    error.detail,
+    // In the body as well as the header. `Retry-After` is not CORS-safelisted,
+    // so a browser calling the api cross-origin cannot read it without an
+    // explicit `Access-Control-Expose-Headers` — and a 429 whose backoff the
+    // client cannot see is a 429 the client retries immediately.
+    { retryAfter: seconds },
+    { 'Retry-After': String(seconds) },
+  );
 }
 
 export class IdentityService {

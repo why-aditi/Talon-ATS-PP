@@ -67,6 +67,8 @@ interface AwsError {
   status: number;
   type: string;
   message: string;
+  /** Sent as a `retry-after` response header, the way a throttling service does. */
+  retryAfterHeader?: string;
 }
 
 function awsError(type: string, message = type): AwsError {
@@ -104,6 +106,12 @@ export class CognitoStub {
    * the opposite of what it claims.
    */
   authError: string | undefined;
+  /**
+   * `retry-after` header value returned alongside `authError`, when set. The
+   * adapter is supposed to honour the service's own number rather than always
+   * inventing one, and that cannot be asserted without a service that sends one.
+   */
+  authErrorRetryAfter: string | undefined;
 
   constructor() {
     const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -148,6 +156,9 @@ export class CognitoStub {
           response.writeHead(error.status ?? 400, {
             'content-type': 'application/x-amz-json-1.1',
             'x-amzn-errortype': error.type,
+            ...(error.retryAfterHeader === undefined
+              ? {}
+              : { 'retry-after': error.retryAfterHeader }),
           });
           response.end(JSON.stringify({ __type: error.type, message: error.message }));
         }
@@ -263,7 +274,9 @@ export class CognitoStub {
   }
 
   #adminInitiateAuth(body: Record<string, unknown>): Record<string, unknown> {
-    if (this.authError) throw awsError(this.authError);
+    if (this.authError) {
+      throw { ...awsError(this.authError), retryAfterHeader: this.authErrorRetryAfter };
+    }
     const flow = String(body['AuthFlow']);
     const parameters = (body['AuthParameters'] ?? {}) as Record<string, string>;
 

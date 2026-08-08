@@ -46,6 +46,15 @@ export type IdentityFailureCode =
   | 'token_expired'
   | 'token_not_yet_valid'
   /**
+   * The identity provider is throttling us. 429, not 401 and not 500: nothing
+   * about the caller's credential is wrong, and nothing about ours is broken.
+   *
+   * SERVICE-level throttling only. A per-account attempt limit is account
+   * state, so it is reported as `invalid_credentials` — see
+   * `CREDENTIAL_FAILURES` in cognito-provider.ts.
+   */
+  | 'rate_limited'
+  /**
    * The operation is part of the interface but this provider cannot perform it
    * — Cognito's TOTP enrolment is session-scoped and `enrollTotp(sub)` has no
    * session to give it. 501, not 401: an operator fact, not a credential one.
@@ -61,6 +70,13 @@ export class IdentityFailure extends Error {
   constructor(
     readonly code: IdentityFailureCode,
     readonly detail?: string,
+    /**
+     * Seconds the caller should wait before retrying. Meaningful only for
+     * `rate_limited`, where it becomes the `Retry-After` header; a 429 without
+     * one leaves every client to invent its own backoff, and the ones that
+     * invent "immediately" are what turns a throttle into an outage.
+     */
+    readonly retryAfterSeconds?: number,
   ) {
     super(detail ?? code);
     this.name = 'IdentityFailure';

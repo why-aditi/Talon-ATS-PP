@@ -131,7 +131,47 @@ const CREDENTIAL_FAILURES = new Set([
   'UserNotFoundException',
   'UserNotConfirmedException',
   'PasswordResetRequiredException',
+  // Per-ACCOUNT attempt limits, and they belong here rather than with the
+  // throttling below. "This account has been locked out" is account state, and
+  // account state is only reachable for an account that exists — answering it
+  // with a distinguishable status turns lockout into an enumeration oracle.
+  // Cognito normally expresses password lockout as `NotAuthorizedException:
+  // Password attempts exceeded`, which is already in this set; these two are
+  // here so a different pool configuration cannot open the hole quietly.
+  'LimitExceededException',
+  'TooManyFailedAttemptsException',
 ]);
+
+/**
+ * SERVICE-level throttling: the pool is rate-limiting this deployment, which
+ * says nothing about any particular account. 429 with `Retry-After`.
+ *
+ * The SDK retries these itself with backoff (three attempts by default), so a
+ * transient throttle never reaches us — only a sustained one does, which is why
+ * the answer is "back off", not "retry immediately".
+ */
+const THROTTLE_FAILURES = new Set(['TooManyRequestsException', 'ThrottlingException']);
+
+/** Floor and ceiling for `Retry-After`, in seconds. */
+const RETRY_AFTER_DEFAULT = 5;
+const RETRY_AFTER_MIN = 1;
+const RETRY_AFTER_MAX = 300;
+
+/**
+ * Honours the service's own `Retry-After` when it sends one, and refuses to
+ * repeat a number it cannot justify: a header of `86400` handed straight to a
+ * client takes the sign-in screen out for a day, and a header of `0` invites the
+ * retry storm the throttle is trying to stop. Clamped, integer seconds only
+ * (RFC 9110 also permits an HTTP-date; Cognito does not send one, and guessing
+ * at a date format here would produce a header no client can parse).
+ */
+export function retryAfterOf(error: unknown): number {
+  const response = (error as { $response?: { headers?: Record<string, string> } }).$response;
+  const raw = response?.headers?.['retry-after'];
+  const seconds = raw === undefined ? Number.NaN : Number.parseInt(raw, 10);
+  if (!Number.isFinite(seconds)) return RETRY_AFTER_DEFAULT;
+  return Math.min(Math.max(Math.trunc(seconds), RETRY_AFTER_MIN), RETRY_AFTER_MAX);
+}
 
 export class CognitoIdentityProvider implements IdentityProvider {
   readonly #repository: IdentityRepository;
@@ -380,11 +420,18 @@ export class CognitoIdentityProvider implements IdentityProvider {
    * `NotAuthorizedException` reaching a route handler would be a 500 on a wrong
    * password.
    *
-   * Throttling is deliberately NOT mapped: `IdentityFailureCode` has no
-   * `rate_limited`, so `TooManyRequestsException` propagates and surfaces as a
-   * 500. That is wrong — it should be a 429 with `Retry-After` — but inventing
-   * the code here would give the local provider, which cannot throttle at all,
-   * a failure mode it never produces. Flagged for the spec, not papered over.
+   * Two buckets, and which exception lands in which is a security decision, not
+   * a taxonomy exercise:
+   *
+   *   - CREDENTIAL_FAILURES → 401 `invalid-credentials`, one answer for "no such
+   *     account", "wrong password" and every account-state variant, including
+   *     per-account lockout.
+   *   - THROTTLE_FAILURES → 429 `rate-limited` with `Retry-After`. Service-level
+   *     only, so it describes this deployment and never an account.
+   *
+   * Anything else propagates and becomes a 500, which is correct: an error the
+   * adapter has no answer for is a bug or an outage, and dressing it as an
+   * authentication failure would send a user to retype a password that was fine.
    */
   async #authenticate(
     input: { AuthFlow: 'ADMIN_USER_PASSWORD_AUTH' | 'REFRESH_TOKEN_AUTH'; AuthParameters: Record<string, string> },
@@ -405,6 +452,13 @@ export class CognitoIdentityProvider implements IdentityProvider {
       );
     } catch (err) {
       if (CREDENTIAL_FAILURES.has(nameOf(err))) throw onRejected();
+      if (THROTTLE_FAILURES.has(nameOf(err))) {
+        throw new IdentityFailure(
+          'rate_limited',
+          'The identity provider is rate-limiting sign-in requests. Try again shortly.',
+          retryAfterOf(err),
+        );
+      }
       throw err;
     }
 
