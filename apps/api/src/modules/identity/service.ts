@@ -11,6 +11,7 @@ import { HttpProblem } from '../../errors.js';
 import type { AuthenticatedUser, TenantTransaction } from '../../request-context.js';
 import { IdentityFailure, type IdentityProvider, type VerifiedIdentity } from './provider.js';
 import type { IdentityRepository } from './repository.js';
+import { isIssuedBeforeInvalidation } from './session.js';
 
 const PROBLEMS: Record<IdentityFailure['code'], { status: number; type: string; title: string }> = {
   invalid_credentials: {
@@ -30,6 +31,11 @@ const PROBLEMS: Record<IdentityFailure['code'], { status: number; type: string; 
     status: 401,
     type: ERROR_TYPES.TOKEN_NOT_YET_VALID,
     title: 'Token not yet valid',
+  },
+  token_invalidated: {
+    status: 401,
+    type: ERROR_TYPES.TOKEN_INVALIDATED,
+    title: 'Token invalidated',
   },
   // The two entries here that are not 401. In both, nothing about the caller's
   // credential is wrong, so a 401 would send them to retype a password that was
@@ -184,17 +190,12 @@ export class IdentityService {
         'This identity is authenticated but has no user record in this deployment.',
       );
     }
-    if (
-      user.tokensValidAfter !== null &&
-      identity.claims.iat * 1000 < user.tokensValidAfter.getTime()
-    ) {
+    if (isIssuedBeforeInvalidation(user.tokensValidAfter, identity.claims.iat)) {
       // Claims are embedded in the token, so revoking a role cannot wait for
-      // expiry. `tokens_valid_after` is the pre-expiry invalidation switch.
-      //
-      // `iat` has second resolution and the comparison is strict, so a cut-off
-      // with a sub-second component also kills a token issued during that same
-      // second. That is the fail-closed direction and it heals itself: the next
-      // sign-in, a second later, works.
+      // expiry. `tokens_valid_after` is the pre-expiry invalidation switch, and
+      // the predicate lives in `session.ts` so that sign-in, refresh and this
+      // hook cannot drift apart — they did, and the result was a 200 followed
+      // immediately by a 401.
       throw new HttpProblem(
         401,
         ERROR_TYPES.TOKEN_INVALIDATED,

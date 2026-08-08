@@ -726,9 +726,71 @@ it('honours tokens_valid_after against the session start, not the refresh time',
     // always pass, because a refresh's `iat` is always "now".
     await expect(
       cognito.cradle.identityProvider.refreshSession(session.tokens.refreshToken),
-    ).rejects.toMatchObject({ code: 'invalid_token' });
+    ).rejects.toMatchObject({ code: 'token_invalidated' });
   } finally {
     await owner`update users set tokens_valid_after = null where id = ${userId}::uuid`;
+  }
+});
+
+// ── tokens_valid_after at the door ─────────────────────────────────────────
+
+/**
+ * The gap this closes: `tokens_valid_after` was enforced on every request and at
+ * refresh, but not at SIGN-IN. A cut-off in the future — an admin suspending an
+ * account until Monday — therefore produced a 200 with a token that 401'd on the
+ * very next call. "Signed in", immediately followed by "session invalid", with
+ * nothing naming the cause: the same shape as the `external_id` bug above, and
+ * the same fix.
+ */
+it('refuses a sign-in that would mint a token the next request will reject', async () => {
+  await provision();
+  await owner`update users set tokens_valid_after = now() + interval '1 hour' where id = ${userId}::uuid`;
+  try {
+    const failure = await failureOf(
+      cognito.cradle.identityProvider.initiatePasswordAuth(EMAIL, PASSWORD),
+    );
+    expect(failure.code).toBe('token_invalidated');
+    // The detail must not say when the cut-off lifts: that is account state, and
+    // this response is the one place it would be visible.
+    expect(failure.message).not.toMatch(/\d/);
+  } finally {
+    await owner`update users set tokens_valid_after = null where id = ${userId}::uuid`;
+  }
+});
+
+it('a cut-off in the past is a cut-off, not a ban — signing in again works', async () => {
+  await provision();
+  // The ordinary revocation case: everything issued before now is dead, and the
+  // user fixes it by signing in. If this failed, `tokens_valid_after` would be
+  // an account lock with no way back.
+  await owner`update users set tokens_valid_after = now() - interval '1 minute' where id = ${userId}::uuid`;
+  try {
+    await expect(
+      cognito.cradle.identityProvider.initiatePasswordAuth(EMAIL, PASSWORD),
+    ).resolves.toMatchObject({ status: 'authenticated' });
+  } finally {
+    await owner`update users set tokens_valid_after = null where id = ${userId}::uuid`;
+  }
+});
+
+it('the door and the next request agree — 401 at sign-in, never 200 then 401', async () => {
+  await provision();
+  const app = await buildApp({ config: cognito.config, container: cognito.container });
+  try {
+    await owner`update users set tokens_valid_after = now() + interval '1 hour' where id = ${userId}::uuid`;
+    const signIn = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/sign-in',
+      payload: { email: EMAIL, password: PASSWORD },
+    });
+    expect(signIn.statusCode).toBe(401);
+    expect(signIn.json<{ type: string }>().type).toBe(ERROR_TYPES.TOKEN_INVALIDATED);
+    // The same type `resolveTenant` answers with, because it is the same
+    // condition — one predicate, in session.ts, called from both.
+    expect(signIn.body).not.toContain('accessToken');
+  } finally {
+    await owner`update users set tokens_valid_after = null where id = ${userId}::uuid`;
+    await app.close();
   }
 });
 

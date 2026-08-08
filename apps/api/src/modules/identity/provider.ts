@@ -46,6 +46,14 @@ export type IdentityFailureCode =
   | 'token_expired'
   | 'token_not_yet_valid'
   /**
+   * `users.tokens_valid_after` refuses this session. Distinct from
+   * `invalid_token` because nothing is wrong with the token: it was issued, or
+   * would be issued, before a cut-off somebody set deliberately. Only reachable
+   * after authentication has already succeeded, so naming it discloses nothing
+   * the caller did not already know.
+   */
+  | 'token_invalidated'
+  /**
    * The identity provider is throttling us. 429, not 401 and not 500: nothing
    * about the caller's credential is wrong, and nothing about ours is broken.
    *

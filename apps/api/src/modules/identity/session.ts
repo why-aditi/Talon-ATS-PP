@@ -19,6 +19,38 @@ import type { AuthConfig } from '../../config.js';
 import { newJti, signJwt } from './jwt.js';
 import type { UserRecord } from './repository.js';
 
+/**
+ * `users.tokens_valid_after` is the pre-expiry invalidation switch: a token
+ * issued before the cut-off is refused, whatever its `exp` says.
+ *
+ * One function, called from all three places that need it, for the same reason
+ * the claim shape is one function. The three are:
+ *
+ *   - `resolveTenant`, on every authenticated request;
+ *   - the refresh exchange, against the session's `auth_time` — NOT its `iat`,
+ *     which is always "now" and would defeat the switch entirely;
+ *   - **sign-in**, against the `iat` the token is about to be stamped with.
+ *
+ * That last one is not redundant. A cut-off in the FUTURE — an admin suspending
+ * an account until Monday — used to let sign-in succeed with a 200 and then 401
+ * on the very next request: "signed in", immediately followed by "session
+ * invalid", with nothing naming the cause. It is the same shape as the
+ * `external_id` bug, and the same fix: refuse at the door. Because sign-in
+ * passes the exact `iat` it is about to mint, the door applies literally the
+ * predicate the next request will.
+ *
+ * Strict `<`, and `iat` has second resolution, so a cut-off with a sub-second
+ * component also kills a token issued during that same second. That is the
+ * fail-closed direction and it heals itself a second later.
+ */
+export function isIssuedBeforeInvalidation(
+  tokensValidAfter: Date | null,
+  issuedAtSeconds: number,
+): boolean {
+  if (tokensValidAfter === null) return false;
+  return issuedAtSeconds * 1000 < tokensValidAfter.getTime();
+}
+
 export function toSessionUser(user: UserRecord): SessionUser {
   return {
     id: user.id,

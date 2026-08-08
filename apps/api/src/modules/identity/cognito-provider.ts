@@ -10,8 +10,9 @@
  * `role` are never stored on the identity provider: the pre-token-generation
  * Lambda is supposed to read them from `users` at sign-in. **That Lambda does
  * not exist yet.** A raw Cognito token therefore carries no `tenant_id` and no
- * `role`, and CLAUDE.md §4 forbids the obvious shortcut — a custom pool attribute is immutable, forces a pool replacement on
- * any schema diff, and destroys every user with it.
+ * `role`, and CLAUDE.md §4 forbids the obvious shortcut — a custom pool
+ * attribute is immutable, forces a pool replacement on any schema diff, and
+ * destroys every user with it.
  *
  * So: **Cognito is the credential authority, Talon is the session authority.**
  *
@@ -96,7 +97,7 @@ import {
   type VerifiedIdentity,
 } from './provider.js';
 import type { IdentityRepository, UserRecord } from './repository.js';
-import { issueAccessToken, toSessionUser } from './session.js';
+import { isIssuedBeforeInvalidation, issueAccessToken, toSessionUser } from './session.js';
 
 function failureFor(error: JwtError): IdentityFailure {
   switch (error.failure) {
@@ -308,6 +309,23 @@ export class CognitoIdentityProvider implements IdentityProvider {
       throw new IdentityFailure('mfa_not_enrolled', 'This account requires an authenticator app.');
     }
 
+    // Stamped once and used twice, deliberately: the check below and the token
+    // minted after it must be about the same instant, or the door is testing a
+    // token nobody issues.
+    const issuedAt = nowSeconds();
+    // `tokens_valid_after` was enforced on every request and at refresh, but not
+    // here — so an account whose cut-off is in the FUTURE (an admin suspending
+    // someone until Monday) signed in with a 200 and then 401'd on the very next
+    // call. Same "signed in, then session invalid" shape the `external_id` fix
+    // removed, same answer: fail at the door, with the exact predicate
+    // `resolveTenant` will apply to this token.
+    //
+    // Reachable only after Cognito has accepted the password, so naming the
+    // reason discloses nothing the caller did not already know. The detail
+    // deliberately omits WHEN the cut-off lifts: that is account state, and this
+    // response is the one place it would be visible.
+    this.#assertNotInvalidated(user, issuedAt);
+
     return {
       status: 'authenticated',
       tokens: {
@@ -315,7 +333,7 @@ export class CognitoIdentityProvider implements IdentityProvider {
         // `external_id` and refuses `users.id` for an externally-provisioned
         // person. See `session.ts` — minting `user.id` here signs in cleanly and
         // then 401s on the next request.
-        accessToken: issueAccessToken(user, this.#config, nowSeconds(), sub),
+        accessToken: issueAccessToken(user, this.#config, issuedAt, sub),
         // Cognito's, not ours, and deliberately: the refresh token is the
         // long-lived half, so leaving it under Cognito's control is what makes
         // `AdminUserGlobalSignOut` or disabling a user actually end the session
@@ -532,10 +550,27 @@ export class CognitoIdentityProvider implements IdentityProvider {
     return user;
   }
 
-  #assertNotInvalidated(user: UserRecord, authTime: unknown): void {
+  /**
+   * The `users.tokens_valid_after` gate, shared by sign-in and refresh.
+   *
+   * `at` is a number at sign-in (the `iat` about to be stamped) and comes off a
+   * verified id token at refresh (`auth_time`, the moment the SESSION began —
+   * `iat` there is always "now" and would defeat the switch entirely). A
+   * non-number means the id token did not carry what we asked for, which is a
+   * refusal, not a pass: this gate must never fail open.
+   *
+   * The predicate itself lives in `session.ts`, so this and `resolveTenant`
+   * cannot drift apart.
+   */
+  #assertNotInvalidated(user: UserRecord, at: unknown): void {
     if (!user.tokensValidAfter) return;
-    if (typeof authTime !== 'number' || authTime * 1000 < user.tokensValidAfter.getTime()) {
-      throw new IdentityFailure('invalid_token', 'This token was invalidated.');
+    if (typeof at !== 'number' || isIssuedBeforeInvalidation(user.tokensValidAfter, at)) {
+      throw new IdentityFailure(
+        'token_invalidated',
+        // No cut-off time, no "until": that is account state, and this is the
+        // one response where it would be visible.
+        'This session has been invalidated. Sign in again, or contact an administrator.',
+      );
     }
   }
 }
