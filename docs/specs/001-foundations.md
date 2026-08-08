@@ -535,20 +535,41 @@ CI gates, all blocking, each wired in the step that first has something for it t
 
 A gate is not "declared blocking" before its step: the script exists and the workflow runs it, or the row above says which step it arrives in. A named-but-missing gate cannot be a required status check, and its absence is silent.
 
-**Amended 2026-08-08 — `e2e` cannot be a required check yet, and the reason changed.**
-It is written and green (3/3), but the Cognito-only refactor (`f41ac45`) deleted
-`LocalIdentityProvider`, so the api now refuses to boot without a reachable user
-pool and the suite needs **AWS credentials**. CI has none, and giving a test job
-a real pool would make the suite non-deterministic and let it mutate a shared
-pool — both worse than an unwired gate.
+**Amended 2026-08-08 — `e2e` is green but not yet wired as a check.**
+The Cognito-only refactor (`f41ac45`) deleted `LocalIdentityProvider`, so the api
+refuses to boot without a reachable user pool and the suite now needs Cognito
+configuration. `e2e/playwright.config.ts` forwards it and fails fast with the
+list of missing variables rather than a raw stack trace from `dist/config.js`.
 
-`apps/api/test/cognito-stub.ts` already fakes Cognito at the network layer, but
-it works by mutating `process.env` and `globalThis.fetch` **inside the test
-process**, and Playwright spawns the api as a separate one. Extracting it into a
-standalone server the api can be pointed at with `AWS_ENDPOINT_URL` is what makes
-this suite hermetic and lets the gate land. Owner: api stream. Until then
-`pnpm e2e` is a local command, and `e2e/playwright.config.ts` fails fast with the
-list of variables it needs rather than a raw stack trace from `dist/config.js`.
+**Credentials are not the blocker.** `stacks/iam` already provisions the GitHub
+OIDC provider and a plan role, so CI can assume a role rather than hold a static
+key, and the pool id and client id are ordinary configuration. Wiring it is three
+additions to `ci.yml`: `permissions: id-token: write`,
+`aws-actions/configure-aws-credentials@v4`, and the two `COGNITO_*` values as
+repository variables (they are identifiers, not secrets — `TALON_JWT_SECRET` is
+the only secret in the set).
+
+What is left is a trade, and it should be made deliberately rather than
+discovered:
+
+- **Determinism.** The suite only *reads* from Cognito — it signs in as seeded
+  users and creates none — so concurrent runs do not collide there. But
+  `seed:identities` must have run against the CI database **and** that pool, and
+  sign-in throttling (429, added in `f41ac45`) is a shared-pool resource that
+  concurrent runs do contend for.
+- **Coupling.** A pool deleted, renamed, or reconfigured turns every PR red for a
+  reason unrelated to the PR. That is the cost of a gate that depends on AWS.
+
+The hermetic alternative is to extract `apps/api/test/cognito-stub.ts` — which
+already fakes Cognito at the network layer, but by mutating `process.env` and
+`globalThis.fetch` **inside the test process**, where Playwright's separately
+spawned api cannot reach it — into a standalone server the api is pointed at with
+`AWS_ENDPOINT_URL`. Owner: api stream.
+
+**Decision:** wire the gate against the real dev pool now (cheap, and it catches
+regressions today), and keep the stub extraction as the thing that removes the
+AWS coupling later. Until `ci.yml` carries the three additions above, this row
+says "not wired" and does not pretend otherwise.
 
 ## 11. Open questions
 

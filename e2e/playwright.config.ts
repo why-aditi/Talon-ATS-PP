@@ -64,20 +64,25 @@ if (missing.length > 0) {
       `them from .env, and make sure \`pnpm --filter api seed:identities\` has run — ` +
       `it creates the pool users AND links users.external_id, and sign-in returns ` +
       `user_not_provisioned until it has.\n\n` +
-      `This suite therefore needs AWS credentials today. See TODO in this file.`,
+      `This suite needs Cognito configuration. Credentials are not the blocker — see spec 001 §10 and the TODO below.`,
   );
 }
 
 /*
-  TODO(api stream): make this suite runnable without an AWS account.
+  TODO(api stream): remove this suite's dependency on a live user pool.
+
+  Credentials are not the obstacle — `stacks/iam` already provisions the GitHub
+  OIDC provider, so CI can assume a role rather than hold a static key, and the
+  pool id and client id are plain configuration. What a live pool costs is
+  coupling: a pool renamed or reconfigured turns every PR red for a reason
+  unrelated to the PR, and sign-in throttling is a shared resource concurrent
+  runs contend for.
 
   `apps/api/test/cognito-stub.ts` already fakes Cognito at the network layer, but
   it works by mutating `process.env` and `globalThis.fetch` INSIDE the test
   process — and Playwright runs the api as a separate process, so it cannot reach
-  it. Extracting the stub into a standalone server the api can be pointed at with
-  `AWS_ENDPOINT_URL` would make this suite hermetic and let it become a required
-  CI check. Until then `pnpm e2e` needs credentials and cannot gate a PR, which is
-  recorded in spec 001 §10 rather than left as a mystery red job.
+  it. Extracting it into a standalone server the api is pointed at with
+  `AWS_ENDPOINT_URL` makes the suite hermetic. Spec 001 §10 carries the decision.
 */
 export default defineConfig({
   testDir: './tests',
