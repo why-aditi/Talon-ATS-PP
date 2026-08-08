@@ -42,10 +42,14 @@ async function releaseStub(): Promise<void> {
   if (stubUsers === 0) await stub.stop();
 }
 
-export function testConfig(overrides: { poolMax?: number } = {}): ApiConfig {
+export function testConfig(overrides: { poolMax?: number; jit?: string } = {}): ApiConfig {
   return loadConfig({
     API_DATABASE_URL: APP_URL,
     API_DB_POOL_MAX: String(overrides.poolMax ?? 5),
+    // Absent by default, and that default is the assertion: every other file in
+    // this suite runs with just-in-time provisioning OFF, so if turning it on
+    // changed any existing behaviour those files would go red.
+    ...(overrides.jit === undefined ? {} : { TALON_JIT_PROVISION: overrides.jit }),
     // Not the published constant: `loadConfig` refuses that one outright, and
     // the suite should be signing tokens with a key a real deployment could use.
     TALON_JWT_SECRET: 'test-signing-key-not-the-published-default',
@@ -66,6 +70,8 @@ export interface TestApp {
 
 export interface StartAppOptions {
   poolMax?: number;
+  /** Raw `TALON_JIT_PROVISION` value. Omitted = the feature is off, as in production by default. */
+  jit?: string;
   /**
    * Called once per statement the api actually sends. This is how "one query,
    * not N+1" is asserted: an N+1 shows up here as N+1 calls.
