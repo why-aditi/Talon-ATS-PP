@@ -1,0 +1,88 @@
+- generic [ref=f1e129]:
+  - button "Open Next.js Dev Tools" [ref=f1e135] [cursor=pointer]
+  - alert [ref=f1e139]
+  - link "Skip to content" [active] [ref=f1e140] [cursor=pointer]:
+    - /url: "#main"
+  - generic [ref=f1e141]:
+    - generic [ref=f1e142]:
+      - generic [ref=f1e143]:
+        - generic [ref=f1e148]: Talon
+        - generic [ref=f1e149]: ⌘K
+      - navigation "Main" [ref=f1e150]:
+        - generic [ref=f1e151]:
+          - paragraph [ref=f1e152]: Recruit
+          - list [ref=f1e153]:
+            - listitem [ref=f1e154]:
+              - link "Jobs 6" [ref=f1e155] [cursor=pointer]:
+                - /url: /jobs
+                - generic [ref=f1e159]: Jobs
+                - generic [ref=f1e160]: "6"
+            - listitem [ref=f1e161]:
+              - link "Pipeline" [ref=f1e162] [cursor=pointer]:
+                - /url: /pipeline
+            - listitem [ref=f1e169]:
+              - link "Review inbox" [ref=f1e170] [cursor=pointer]:
+                - /url: /review-inbox
+            - listitem [ref=f1e175]:
+              - link "Candidates" [ref=f1e176] [cursor=pointer]:
+                - /url: /candidates
+        - generic [ref=f1e181]:
+          - paragraph [ref=f1e182]: Coordinate
+          - list [ref=f1e183]:
+            - listitem [ref=f1e184]:
+              - link "Scheduling" [ref=f1e185] [cursor=pointer]:
+                - /url: /scheduling
+            - listitem [ref=f1e190]:
+              - link "Offers" [ref=f1e191] [cursor=pointer]:
+                - /url: /offers
+        - generic [ref=f1e196]:
+          - paragraph [ref=f1e197]: Insights
+          - list [ref=f1e198]:
+            - listitem [ref=f1e199]:
+              - link "Reports" [ref=f1e200] [cursor=pointer]:
+                - /url: /reports
+        - button "+ New job" [ref=f1e204]
+      - generic [ref=f1e205]:
+        - generic [ref=f1e206]: MR
+        - generic [ref=f1e207]:
+          - generic [ref=f1e208]: Maya Reyes
+          - generic [ref=f1e209]: Recruiter
+        - button "Sign out" [ref=f1e210]
+    - generic [ref=f1e214]:
+      - banner [ref=f1e215]:
+        - paragraph [ref=f1e216]:
+          - link "Jobs" [ref=f1e217] [cursor=pointer]:
+            - /url: /jobs
+          - text: / Pipeline
+        - generic [ref=f1e218]: Search candidates, jobs
+      - main [ref=f1e1]:
+        - generic [ref=f1e228]:
+          - generic [ref=f1e229]:
+            - searchbox "Filter candidates by name, title or company" [ref=f1e234]
+            - generic [ref=f1e235]:
+              - generic: Stage
+              - combobox "Filter candidates by stage" [ref=f1e237]:
+                - option "All" [selected]
+            - generic [ref=f1e238]:
+              - generic: Source
+              - combobox "Filter candidates by source" [ref=f1e240]:
+                - option "Any" [selected]
+                - option "Careers page"
+                - option "Outbound"
+                - option "Referral"
+                - option "Agency"
+                - option "Import"
+            - generic [ref=f1e241]:
+              - generic: Recruiter
+              - combobox "Filter candidates by recruiter" [disabled] [ref=f1e243]:
+                - option "All" [selected]
+            - paragraph
+            - combobox "Sort candidates" [ref=f1e245]:
+              - 'option "sort: time in stage" [selected]'
+              - 'option "sort: recency"'
+              - 'option "sort: score"'
+              - 'option "sort: manual"'
+          - generic [ref=f1e246]:
+            - paragraph [ref=f1e247]: The pipeline didn't load.
+            - paragraph [ref=f1e248]: The connection dropped before the board arrived. Your filters are still set — try again.
+            - button "Try again" [ref=f1e250]

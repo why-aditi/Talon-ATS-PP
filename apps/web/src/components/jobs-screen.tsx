@@ -39,17 +39,33 @@ const ROW_HEIGHT = 'h-[var(--layout-row-height)]';
 
 function JobRow({ job }: { job: Job }) {
   return (
-    // ponytail: not a link yet — the job detail screen is M1, and a row that focuses
-    // but goes nowhere is worse than one that does not focus. Becomes an <a> then.
     <li
       className={cx(
         ROW_GRID,
         ROW_HEIGHT,
-        'transition-colors duration-[var(--duration-instant)] ease-standard hover:bg-bg-surface-hover',
+        // `relative` anchors the stretched hit area below.
+        'relative transition-colors duration-[var(--duration-instant)] ease-standard hover:bg-bg-surface-hover',
       )}
     >
       <div className="min-w-0">
-        <p className="truncate text-card-title text-text-primary">{job.title}</p>
+        {/*
+          One link, on the title, stretched over the whole row with `after:inset-0`.
+
+          The row could have been made clickable with an onClick on the <li>, and
+          that is the version that is wrong: it gives the keyboard nothing to land
+          on and a screen reader nothing to announce. This way there is exactly one
+          tab stop per row, its accessible name is the job title, and middle-click
+          and "open in new tab" work because it is a real anchor.
+
+          The job detail screen (M1) does not exist; its board does, and it is what
+          someone opening a req actually wants.
+        */}
+        <Link
+          href={`/jobs/${job.id}/pipeline`}
+          className="after:absolute after:inset-0 after:content-[''] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-border-focus"
+        >
+          <p className="truncate text-card-title text-text-primary">{job.title}</p>
+        </Link>
         {/* The reference renders req code and location as one monospace line;
             DESIGN_SYSTEM §4 describes it as `code`/`meta`. Following the screen. */}
         <p className="truncate font-mono text-code text-text-tertiary">

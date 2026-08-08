@@ -1,0 +1,41 @@
+- main [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e4]: Talon
+    - generic [ref=e10]:
+      - heading [level=2] [ref=e11]: Hiring, coordinated.
+      - paragraph [ref=e12]: One pipeline for every role, every interview, every offer. Your team stops chasing threads and starts closing candidates.
+      - generic [ref=e13]:
+        - generic [ref=e14]: AP
+        - generic [ref=e15]:
+          - generic [ref=e16]: Ana Petrova
+          - generic [ref=e17]: Onsite loop Thu, 4 rounds
+        - generic [ref=e18]: Onsite
+    - generic [ref=e19]:
+      - generic [ref=e20]:
+        - term [ref=e21]: 24d
+        - definition [ref=e22]: median time to hire
+      - generic [ref=e23]:
+        - term [ref=e24]: 86%
+        - definition [ref=e25]: offer accept rate
+      - generic [ref=e26]:
+        - term [ref=e27]: 1,240
+        - definition [ref=e28]: candidates this year
+  - generic [ref=e30]:
+    - heading "Welcome back" [level=1] [ref=e31]
+    - paragraph [ref=e32]: Sign in to your Talon workspace.
+    - generic [ref=e33]:
+      - button "Continue with Google" [disabled] [ref=e34]
+      - button "Continue with SAML SSO" [disabled] [ref=e37]
+    - paragraph [ref=e41]: Single sign-on isn’t available yet. Use your email and password.
+    - generic [ref=e42]: or use email
+    - generic [ref=e46]:
+      - generic [ref=e47]: Work email
+      - textbox "Work email" [ref=e48]:
+        - /placeholder: maya@company.com
+      - generic [ref=e49]:
+        - generic [ref=e50]: Password
+        - button "Forgot?" [disabled] [ref=e51]
+      - textbox "Password" [ref=e52]
+      - alert [ref=e53]
+      - button "Sign in" [ref=e54]
+    - paragraph [ref=e55]: SOC 2 Type II · SSO enforced for admin roles

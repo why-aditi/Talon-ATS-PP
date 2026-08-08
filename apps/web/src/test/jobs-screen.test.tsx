@@ -101,6 +101,19 @@ describe('default state', () => {
     expect(screen.getByText('6 open')).toBeInTheDocument();
   });
 
+  it('opens the job’s board, as one tab stop named by the job', async () => {
+    renderJobs();
+    const row = (await screen.findByText('Senior Product Engineer')).closest('li') as HTMLElement;
+    const eng204 = SEEDED_JOBS.find((job) => job.reqCode === 'ENG-204')!;
+
+    // One link per row, not a clickable <li>: a row with an onClick gives the
+    // keyboard nothing to land on and a screen reader nothing to announce.
+    const links = within(row).getAllByRole('link');
+    expect(links).toHaveLength(1);
+    expect(links[0]).toHaveAccessibleName('Senior Product Engineer');
+    expect(links[0]).toHaveAttribute('href', `/jobs/${eng204.id}/pipeline`);
+  });
+
   it('renders the seeded counts and a labelled status pill', async () => {
     renderJobs();
     const row = (await screen.findByText('Senior Product Engineer')).closest('li') as HTMLElement;

@@ -1,0 +1,2 @@
+[    1221ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ webpack-internal:///(app-pages-browser)/../../node_modules/.pnpm/next@15.5.23_@babel+core@7._12ffd6851300988076d37b4040f4626d/node_modules/next/dist/compiled/react-dom/cjs/react-dom-client.development.js:25630
+[   81789ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://localhost:3000/v1/jobs/019fde7d-af70-7810-93af-b10e6d8f1a3b/board:0
