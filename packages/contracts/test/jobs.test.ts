@@ -14,6 +14,9 @@ const job = (over: Record<string, unknown> = {}) => ({
   location: 'Remote',
   employmentType: 'full_time',
   status: 'active',
+  // Required since spec 005 §3.1 — a client that cannot see a version cannot
+  // edit safely, so the schema does not make it optional.
+  version: 1,
   inProcessCount: 8,
   activeCount: 9,
   stageDistribution: {
