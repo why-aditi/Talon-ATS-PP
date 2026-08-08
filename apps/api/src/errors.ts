@@ -4,24 +4,14 @@
  */
 import type { FastifyError, FastifyReply, FastifyRequest } from 'fastify';
 import { ERROR_TYPES, ProblemSchema, type Problem } from '@talon/contracts';
+import { brandError, isBrandedError } from './branded-error.js';
 
-/**
- * Cross-realm brand, checked instead of `instanceof`.
- *
- * `instanceof` compares class identity, so it silently returns false when two
- * copies of this module are loaded — which happens here for real: the server runs
- * `tsx` over `src/` while workspace packages resolve to `dist/`. A thrown
- * HttpProblem then failed the check in `render`, fell through to the generic
- * branch, and every 401 left as a 500. `cognito-provider.ts` already matches AWS
- * exceptions by name for exactly this reason; this is the same defence.
- *
- * `Symbol.for` is registry-global, so both copies agree on the key.
- */
+/** Checked instead of `instanceof`. `branded-error.ts` carries the reasoning. */
 const PROBLEM_BRAND = Symbol.for('talon.httpProblem');
 
 /** True for an HttpProblem from ANY copy of this module. */
 export function isHttpProblem(error: unknown): error is HttpProblem {
-  return typeof error === 'object' && error !== null && PROBLEM_BRAND in error;
+  return isBrandedError(error, PROBLEM_BRAND);
 }
 
 export class HttpProblem extends Error {
@@ -42,8 +32,7 @@ export class HttpProblem extends Error {
   ) {
     super(detail ?? title);
     this.name = 'HttpProblem';
-    // Non-enumerable so it never reaches a serialized body or a log line.
-    Object.defineProperty(this, PROBLEM_BRAND, { value: true });
+    brandError(this, PROBLEM_BRAND);
   }
 }
 

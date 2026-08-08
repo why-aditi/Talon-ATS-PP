@@ -41,10 +41,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   // exposeHeadRoutes off: auto-generated HEAD twins would show up in the route
   // manifest as unlisted public routes.
   // Logging on by default. `problemErrorHandler` logs every 5xx with the real
-  // error, and with the logger off that call was a no-op — a wrong password
-  // returned an opaque 500 and the cause was discarded, which is how a one-line
-  // rendering bug survived long enough to look like a Cognito outage. Silent
-  // under test, where a thrown error is already the assertion.
+  // error, and with the logger off that call was a no-op: failed sign-ins on a
+  // dev server returned an opaque 500 and the cause was discarded, so the
+  // mechanism still cannot be established after the fact (`branded-error.ts`).
+  // This is the line that makes the next one answerable. Silent under test,
+  // where a thrown error is already the assertion.
   const app = fastify({
     exposeHeadRoutes: false,
     logger: process.env['NODE_ENV'] === 'test' ? false : { level: process.env['LOG_LEVEL'] ?? 'info' },

@@ -16,6 +16,7 @@
  * file goes with it.
  */
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
+import { brandError, isBrandedError } from '../../branded-error.js';
 
 export type JwtFailure =
   | 'malformed'
@@ -26,10 +27,22 @@ export type JwtFailure =
   | 'wrong_audience'
   | 'wrong_issuer';
 
+const JWT_ERROR_BRAND = Symbol.for('talon.jwtError');
+
+/**
+ * Checked instead of `instanceof` — `branded-error.ts` carries the reasoning.
+ * A false negative here rethrows a verification failure raw, and it reaches the
+ * error handler as an unrecognised 500 rather than the 401 it is.
+ */
+export function isJwtError(error: unknown): error is JwtError {
+  return isBrandedError(error, JWT_ERROR_BRAND);
+}
+
 export class JwtError extends Error {
   constructor(readonly failure: JwtFailure, detail?: string) {
     super(detail ?? failure);
     this.name = 'JwtError';
+    brandError(this, JWT_ERROR_BRAND);
   }
 }
 
@@ -78,7 +91,7 @@ export function verifyJwt(token: string, options: VerifyOptions): Record<string,
   try {
     header = decodeSegment(headerPart);
   } catch (err) {
-    throw err instanceof JwtError ? err : new JwtError('malformed', 'undecodable header');
+    throw isJwtError(err) ? err : new JwtError('malformed', 'undecodable header');
   }
   // Pinned, not negotiated. `alg: none` and RS256→HS256 confusion both die here.
   if (header['alg'] !== 'HS256') throw new JwtError('unsupported_algorithm', String(header['alg']));
@@ -99,7 +112,7 @@ export function verifyJwt(token: string, options: VerifyOptions): Record<string,
   try {
     claims = decodeSegment(payloadPart);
   } catch (err) {
-    throw err instanceof JwtError ? err : new JwtError('malformed', 'undecodable payload');
+    throw isJwtError(err) ? err : new JwtError('malformed', 'undecodable payload');
   }
 
   if (claims['iss'] !== options.issuer) throw new JwtError('wrong_issuer');
