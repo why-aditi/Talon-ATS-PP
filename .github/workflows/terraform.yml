@@ -124,6 +124,13 @@ jobs:
       # declares (verified against both stacks at 1.15.8), so one env entry is
       # correct for every stack in the matrix and stays correct for the next one.
       TF_VAR_github_repo: ${{ github.repository }}
+      # This repository's OIDC subject is id-qualified
+      # (`repo:OWNER@<owner_id>/REPO@<repo_id>:...`), so the trust policy has to
+      # name that form or the assume-role fails with an error that names no
+      # claim. Passed from the context rather than hardcoded, so a fork trusts
+      # its own ids. See stacks/iam/locals.tf.
+      TF_VAR_github_owner_id: ${{ github.repository_owner_id }}
+      TF_VAR_github_repository_id: ${{ github.repository_id }}
     steps:
       - uses: actions/checkout@v4
 
@@ -295,6 +302,13 @@ jobs:
       # correct in advance for any stack added to this matrix that does. See the
       # plan job for why this is not a `-var` flag.
       TF_VAR_github_repo: ${{ github.repository }}
+      # This repository's OIDC subject is id-qualified
+      # (`repo:OWNER@<owner_id>/REPO@<repo_id>:...`), so the trust policy has to
+      # name that form or the assume-role fails with an error that names no
+      # claim. Passed from the context rather than hardcoded, so a fork trusts
+      # its own ids. See stacks/iam/locals.tf.
+      TF_VAR_github_owner_id: ${{ github.repository_owner_id }}
+      TF_VAR_github_repository_id: ${{ github.repository_id }}
     steps:
       - uses: actions/checkout@v4
 

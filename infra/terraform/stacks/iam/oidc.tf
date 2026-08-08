@@ -4,11 +4,19 @@
 # Account-global: AWS allows exactly one provider per issuer URL per account,
 # and this is a shared company account. If something else already registered
 # token.actions.githubusercontent.com, creating it here fails with
-# EntityAlreadyExists — set var.github_oidc_provider_arn instead of importing.
+# EntityAlreadyExists — so this stack REUSES by default and creates only when
+# var.create_github_oidc_provider is set.
+#
+# Reuse used to mean passing var.github_oidc_provider_arn on the command line,
+# and that is why CI's plan currently reads `1 to add` with the output going
+# from the real ARN to `(known after apply)`: a `-var` does not persist, so the
+# next plan forgot the provider existed and proposed creating it — an apply that
+# can only fail with EntityAlreadyExists. Same defect as user_pool_domain_prefix
+# in stacks/persistent, same fix: the value lives where CI and up.sh both read.
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_openid_connect_provider" "github" {
-  count = var.github_oidc_provider_arn == "" ? 1 : 0
+  count = var.github_oidc_provider_arn == "" && var.create_github_oidc_provider ? 1 : 0
 
   url = "https://${local.oidc_host}"
 
@@ -20,6 +28,17 @@ resource "aws_iam_openid_connect_provider" "github" {
   # Empty by design — see var.github_oidc_thumbprints. Pinning a stale
   # thumbprint is worse than pinning none: it breaks silently on CA rotation.
   thumbprint_list = var.github_oidc_thumbprints
+}
+
+# The reuse path. Reading it rather than constructing the ARN means a missing
+# provider is a plan-time error naming the thing that is missing, instead of a
+# well-formed ARN that IAM rejects with MalformedPolicyDocument three resources
+# later. `iam:GetOpenIDConnectProvider` is in ReadOnlyAccess, so the plan role
+# can do this without a grant.
+data "aws_iam_openid_connect_provider" "github" {
+  count = var.github_oidc_provider_arn == "" && !var.create_github_oidc_provider ? 1 : 0
+
+  url = "https://${local.oidc_host}"
 }
 
 # ---------------------------------------------------------------------------
