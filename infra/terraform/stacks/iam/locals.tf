@@ -141,6 +141,12 @@ locals {
     "arn:${local.partition}:s3:::${local.name}-${suffix}/*"
   ]
 
+  readable_data_bucket_object_arns = [
+    for suffix in var.data_bucket_suffixes :
+    "arn:${local.partition}:s3:::${local.name}-${suffix}/*"
+    if suffix != "quarantine"
+  ]
+
   # -------------------------------------------------------------------------
   # Guardrail vocabulary, written ONCE and referenced from both the deploy
   # role's identity policy and the permissions boundary.

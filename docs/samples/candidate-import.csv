@@ -1,0 +1,6 @@
+name,email,location,current_title,current_company,source,job_ref
+Aisha Patel,aisha.patel@example.com,"San Francisco, CA",Senior Backend Engineer,Northstar Labs,outbound,ENG-204
+Mateo Garcia,mateo.garcia@example.com,"New York, NY",Product Engineer,Acme Works,referral,ENG-204
+Chloe Martin,chloe.martin@example.com,London,Staff Software Engineer,Orbit Systems,agency,ENG-204
+Noor Hassan,noor.hassan@example.com,Berlin,Platform Engineer,Cloudline,careers_page,ENG-204
+Jordan Lee,jordan.lee@example.com,Toronto,Full-stack Engineer,Beacon Software,import,ENG-204

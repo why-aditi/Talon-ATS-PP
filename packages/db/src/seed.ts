@@ -27,6 +27,11 @@ import { createDb } from './index.js';
 import { DEFAULT_DATABASE_URL } from './migrate.js';
 import * as s from './schema.js';
 
+export const SEED_TENANT_IDS = {
+  talon: '0198f3a1-1000-7000-8000-000000000001',
+  acme: '0198f3a1-1000-7000-8000-000000000002',
+} as const;
+
 const H = 3_600_000;
 const DAY = 24 * H;
 const NOW = Date.now();
@@ -334,7 +339,7 @@ export async function seed(databaseUrl = process.env['DATABASE_URL'] ?? DEFAULT_
   const isoDate = (d: Date) => d.toISOString().slice(0, 10);
 
   // ── Tenant A: Talon Inc. ──────────────────────────────────────────────────
-  const talon = uuidv7();
+  const talon = SEED_TENANT_IDS.talon;
   tenantRows.push({ id: talon, name: 'Talon Inc.', slug: 'talon', createdAt: ago(365) });
 
   // external_id is left null on every seeded user, here and for Acme below, and
@@ -458,7 +463,7 @@ export async function seed(databaseUrl = process.env['DATABASE_URL'] ?? DEFAULT_
   auditRows.push({ tenantId: talon, action: 'seed.completed', entityType: 'tenant', entityId: talon, after: { jobs: 6, users: 5 }, requestId: 'seed' });
 
   // ── Tenant B: Acme Corp (isolation-test target) ───────────────────────────
-  const acme = uuidv7();
+  const acme = SEED_TENANT_IDS.acme;
   tenantRows.push({ id: acme, name: 'Acme Corp', slug: 'acme', createdAt: ago(200) });
   const beth = uuidv7();
   userRows.push({ id: beth, tenantId: acme, email: 'beth@acme.test', name: 'Beth Okafor', role: 'admin', timezone: 'UTC' });
@@ -524,11 +529,31 @@ export async function seed(databaseUrl = process.env['DATABASE_URL'] ?? DEFAULT_
   }
 }
 
+/** Seed a fresh database, but preserve every row when application data already exists. */
+export async function seedIfEmpty(
+  databaseUrl = process.env['DATABASE_URL'] ?? DEFAULT_DATABASE_URL,
+): Promise<'seeded' | 'skipped'> {
+  const sql = createDb(databaseUrl, { max: 1 }).client;
+  try {
+    const [state] = await sql<{ present: boolean }[]>`
+      select seed_database_has_data() as present`;
+    if (state?.present === true) {
+      console.log('seed skipped: database already contains tenant data');
+      return 'skipped';
+    }
+  } finally {
+    await sql.end();
+  }
+  await seed(databaseUrl);
+  return 'seeded';
+}
+
 const invokedDirectly =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (invokedDirectly) {
-  seed().catch((err) => {
+  const run = process.argv.includes('--if-empty') ? seedIfEmpty : seed;
+  run().catch((err) => {
     console.error(err);
     process.exitCode = 1;
   });

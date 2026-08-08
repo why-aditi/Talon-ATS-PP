@@ -1,0 +1,16 @@
+.git
+.github
+.agents
+.codex
+**/node_modules
+**/.next
+**/dist
+**/.turbo
+coverage
+e2e
+infra
+docs/*
+!docs/design-tokens.json
+.env
+apps/web/.env
+*.tfstate*

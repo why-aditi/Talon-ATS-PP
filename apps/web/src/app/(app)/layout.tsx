@@ -1,5 +1,5 @@
 import { AppShell } from '../../components/app-shell';
-import { buttonClass } from '../../components/ui';
+import { buttonClass } from '../../components/button-styles';
 import { RequireSession } from '../../lib/session';
 
 /**

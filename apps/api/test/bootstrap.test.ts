@@ -105,25 +105,30 @@ it('the bootstrap is an exact-match lookup, not a query surface', async () => {
   expect(await sql`select * from auth_user_by_sub(${`${subject}x`}::text)`).toHaveLength(0);
 });
 
-it('the SECURITY DEFINER surface is three functions, and their search_path is pinned', async () => {
+it('the SECURITY DEFINER surface is four audited functions, and their search_path is pinned', async () => {
   const rows = await sql<{ proname: string; proconfig: string[] | null }[]>`
     select p.proname, p.proconfig
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
     where n.nspname = 'public' and p.prosecdef
     order by p.proname`;
-  // Two readers (0003/0004) and one writer (0005). Every one of them exists
+  // Two auth readers (0003/0004), one audit writer (0005), and one owner-only
+  // provisioning guard (0011). Every one of them exists
   // because sign-in runs before app.tenant_id does; anything else appearing in
   // this list is a privilege escalation waiting to be found by someone else.
   expect(rows.map((r) => r.proname)).toEqual([
     'audit_sign_in',
     'auth_user_by_email',
     'auth_user_by_sub',
+    'seed_database_has_data',
   ]);
   for (const row of rows) {
     // An unpinned search_path on a definer function is the classic way to have
     // it execute someone else's `users`.
     expect(row.proconfig, row.proname).toContain('search_path=pg_catalog, public');
   }
+  const [seedGuard] = await sql<{ executable: boolean }[]>`
+    select has_function_privilege(current_user, 'seed_database_has_data()', 'execute') as executable`;
+  expect(seedGuard?.executable).toBe(false);
 });
 
 it('local_identities is reachable only as the credential store it is', async () => {

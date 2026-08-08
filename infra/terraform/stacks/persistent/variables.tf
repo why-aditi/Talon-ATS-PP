@@ -37,6 +37,49 @@ variable "tags" {
 }
 
 # ---------------------------------------------------------------------------
+# Persistent data and image retention
+# ---------------------------------------------------------------------------
+
+variable "force_destroy_persistent_data" {
+  description = "Allow Terraform to delete non-empty application buckets and an ECR repository containing images. Keep false for normal applies; down --all must deliberately set it true before destroying this stack."
+  type        = bool
+  default     = false
+}
+
+variable "kms_deletion_window_days" {
+  description = "Recovery window when the persistent application KMS key is deliberately scheduled for deletion."
+  type        = number
+  default     = 30
+
+  validation {
+    condition     = var.kms_deletion_window_days >= 7 && var.kms_deletion_window_days <= 30
+    error_message = "kms_deletion_window_days must be between 7 and 30."
+  }
+}
+
+variable "ecr_untagged_image_retention_days" {
+  description = "Days to retain untagged container images after a newer immutable SHA image has replaced them."
+  type        = number
+  default     = 14
+
+  validation {
+    condition     = var.ecr_untagged_image_retention_days >= 1
+    error_message = "ecr_untagged_image_retention_days must be at least 1."
+  }
+}
+
+variable "ecr_image_retention_count" {
+  description = "Maximum number of application images retained in ECR, including immutable SHA-tagged images."
+  type        = number
+  default     = 30
+
+  validation {
+    condition     = var.ecr_image_retention_count >= 1
+    error_message = "ecr_image_retention_count must be at least 1."
+  }
+}
+
+# ---------------------------------------------------------------------------
 # Role ARNs from stacks/iam.
 #
 # ARCHITECTURE §9.5: no `aws_iam_role` may exist outside stacks/iam, and every

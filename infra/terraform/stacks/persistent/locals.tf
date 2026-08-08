@@ -14,6 +14,13 @@ locals {
   partition  = data.aws_partition.current.partition
   account_id = data.aws_caller_identity.current.account_id
 
+  data_buckets = {
+    uploads      = "${local.name}-uploads"
+    exports      = "${local.name}-exports"
+    inbound-mail = "${local.name}-inbound-mail"
+    quarantine   = "${local.name}-quarantine"
+  }
+
   adopting = var.adopt_user_pool != null
 
   # ARCHITECTURE §9.4 writes the pool as `talon-${var.env}`, so that is the
