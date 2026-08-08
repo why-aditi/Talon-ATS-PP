@@ -1,4 +1,4 @@
--- 0006_definer_rls_exemption — make the `security definer` surface work when the
+-- 0007_definer_rls_exemption — make the `security definer` surface work when the
 -- role that owns it is not a superuser.
 --
 -- A NEW pair, deliberately: _migrations keys on name with no checksum, so editing
@@ -58,10 +58,23 @@
 --       across tenants by accident. An owner session sees nothing extra unless it
 --       has deliberately opted in, inside a transaction, for one statement.
 --
--- The marker is `SET LOCAL`, and each function also carries a `SET search_path`
--- clause, which makes Postgres save and restore the whole GUC nest level across
--- the call — so the opt-in cannot outlive the function even within a transaction
--- that traps an error. The explicit resets below are belt to that brace.
+-- HOW THE MARKER IS CONFINED — read this before deleting anything below.
+--
+-- The explicit `set_config(..., '')` resets ARE the mechanism. They are not
+-- belt-and-braces over some stronger guarantee.
+--
+-- A `SET search_path` clause on a function restores ONLY the variable it names.
+-- It does not confine a different GUC set with `SET LOCAL` inside the body — an
+-- earlier version of this comment claimed it did, and that was measurably wrong:
+-- a definer with `SET search_path` that sets its own marker leaves that marker
+-- set for the rest of the caller's transaction, and an owner session then keeps
+-- the widened read until commit.
+--
+-- So: every success path clears the marker explicitly, and (sub)transaction
+-- rollback clears it on every error path. Remove a reset and an owner-connected
+-- session silently keeps cross-tenant reads on `users` for the remainder of its
+-- transaction. `non-superuser-owner.test.ts` asserts the marker is empty after
+-- each call for exactly this reason.
 --
 -- The owner is read from the catalog rather than baked in as a literal, because
 -- the owner's NAME differs per environment (`talon` locally, the master user on
@@ -317,6 +330,13 @@ comment on function audit_sign_in(text, text, text, uuid, uuid, text, text) is
 revoke all on function auth_user_by_email(citext) from public;
 revoke all on function auth_user_by_sub(text) from public;
 revoke all on function audit_sign_in(text, text, text, uuid, uuid, text, text) from public;
-grant execute on function auth_user_by_email(citext) to talon_app;
+-- NOT granted to talon_app. Nothing calls this today (see repository.ts, which
+-- kept the method only as a documented gap), and 0007 would otherwise revive it:
+-- a cross-tenant lookup keyed on an email address — a GUESSABLE identifier —
+-- callable by the app role with no app.tenant_id set. auth_user_by_sub is
+-- different in kind: its keys are unguessable and the request chain cannot
+-- function without it. Grant this back in the same commit that adds a caller
+-- (spec 003 resolves principals by email), not before.
+revoke execute on function auth_user_by_email(citext) from talon_app;
 grant execute on function auth_user_by_sub(text) to talon_app;
 grant execute on function audit_sign_in(text, text, text, uuid, uuid, text, text) to talon_app;

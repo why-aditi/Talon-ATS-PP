@@ -57,13 +57,23 @@ it('without tenant context, ordinary reads return nothing — including users', 
 
 it('the bootstrap function returns exactly the one row sign-in needs', async () => {
   const rows = await sql<Record<string, unknown>[]>`
-    select * from auth_user_by_email(${fixtures.talon.recruiter.email}::citext)`;
+    select * from auth_user_by_sub(${subject}::text)`;
   expect(rows).toHaveLength(1);
   expect(rows[0]).toMatchObject({
     id: fixtures.talon.recruiter.id,
     tenant_id: fixtures.talon.tenantId,
     role: 'recruiter',
   });
+});
+
+it('the app role cannot call the email lookup, because nothing calls it yet', async () => {
+  // auth_user_by_email is a cross-tenant read keyed on a GUESSABLE identifier.
+  // auth_user_by_sub is not — its keys are unguessable and the request chain
+  // cannot work without it. So the email lookup stays un-granted until the commit
+  // that adds a caller (spec 003 resolves principals by email).
+  await expect(
+    sql`select * from auth_user_by_email(${fixtures.talon.recruiter.email}::citext)`,
+  ).rejects.toMatchObject({ code: '42501' });
 });
 
 it('the bootstrap functions expose no password material and no other columns', async () => {
@@ -85,13 +95,9 @@ it('the bootstrap functions expose no password material and no other columns', a
 
 it('the bootstrap is an exact-match lookup, not a query surface', async () => {
   // No pattern, no wildcard, no "list everyone in this tenant".
-  expect(await sql`select * from auth_user_by_email(${'%@taloninc.com'}::citext)`).toHaveLength(0);
-  expect(await sql`select * from auth_user_by_email(${''}::citext)`).toHaveLength(0);
-  // …and it is case-insensitive, because users.email is citext and people type
-  // their address however they like.
-  expect(
-    await sql`select * from auth_user_by_email(${'MAYA@TalonInc.com'}::citext)`,
-  ).toHaveLength(1);
+  expect(await sql`select * from auth_user_by_sub(${'%'}::text)`).toHaveLength(0);
+  expect(await sql`select * from auth_user_by_sub(${''}::text)`).toHaveLength(0);
+  expect(await sql`select * from auth_user_by_sub(${`${subject}x`}::text)`).toHaveLength(0);
 });
 
 it('the SECURITY DEFINER surface is three functions, and their search_path is pinned', async () => {

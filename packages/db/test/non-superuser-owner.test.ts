@@ -256,3 +256,28 @@ it('the exemption admits the function and nothing else — talon_app cannot forg
     }),
   ).rejects.toThrow(/row-level security|violates/i);
 });
+
+it('the marker does not outlive the call, so the FORCE backstop survives it', async () => {
+  // The confinement is the explicit set_config(..., '') at each exit — NOT the
+  // function's `SET search_path` clause, which restores only search_path. If a
+  // reset is ever deleted, an owner-connected session keeps the widened read for
+  // the rest of its transaction, and nothing else in the suite would notice.
+  const probe = postgres(NOSUPER_URL, { max: 1, onnotice: () => {} });
+  try {
+    await probe.begin(async (tx) => {
+      const before = await tx<{ n: number }[]>`select count(*)::int as n from users`;
+      expect(before[0]?.n, 'owner sees nothing before opting in').toBe(0);
+
+      await tx`select * from auth_user_by_sub(${actorA}::text)`;
+      const marker = await tx<{ v: string | null }[]>`
+        select current_setting('talon.auth_bootstrap', true) as v`;
+      expect(marker[0]?.v ?? '', 'marker cleared on the success path').not.toBe('on');
+
+      // The assertion that actually matters: the read is closed again.
+      const after = await tx<{ n: number }[]>`select count(*)::int as n from users`;
+      expect(after[0]?.n, 'FORCE still hides users from the owner').toBe(0);
+    });
+  } finally {
+    await probe.end();
+  }
+});

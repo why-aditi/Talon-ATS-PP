@@ -1,4 +1,4 @@
--- Reverses 0006_definer_rls_exemption.
+-- Reverses 0007_definer_rls_exemption.
 --
 -- Drops the two exception policies and puts the three definer functions back to
 -- the bodies 0003/0004/0005 created — restoring the previous state rather than

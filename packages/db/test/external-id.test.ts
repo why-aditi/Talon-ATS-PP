@@ -182,7 +182,7 @@ describe('0004 down → up', () => {
     // `down` steps back exactly one migration, so everything above 0004 has to
     // come off first. Asserted rather than looped: a down that quietly took two
     // would be worth knowing about here, in the file that tests reversibility.
-    expect(await migrate('down', OWNER_URL)).toEqual(['0006_definer_rls_exemption']);
+    expect(await migrate('down', OWNER_URL)).toEqual(['0007_definer_rls_exemption']);
     expect(await migrate('down', OWNER_URL)).toEqual(['0005_audit_authentication']);
     expect(await migrate('down', OWNER_URL)).toEqual(['0004_users_external_id']);
 
@@ -205,7 +205,7 @@ describe('0004 down → up', () => {
     expect(await migrate('up', OWNER_URL)).toEqual([
       '0004_users_external_id',
       '0005_audit_authentication',
-      '0006_definer_rls_exemption',
+      '0007_definer_rls_exemption',
     ]);
 
     const [reapplied] = await subFn();
