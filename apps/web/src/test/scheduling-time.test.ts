@@ -18,9 +18,11 @@ import {
   timeLabel,
   zoneLabel,
 } from '../lib/scheduling-time';
-import { busyDuring, rowSpans } from '../lib/scheduling-state';
+import { busyDuring, conflictAt, rowsForDay, rowSpans } from '../lib/scheduling-state';
+import { loopFor, type SchedulingLoop } from '../lib/scheduling-fixtures';
 
 const CT = 'America/Chicago';
+const HOUR = 60 * 60_000;
 
 /**
  * Busy is an overlap, not a match on a start.
@@ -115,6 +117,121 @@ describe('rendering an instant in a zone', () => {
   it('gives the bare hours the candidate window is written in', () => {
     expect(hourLabel('2026-08-06T14:00:00.000Z', CT)).toBe('9');
     expect(hourLabel('2026-08-06T21:00:00.000Z', CT)).toBe('4');
+  });
+});
+
+/*
+  Non-negotiable 7: any scheduling change ships with a DST-boundary test. The change is the
+  whole-day UTC arithmetic that carries a day onto another day — `rowsForDay` moves the rows
+  by the exact gap between the two days, and `constraintsFor` moves the candidate window by
+  that gap ROUNDED to whole days. Two things about that pair are worth pinning, because both
+  are currently true by accident of the fixture rather than by construction:
+
+  1. The rows and the window travel by the same offset, so they stay mutually consistent. A
+     week that crosses a DST boundary yields a grid whose labels are an hour off, which is a
+     known consequence of whole-day arithmetic and stated as such in `constraintsFor` — what
+     it must never yield is a window that disagrees with the rows drawn inside it, because
+     that turns every row of the other four days into `outside_window`.
+  2. `Math.round` snaps onto the wrong day only once a row sits more than 12h from
+     `loop.dayUtc`. The reference rows span 6.5h, so it cannot today.
+*/
+describe('carrying a day onto another day across a DST boundary', () => {
+  /**
+   * The reference loop with its day, rows and window all moved to `dayUtc`.
+   *
+   * Moved together and exactly, so the synthetic loop is internally consistent before the
+   * arithmetic under test runs — anything inconsistent afterwards was produced here.
+   */
+  function loopOn(dayUtc: string): SchedulingLoop {
+    const base = loopFor('default');
+    const shift = Date.parse(dayUtc) - Date.parse(base.dayUtc);
+    const move = (iso: string) => new Date(Date.parse(iso) + shift).toISOString();
+    return {
+      ...base,
+      dayUtc,
+      rows: base.rows.map((row) => ({ startUtc: move(row.startUtc) })),
+      candidateWindow: {
+        startUtc: move(base.candidateWindow.startUtc),
+        endUtc: move(base.candidateWindow.endUtc),
+      },
+      // Everyone genuinely free, so `outside_window` is the only blocker these cases can
+      // produce. An absent key reads as fully busy (§7) and would answer `panelist_busy`
+      // first, hiding whatever the window arithmetic did.
+      busy: Object.fromEntries(base.panelists.map((p) => [p.id, []])),
+    };
+  }
+
+  const firstRow = (loop: SchedulingLoop, dayUtc: string) => rowsForDay(loop, dayUtc)[0] as string;
+
+  it('labels the far side of fall-back an hour early, and moves the window with it', () => {
+    // Friday 30 October 2026, 9:00 CDT, and the Monday three whole UTC days later — by
+    // which time CDT has become CST (1 November), so 14:00Z reads 8:00 rather than 9:00.
+    const loop = loopOn('2026-10-30T14:00:00.000Z');
+    const monday = '2026-11-02T14:00:00.000Z';
+    expect(timeLabel(loop.dayUtc, CT)).toBe('9:00');
+    expect(timeLabel(firstRow(loop, monday), CT)).toBe('8:00');
+
+    // The window moved by the same three days, so the row that opens Monday is inside it.
+    // A window left pinned on Friday answers `outside_window` here and makes the Week
+    // toggle useless; a window that moved by a different amount answers it one row later.
+    expect(conflictAt(loop, loop.busy, firstRow(loop, monday))).toBeNull();
+    // The edge is still an edge, and it sits exactly on that row — one minute earlier is
+    // outside. That is what "the same offset" means, checked rather than asserted in prose.
+    const minuteBefore = new Date(Date.parse(firstRow(loop, monday)) - 60_000).toISOString();
+    expect(conflictAt(loop, loop.busy, minuteBefore)?.reason).toBe('outside_window');
+    // And a row 4h into Monday still rounds onto Monday, not onto its neighbour.
+    expect(conflictAt(loop, loop.busy, rowsForDay(loop, monday)[4] as string)).toBeNull();
+  });
+
+  it('labels the far side of spring-forward an hour late, and moves the window with it', () => {
+    // The mirror image: Friday 6 March 2026 is CST, and the Monday after 8 March is CDT,
+    // so the same 15:00Z reads 10:00 instead of 9:00. The direction of the label error
+    // flips; the consistency between rows and window must not.
+    const loop = loopOn('2026-03-06T15:00:00.000Z');
+    const monday = '2026-03-09T15:00:00.000Z';
+    expect(timeLabel(loop.dayUtc, CT)).toBe('9:00');
+    expect(timeLabel(firstRow(loop, monday), CT)).toBe('10:00');
+
+    expect(conflictAt(loop, loop.busy, firstRow(loop, monday))).toBeNull();
+    const minuteBefore = new Date(Date.parse(firstRow(loop, monday)) - 60_000).toISOString();
+    expect(conflictAt(loop, loop.busy, minuteBefore)?.reason).toBe('outside_window');
+  });
+
+  /*
+    Bound 2, as an assertion rather than a guard — deliberately.
+
+    A guard would have to answer "which day does this instant belong to", and the view-model
+    has no input for that: it is handed one day's rows and one day's window and infers the
+    rest. The rounding is correct exactly while no row is further than 12h from
+    `loop.dayUtc`, which is a property of the row set, so the row set is what gets checked.
+    Add a 9:00 PM row (13h out) and this fails here, loudly, instead of quietly placing the
+    candidate's window a day off in the Week view. It goes away entirely when the endpoint
+    sends a window per day, which is the note already in `constraintsFor`.
+  */
+  /*
+    Bound 1 has a precondition of its own, and it is the wire's, not the screen's.
+
+    `rowsForDay` shifts the rows by the EXACT gap between the two days; `constraintsFor`
+    shifts the window by that gap rounded to whole days. The two are one offset only while
+    the gap IS a whole number of UTC days, which is what the fixture's week is. A wire that
+    anchored each day to local 9:00 instead would send a 71h gap across fall-back — rows at
+    +71h, window at +72h — and the first row of that day would read `outside_window` for a
+    reason no recruiter can see on screen. Pinned here so that change fails a test.
+  */
+  it('takes its week as whole UTC days from the loop day, which is what makes the two offsets one', () => {
+    const loop = loopFor('default');
+    for (const day of loop.week) {
+      expect(Math.abs((Date.parse(day.dayUtc) - Date.parse(loop.dayUtc)) % (24 * HOUR))).toBe(0);
+    }
+  });
+
+  it('keeps every row inside the 12h that makes the whole-day rounding exact', () => {
+    const loop = loopFor('default');
+    const worst = Math.max(
+      ...loop.rows.map((row) => Math.abs(Date.parse(row.startUtc) - Date.parse(loop.dayUtc))),
+    );
+    expect(worst).toBe(6.5 * HOUR);
+    expect(worst).toBeLessThan(12 * HOUR);
   });
 });
 
