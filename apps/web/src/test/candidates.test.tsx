@@ -117,7 +117,7 @@ describe('candidate profile', () => {
     });
 
     it('omits the row entirely when the role may not see it', async () => {
-      serve('interviewer');
+      serve('member');
       renderWith(<CandidateProfileScreen candidateId={CANDIDATE_IDS.ana} />);
 
       // The label is itself the information being withheld, so the row is absent

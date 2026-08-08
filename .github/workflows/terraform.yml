@@ -100,6 +100,27 @@ jobs:
     timeout-minutes: 20
     needs: static
     if: vars.AWS_PLAN_ROLE_ARN != ''
+    # ONE TERRAFORM JOB PER STATE FILE AT A TIME, ACROSS RUNS.
+    #
+    # `plan` and `apply` both `needs: static` and neither depends on the other,
+    # so on a push to main they start together and both PutItem the same lock
+    # row. The first merge after AWS_DEPLOY_ROLE_ARN was set failed exactly that
+    # way: apply won, plan died on ConditionalCheckFailedException. The flaw was
+    # there from the start and could not fire while apply was skipped.
+    #
+    # Expressed as concurrency rather than `needs: [static, plan]` for two
+    # reasons. A `needs` edge would mean that unsetting AWS_PLAN_ROLE_ARN skips
+    # `plan` and therefore silently skips `apply` too — a variable that disables
+    # deployment as a side effect. And the same collision exists between two
+    # PRs planning the same stack at once, which an in-run dependency cannot fix.
+    #
+    # cancel-in-progress stays false: cancelling a terraform mid-apply is how a
+    # lock gets orphaned. Note GitHub keeps only one job pending per group, so a
+    # third arrival cancels the queued one — visible as `cancelled`, and a re-run
+    # is the right response.
+    concurrency:
+      group: tfstate-${{ matrix.stack }}
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write        # required to mint the OIDC token
@@ -124,6 +145,13 @@ jobs:
       # declares (verified against both stacks at 1.15.8), so one env entry is
       # correct for every stack in the matrix and stays correct for the next one.
       TF_VAR_github_repo: ${{ github.repository }}
+      # This repository's OIDC subject is id-qualified
+      # (`repo:OWNER@<owner_id>/REPO@<repo_id>:...`), so the trust policy has to
+      # name that form or the assume-role fails with an error that names no
+      # claim. Passed from the context rather than hardcoded, so a fork trusts
+      # its own ids. See stacks/iam/locals.tf.
+      TF_VAR_github_owner_id: ${{ github.repository_owner_id }}
+      TF_VAR_github_repository_id: ${{ github.repository_id }}
     steps:
       - uses: actions/checkout@v4
 
@@ -283,6 +311,10 @@ jobs:
     timeout-minutes: 45
     needs: static
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AWS_DEPLOY_ROLE_ARN != ''
+    # Same group as `plan`, which is the whole point — see the comment there.
+    concurrency:
+      group: tfstate-${{ matrix.stack }}
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
@@ -295,6 +327,13 @@ jobs:
       # correct in advance for any stack added to this matrix that does. See the
       # plan job for why this is not a `-var` flag.
       TF_VAR_github_repo: ${{ github.repository }}
+      # This repository's OIDC subject is id-qualified
+      # (`repo:OWNER@<owner_id>/REPO@<repo_id>:...`), so the trust policy has to
+      # name that form or the assume-role fails with an error that names no
+      # claim. Passed from the context rather than hardcoded, so a fork trusts
+      # its own ids. See stacks/iam/locals.tf.
+      TF_VAR_github_owner_id: ${{ github.repository_owner_id }}
+      TF_VAR_github_repository_id: ${{ github.repository_id }}
     steps:
       - uses: actions/checkout@v4
 
