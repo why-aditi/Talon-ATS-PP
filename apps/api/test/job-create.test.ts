@@ -13,18 +13,45 @@ import {
   ListUsersResponseSchema,
 } from '@talon/contracts';
 import { afterAll, beforeAll, expect, it } from 'vitest';
-import { bearer, deleteJobs, loadFixtures, signIn, startApp, type Fixtures, type TestApp } from './helpers.js';
+import {
+  bearer,
+  dedicatedUser,
+  deleteJobs,
+  loadFixtures,
+  removeDedicatedUser,
+  startApp,
+  type Fixtures,
+  type Person,
+  type TestApp,
+} from './helpers.js';
 
 let test: TestApp;
 let fixtures: Fixtures;
 let recruiter: Record<string, string>;
 let member: Record<string, string>;
+/**
+ * This file's OWN users. See `dedicatedUser` — signing in re-provisions, which
+ * rewrites `users.external_id`, so a shared row leaves every other suite naming a
+ * subject that no longer resolves.
+ */
+let ownedRecruiter: Person;
+let ownedMember: Person;
 
 beforeAll(async () => {
   test = await startApp();
   fixtures = await loadFixtures();
-  recruiter = bearer(await signIn(test, fixtures.talon.recruiter));
-  member = bearer(await signIn(test, fixtures.talon.member));
+  const r = await dedicatedUser(test, 'jobcreaterecruiter', {
+    tenantId: fixtures.talon.tenantId,
+    role: 'recruiter',
+  });
+  const m = await dedicatedUser(test, 'jobcreatemember', {
+    tenantId: fixtures.talon.tenantId,
+    role: 'member',
+  });
+  ownedRecruiter = r.person;
+  ownedMember = m.person;
+  recruiter = bearer(r.session);
+  member = bearer(m.session);
 });
 
 /**
@@ -38,7 +65,10 @@ beforeAll(async () => {
 const created: string[] = [];
 
 afterAll(async () => {
+  // Jobs first: they reference the users below.
   await deleteJobs(created);
+  await removeDedicatedUser(ownedRecruiter);
+  await removeDedicatedUser(ownedMember);
   await test.close();
 });
 

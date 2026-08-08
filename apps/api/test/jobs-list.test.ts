@@ -10,13 +10,20 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { ERROR_TYPES, ListJobsResponseSchema, type Job } from '@talon/contracts';
-import { bearer, loadFixtures, signIn, startApp, type Fixtures, type TestApp } from './helpers.js';
+import { bearer, dedicatedUser, loadFixtures, removeDedicatedUser, startApp, type Fixtures, type Person, type TestApp } from './helpers.js';
 import { OWNER_URL } from './urls.js';
 
 let test: TestApp;
 let fixtures: Fixtures;
 let recruiter: Record<string, string>;
 let member: Record<string, string>;
+/**
+ * This file's OWN user. See `dedicatedUser` — signing in re-provisions, which
+ * rewrites `users.external_id`, so a shared row leaves every other suite naming a
+ * subject that no longer resolves.
+ */
+let ownedRecruiter: Person;
+let ownedMember: Person;
 
 /**
  * Throwaway jobs for the two edge cases that need a job the seed does not have.
@@ -35,8 +42,21 @@ const removeTempJobs = () =>
 beforeAll(async () => {
   test = await startApp();
   fixtures = await loadFixtures();
-  recruiter = bearer(await signIn(test, fixtures.talon.recruiter));
-  member = bearer(await signIn(test, fixtures.talon.member));
+  // This file's own pair. The seeded Maya and Lin stay untouched — assertions about
+  // a JOB's recruiter still name them, because that is seeded data rather than who
+  // is holding the token.
+  const r = await dedicatedUser(test, 'jobslistrecruiter', {
+    tenantId: fixtures.talon.tenantId,
+    role: 'recruiter',
+  });
+  const m = await dedicatedUser(test, 'jobslistmember', {
+    tenantId: fixtures.talon.tenantId,
+    role: 'member',
+  });
+  ownedRecruiter = r.person;
+  ownedMember = m.person;
+  recruiter = bearer(r.session);
+  member = bearer(m.session);
   // Before the counts table is asserted, not after: a leftover job from a
   // crashed run would otherwise show up as a seventh row.
   await removeTempJobs();
@@ -45,6 +65,8 @@ beforeAll(async () => {
 afterAll(async () => {
   await removeTempJobs();
   await owner.end();
+  await removeDedicatedUser(ownedRecruiter);
+  await removeDedicatedUser(ownedMember);
   await test.close();
 });
 
@@ -98,7 +120,14 @@ it('a full page costs one query, not one per job', async () => {
   const statements: string[] = [];
   const counted = await startApp({ onQuery: (q) => statements.push(q) });
   try {
-    const headers = bearer(await signIn(counted, fixtures.talon.recruiter));
+    // A second app instance, so a second dedicated user: `signIn` re-provisions, and
+    // pointing this at the user the outer app holds a session for would invalidate it
+    // mid-file.
+    const probe = await dedicatedUser(counted, 'jobslistprobe', {
+      tenantId: fixtures.talon.tenantId,
+      role: 'recruiter',
+    });
+    const headers = bearer(probe.session);
     statements.length = 0;
     const res = await counted.app.inject({ method: 'GET', url: '/v1/jobs?limit=100', headers });
     expect(res.statusCode).toBe(200);

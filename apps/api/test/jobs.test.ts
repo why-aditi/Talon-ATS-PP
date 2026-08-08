@@ -4,21 +4,43 @@
  */
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { ERROR_TYPES, JobSchema } from '@talon/contracts';
-import { bearer, loadFixtures, signIn, startApp, type Fixtures, type TestApp } from './helpers.js';
+import { bearer, dedicatedUser, loadFixtures, removeDedicatedUser, startApp, type Fixtures, type Person, type TestApp } from './helpers.js';
 
 let test: TestApp;
 let fixtures: Fixtures;
 let recruiter: Record<string, string>;
 let member: Record<string, string>;
+/**
+ * This file's OWN user. See `dedicatedUser` — signing in re-provisions, which
+ * rewrites `users.external_id`, so a shared row leaves every other suite naming a
+ * subject that no longer resolves.
+ */
+let ownedRecruiter: Person;
+let ownedMember: Person;
 
 beforeAll(async () => {
   test = await startApp();
   fixtures = await loadFixtures();
-  recruiter = bearer(await signIn(test, fixtures.talon.recruiter));
-  member = bearer(await signIn(test, fixtures.talon.member));
+  // This file's own pair. The seeded Maya and Lin stay untouched — assertions about
+  // a JOB's recruiter still name them, because that is seeded data rather than who
+  // is holding the token.
+  const r = await dedicatedUser(test, 'jobsrecruiter', {
+    tenantId: fixtures.talon.tenantId,
+    role: 'recruiter',
+  });
+  const m = await dedicatedUser(test, 'jobsmember', {
+    tenantId: fixtures.talon.tenantId,
+    role: 'member',
+  });
+  ownedRecruiter = r.person;
+  ownedMember = m.person;
+  recruiter = bearer(r.session);
+  member = bearer(m.session);
 });
 
 afterAll(async () => {
+  await removeDedicatedUser(ownedRecruiter);
+  await removeDedicatedUser(ownedMember);
   await test.close();
 });
 

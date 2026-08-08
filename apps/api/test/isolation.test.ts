@@ -14,11 +14,13 @@ import { afterAll, beforeAll, expect, it } from 'vitest';
 import { ERROR_TYPES } from '@talon/contracts';
 import {
   bearer,
+  dedicatedUser,
   deleteJobs,
   loadFixtures,
-  signIn,
+  removeDedicatedUser,
   startApp,
   type Fixtures,
+  type Person,
   type Session,
   type TestApp,
 } from './helpers.js';
@@ -139,12 +141,31 @@ let test: TestApp;
 let fixtures: Fixtures;
 let victim: Session;
 let attacker: Session;
+/**
+ * This file's OWN users. See `dedicatedUser` — signing in re-provisions, which
+ * rewrites `users.external_id`, so a shared row leaves every other suite naming a
+ * subject that no longer resolves.
+ */
+let ownedVictim: Person;
+let ownedAttacker: Person;
 
 beforeAll(async () => {
   test = await startApp();
   fixtures = await loadFixtures();
-  victim = await signIn(test, fixtures.talon.recruiter); // tenant A
-  attacker = await signIn(test, fixtures.acme.admin); // tenant B, an admin at home
+  // The attacker is an ADMIN at home on purpose: maximum privilege in tenant B
+  // still sees nothing of tenant A.
+  const a = await dedicatedUser(test, 'isolationvictim', {
+    tenantId: fixtures.talon.tenantId,
+    role: 'recruiter',
+  });
+  const b = await dedicatedUser(test, 'isolationattacker', {
+    tenantId: fixtures.acme.tenantId,
+    role: 'admin',
+  });
+  ownedVictim = a.person;
+  ownedAttacker = b.person;
+  victim = a.session;
+  attacker = b.session;
 });
 
 /*
@@ -156,7 +177,10 @@ beforeAll(async () => {
 const createdJobs: string[] = [];
 
 afterAll(async () => {
+  // Jobs first: they reference the users below.
   await deleteJobs(createdJobs);
+  await removeDedicatedUser(ownedVictim);
+  await removeDedicatedUser(ownedAttacker);
   await test.close();
 });
 

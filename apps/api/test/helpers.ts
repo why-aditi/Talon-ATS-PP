@@ -203,7 +203,15 @@ export async function provision(test: TestApp, person: Person): Promise<string> 
   // tenant transaction and must not be able to write this column at all.
   const sql = postgres(OWNER_URL, { max: 1, onnotice: () => {} });
   try {
-    await sql`update users set external_id = ${sub} where id = ${person.id}::uuid`;
+    const updated = await sql`
+      update users set external_id = ${sub} where id = ${person.id}::uuid returning id`;
+    // An UPDATE matching nothing is not an error in SQL, and the symptom arrives
+    // much later as a 401 from a route that looks unrelated. Say it here instead.
+    if (updated.length !== 1) {
+      throw new Error(
+        `provision: ${person.email} (${person.id}) matched ${updated.length} rows, expected 1`,
+      );
+    }
   } finally {
     await sql.end();
   }
