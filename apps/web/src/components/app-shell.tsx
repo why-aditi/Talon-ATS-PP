@@ -156,9 +156,16 @@ function SignOutButton() {
  */
 const JOB_PIPELINE = /^\/jobs\/[^/]+\/pipeline$/;
 
+/** Same split for a loop: the URL is `/scheduling/:loopId`, the nav row is Scheduling. */
+const SCHEDULING_LOOP = /^\/scheduling\/[^/]+$/;
+
 function Sidebar() {
   const pathname = usePathname();
-  const activeHref = JOB_PIPELINE.test(pathname) ? '/pipeline' : pathname;
+  const activeHref = JOB_PIPELINE.test(pathname)
+    ? '/pipeline'
+    : SCHEDULING_LOOP.test(pathname)
+      ? '/scheduling'
+      : pathname;
   const { session } = useSession();
 
   // A tenant-wide count, so it is deliberately the UNFILTERED query. React Query
@@ -258,7 +265,12 @@ function Topbar() {
   // Breadcrumb per DESIGN_SYSTEM §4: the trail sits at `meta`, the current page at
   // `bodyStrong`. Only one level exists so far, so only the current page renders.
   const onJobPipeline = JOB_PIPELINE.test(pathname);
-  const title = onJobPipeline ? 'Pipeline' : (NAV_ITEMS.find((item) => item.href === pathname)?.label ?? 'Talon');
+  const onLoop = SCHEDULING_LOOP.test(pathname);
+  const title = onJobPipeline
+    ? 'Pipeline'
+    : onLoop
+      ? 'Schedule onsite loop'
+      : (NAV_ITEMS.find((item) => item.href === pathname)?.label ?? 'Talon');
   return (
     <header className="flex h-[var(--layout-topbar-height)] shrink-0 items-center gap-4 border-b border-border-default bg-bg-surface px-6">
       {/*
@@ -272,6 +284,12 @@ function Topbar() {
       <p className="flex-1 text-meta text-text-tertiary">
         {onJobPipeline ? <Link href="/jobs" className="hover:text-text-link">Jobs</Link> : null}
         {onJobPipeline ? ' / ' : null}
+        {/* The reference reads "Ana Petrova / Schedule onsite loop". The shell cannot
+            know the candidate — that is in the loop response, a component away — so the
+            trail names the section and the candidate sits at the top of the left pane,
+            where the reference also puts her. Same trade as the job pipeline above. */}
+        {onLoop ? <Link href="/scheduling" className="hover:text-text-link">Scheduling</Link> : null}
+        {onLoop ? ' / ' : null}
         <span className="text-body-strong text-text-primary">{title}</span>
       </p>
       {/*
