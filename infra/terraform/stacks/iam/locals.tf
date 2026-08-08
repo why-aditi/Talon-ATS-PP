@@ -90,4 +90,158 @@ locals {
     for suffix in var.data_bucket_suffixes :
     "arn:${local.partition}:s3:::${local.name}-${suffix}/*"
   ]
+
+  # -------------------------------------------------------------------------
+  # Guardrail vocabulary, written ONCE and referenced from both the deploy
+  # role's identity policy and the permissions boundary.
+  #
+  # WHY THIS EXISTS. The boundary's job is to be a mirror of the deploy role's
+  # guardrails, so that a role the deploy role creates cannot do what the deploy
+  # role itself is denied. The first version of it mirrored two statements out of
+  # six by hand-copying them, and the four that were not copied were not visible
+  # as missing — there was nothing to diff against. A child role created under the
+  # boundary with an inline `*:*` could therefore rewrite the deploy role's own
+  # trust policy, delete the Cognito pool, delete the state lock table, pass the
+  # ECS task role to EC2, and run instances in an unwatched region: three API
+  # calls instead of one, and §4.3's "the `sub` condition is the whole security
+  # boundary" was still advisory.
+  #
+  # Hand-copying is the bug. A shared local is not a style preference here — it is
+  # the only shape in which "the boundary mirrors the guardrails" is a property of
+  # the code rather than a claim in a comment. Adding a service to
+  # pass_role_services, or an action to stateful_delete_actions, now lands in both
+  # documents or in neither.
+  # -------------------------------------------------------------------------
+
+  ci_role_arn_pattern = "arn:${local.partition}:iam::${local.account_id}:role/${local.name}-github-*"
+
+  # Every IAM action that can change what a role is, what it trusts, or who may
+  # wear it. Applied to `role/${local.name}-github-*` in two places.
+  #
+  # iam:PassRole is in the list and it is not decoration: iam:AddRoleToInstanceProfile
+  # is authorized against the INSTANCE PROFILE's ARN, not the role's, so a
+  # resource-scoped deny on role ARNs cannot see it. Adding the deploy role to a
+  # profile therefore stays possible; launching an instance that wears it does not.
+  #
+  # iam:CreateRole is in the list so the `-github-` namespace is actually reserved
+  # rather than merely uncreatable-and-then-unusable. Squatting the name is inert
+  # today — the squatter cannot then attach a policy to it — but §4.8 reads as
+  # though the namespace is reserved, and a name that can be taken by a CI run is a
+  # name a later human apply collides with.
+  #
+  # iam:UpdateRole matters for a reason that is easy to miss: it sets
+  # MaxSessionDuration. Without the deny, a CI run can raise its own session
+  # lifetime from one hour to twelve. iam:TagRole/UntagRole matter the moment any
+  # policy in the account conditions on a tag.
+  ci_role_write_actions = [
+    "iam:CreateRole",
+    "iam:DeleteRole",
+    "iam:UpdateRole",
+    "iam:UpdateRoleDescription",
+    "iam:UpdateAssumeRolePolicy",
+    "iam:TagRole",
+    "iam:UntagRole",
+    "iam:PutRolePolicy",
+    "iam:DeleteRolePolicy",
+    "iam:AttachRolePolicy",
+    "iam:DetachRolePolicy",
+    "iam:PutRolePermissionsBoundary",
+    "iam:DeleteRolePermissionsBoundary",
+    "iam:PassRole",
+  ]
+
+  # The services this architecture actually hands a role to (§9.1, §9.2, and
+  # §9.6's NAT instance). An apply failing with AccessDenied on PassRole means a
+  # service is missing here: add it, in the same PR, and both documents move.
+  pass_role_services = [
+    "ecs-tasks.amazonaws.com",
+    "ecs.amazonaws.com",
+    "lambda.amazonaws.com",
+    "ec2.amazonaws.com",
+    "events.amazonaws.com",
+    "scheduler.amazonaws.com",
+    "application-autoscaling.amazonaws.com",
+    "monitoring.rds.amazonaws.com",
+    "vpc-flow-logs.amazonaws.com",
+  ]
+
+  # THE ONE SERVICE THE LIST ABOVE CANNOT SAFELY SCOPE ON ITS OWN.
+  #
+  # role_github_deploy.tf's comment says iam:PassedToService stops the deploy role
+  # "handing the ECS task role to a service that was never meant to hold it — an
+  # EC2 instance it controls, say — and reading every application secret from a
+  # shell." That was measurably untrue: `ec2.amazonaws.com` is IN the list,
+  # because §9.6's dev cost profile replaces the NAT Gateway with a t4g.nano NAT
+  # instance and that instance needs an instance profile. Simulated on the deploy
+  # role before this local existed, `iam:PassRole talon-dev-ecs-task` with
+  # `iam:PassedToService = ec2.amazonaws.com` returned **allowed**.
+  #
+  # EC2 is the only entry on the list that turns a passed role into an interactive
+  # shell, so it is the only one where the destination ROLE has to be pinned as
+  # well as the destination SERVICE. Everything else in this stack is a trust
+  # policy away from being unusable anyway; EC2 is the one where the gap is worth
+  # a statement rather than a note.
+  #
+  # NAMING CONTRACT for stacks/ephemeral: the NAT instance's role must be named
+  # `${local.name}-ec2-*`, e.g. `talon-dev-ec2-nat`. Anything else fails with
+  # AccessDenied on PassRole at apply time, which is the loud failure — the quiet
+  # one is the version of this file without the pin.
+  ec2_pass_role_arn_pattern = "arn:${local.partition}:iam::${local.account_id}:role/${local.name}-ec2-*"
+
+  # §4.9: destroyable by the human running down.sh --all, not by an automated
+  # apply and not by anything an automated apply can create.
+  stateful_delete_actions = [
+    "cognito-idp:DeleteUserPool",
+    "rds:DeleteDBCluster",
+  ]
+
+  account_org_actions = [
+    "organizations:*",
+    "controltower:*",
+    "account:CloseAccount",
+    "account:PutAlternateContact",
+  ]
+
+  # §9.5: the state bucket is bootstrapped once and never destroyed, and its
+  # versioning IS the recovery path for a corrupted state file.
+  state_bucket_protection_actions = [
+    "s3:DeleteBucket",
+    "s3:PutBucketVersioning",
+    "s3:DeleteObjectVersion",
+  ]
+
+  state_lock_protection_actions = [
+    "dynamodb:DeleteTable",
+    "dynamodb:DeleteBackup",
+  ]
+
+  # Global and global-endpoint services, excluded from the region restriction
+  # because they either ignore aws:RequestedRegion or are only addressable from
+  # us-east-1. If an apply fails with AccessDenied on a service that belongs on
+  # this list, add it here rather than disabling the guard.
+  region_exempt_actions = [
+    "iam:*",
+    "sts:*",
+    "organizations:*",
+    "account:*",
+    "cloudfront:*",
+    "route53:*",
+    "route53domains:*",
+    "acm:*",
+    "waf:*",
+    "wafv2:*",
+    "shield:*",
+    "budgets:*",
+    "ce:*",
+    "cur:*",
+    "pricing:*",
+    "support:*",
+    "trustedadvisor:*",
+    "health:*",
+    "globalaccelerator:*",
+    "ecr-public:*",
+    "s3:ListAllMyBuckets",
+    "s3:GetAccountPublicAccessBlock",
+    "s3:PutAccountPublicAccessBlock",
+  ]
 }

@@ -87,11 +87,17 @@ data "aws_iam_policy_document" "github_deploy_iam_addendum" {
 
   # PassRole separated out and scoped by destination service. Without
   # iam:PassedToService, "pass any talon-dev-* role" means the deploy role can
-  # hand the ECS task role to a service that was never meant to hold it — an
-  # EC2 instance it controls, say — and read every application secret from a
-  # shell. The list is what this architecture actually passes a role to (§9.1,
-  # §9.2, §9.6's NAT instance). An apply failing with AccessDenied on PassRole
-  # means a service is missing from it: add the service here, in the same PR.
+  # hand a role to a service that was never meant to hold it. The list is what
+  # this architecture actually passes a role to (§9.1, §9.2, §9.6's NAT
+  # instance). An apply failing with AccessDenied on PassRole means a service is
+  # missing from it: add the service to local.pass_role_services, in the same PR,
+  # which moves this statement and the boundary's mirror together.
+  #
+  # THIS CONDITION IS NOT SUFFICIENT ON ITS OWN, and the comment that used to sit
+  # here said it was. It named "an EC2 instance it controls" as the thing the
+  # condition prevents — but ec2.amazonaws.com is ON the list, for the NAT
+  # instance. The destination-role pin that actually closes that case is
+  # DenyPassRoleToEc2ExceptEc2Roles in the guardrails below.
   statement {
     sid       = "PassProjectRolesToProjectServices"
     effect    = "Allow"
@@ -101,17 +107,7 @@ data "aws_iam_policy_document" "github_deploy_iam_addendum" {
     condition {
       test     = "StringEquals"
       variable = "iam:PassedToService"
-      values = [
-        "ecs-tasks.amazonaws.com",
-        "ecs.amazonaws.com",
-        "lambda.amazonaws.com",
-        "ec2.amazonaws.com",
-        "events.amazonaws.com",
-        "scheduler.amazonaws.com",
-        "application-autoscaling.amazonaws.com",
-        "monitoring.rds.amazonaws.com",
-        "vpc-flow-logs.amazonaws.com",
-      ]
+      values   = local.pass_role_services
     }
   }
 
@@ -202,17 +198,14 @@ resource "aws_iam_role_policy" "github_deploy_iam_addendum" {
 # ---------------------------------------------------------------------------
 
 data "aws_iam_policy_document" "github_deploy_guardrails" {
+  # Each Deny below is paired with an identical statement in
+  # permissions_boundary.tf, over the shared action lists in locals.tf. That
+  # pairing is the point: a guardrail the deploy role carries but the boundary
+  # does not is a guardrail the deploy role can create a child to walk around.
   statement {
-    sid    = "ProtectTerraformState"
-    effect = "Deny"
-    actions = [
-      "s3:DeleteBucket",
-      "s3:PutBucketVersioning",
-      "s3:DeleteObjectVersion",
-    ]
-    # §9.5: the state bucket is bootstrapped once and never destroyed, and its
-    # versioning IS the recovery path for a corrupted state file. Nothing CI
-    # does should be able to remove either.
+    sid     = "ProtectTerraformState"
+    effect  = "Deny"
+    actions = local.state_bucket_protection_actions
     resources = [
       local.state_bucket_arn,
       "${local.state_bucket_arn}/*",
@@ -220,12 +213,9 @@ data "aws_iam_policy_document" "github_deploy_guardrails" {
   }
 
   statement {
-    sid    = "ProtectStateLockTable"
-    effect = "Deny"
-    actions = [
-      "dynamodb:DeleteTable",
-      "dynamodb:DeleteBackup",
-    ]
+    sid       = "ProtectStateLockTable"
+    effect    = "Deny"
+    actions   = local.state_lock_protection_actions
     resources = [local.state_lock_arn]
   }
 
@@ -318,21 +308,21 @@ data "aws_iam_policy_document" "github_deploy_guardrails" {
   # Scoped to github-* rather than the whole prefix on purpose: the deploy role
   # legitimately manages the application roles, and a CI apply of a future stack
   # that adds one should keep working.
+  #
+  # The action list is local.ci_role_write_actions and it is shared with the
+  # matching statement in permissions_boundary.tf. It is wider than the eight
+  # actions this statement used to name: iam:UpdateRole (raises the role's own
+  # MaxSessionDuration), iam:TagRole / iam:UntagRole (load-bearing under ABAC),
+  # iam:CreateRole (reserves the `-github-` namespace instead of only making a
+  # squatted name unusable) and iam:PassRole (AddRoleToInstanceProfile is
+  # authorized against the profile ARN, so only the PassRole deny stops an EC2
+  # instance being launched wearing this role). See locals.tf for each.
   # ---------------------------------------------------------------------------
   statement {
-    sid    = "DenySelfModificationOfCiRoles"
-    effect = "Deny"
-    actions = [
-      "iam:UpdateAssumeRolePolicy",
-      "iam:PutRolePolicy",
-      "iam:DeleteRolePolicy",
-      "iam:AttachRolePolicy",
-      "iam:DetachRolePolicy",
-      "iam:DeleteRole",
-      "iam:PutRolePermissionsBoundary",
-      "iam:DeleteRolePermissionsBoundary",
-    ]
-    resources = ["arn:${local.partition}:iam::${local.account_id}:role/${local.name}-github-*"]
+    sid       = "DenySelfModificationOfCiRoles"
+    effect    = "Deny"
+    actions   = local.ci_role_write_actions
+    resources = [local.ci_role_arn_pattern]
   }
 
   # ---------------------------------------------------------------------------
@@ -349,28 +339,44 @@ data "aws_iam_policy_document" "github_deploy_guardrails" {
   # between work sessions is routine by design. Denying it here would fight the
   # teardown it is meant to protect — the same mistake as prevent_destroy.
   # ---------------------------------------------------------------------------
+  # The hole iam:PassedToService alone does not close. `ec2.amazonaws.com` is on
+  # the allow-list for §9.6's NAT instance, so "pass any talon-dev-* role to any
+  # allowed service" still permits handing the ECS TASK role to an EC2 instance —
+  # which is a shell with every application secret in it, and is the exact attack
+  # the addendum's comment claims to prevent. Measured before this statement
+  # existed: `iam:PassRole talon-dev-ecs-task` with
+  # `iam:PassedToService=ec2.amazonaws.com` simulated **allowed**.
+  #
+  # NotResource, so only role names reserved for EC2 principals may reach EC2.
+  # Mirrored in permissions_boundary.tf. See local.ec2_pass_role_arn_pattern for
+  # the naming contract this places on stacks/ephemeral.
   statement {
-    sid    = "DenyDestroyingStatefulResources"
-    effect = "Deny"
-    actions = [
-      "cognito-idp:DeleteUserPool",
-      "rds:DeleteDBCluster",
-    ]
+    sid           = "DenyPassRoleToEc2ExceptEc2Roles"
+    effect        = "Deny"
+    actions       = ["iam:PassRole"]
+    not_resources = [local.ec2_pass_role_arn_pattern]
+
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values   = ["ec2.amazonaws.com"]
+    }
+  }
+
+  statement {
+    sid       = "DenyDestroyingStatefulResources"
+    effect    = "Deny"
+    actions   = local.stateful_delete_actions
     resources = ["*"]
   }
 
   statement {
     sid    = "DenyAccountAndOrganizationChanges"
     effect = "Deny"
-    actions = [
-      "organizations:*",
-      "controltower:*",
-      "account:CloseAccount",
-      "account:PutAlternateContact",
-    ]
     # This is a shared company account and joining an Organization or standing
     # up Control Tower is explicitly out of scope (§9.5). PowerUserAccess
     # already excludes most of this; the Deny makes it non-negotiable.
+    actions   = local.account_org_actions
     resources = ["*"]
   }
 
@@ -378,38 +384,10 @@ data "aws_iam_policy_document" "github_deploy_guardrails" {
     for_each = var.restrict_deploy_regions ? [1] : []
 
     content {
-      sid    = "DenyOutsideAllowedRegions"
-      effect = "Deny"
-      # Global and global-endpoint services are excluded because they either
-      # ignore aws:RequestedRegion or are only addressable from us-east-1.
-      # If an apply fails with AccessDenied on a service that belongs on this
-      # list, add it here in the same PR rather than disabling the guard.
-      not_actions = [
-        "iam:*",
-        "sts:*",
-        "organizations:*",
-        "account:*",
-        "cloudfront:*",
-        "route53:*",
-        "route53domains:*",
-        "acm:*",
-        "waf:*",
-        "wafv2:*",
-        "shield:*",
-        "budgets:*",
-        "ce:*",
-        "cur:*",
-        "pricing:*",
-        "support:*",
-        "trustedadvisor:*",
-        "health:*",
-        "globalaccelerator:*",
-        "ecr-public:*",
-        "s3:ListAllMyBuckets",
-        "s3:GetAccountPublicAccessBlock",
-        "s3:PutAccountPublicAccessBlock",
-      ]
-      resources = ["*"]
+      sid         = "DenyOutsideAllowedRegions"
+      effect      = "Deny"
+      not_actions = local.region_exempt_actions
+      resources   = ["*"]
 
       condition {
         test     = "StringNotEquals"
