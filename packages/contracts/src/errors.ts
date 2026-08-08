@@ -90,6 +90,15 @@ export const ERROR_TYPES = {
    * would prompt for a reason, and no reason can ever satisfy this branch.
    */
   NOT_A_BOARD_MOVE: 'urn:talon:error:not-a-board-move',
+  /**
+   * The import row exists and the caller may see it, but its uploaded object does not
+   * (spec 008 §8 case 11). Deliberately distinct from NOT_FOUND: collapsing them makes
+   * "you may not have this" and "this is not ready yet" indistinguishable, and the
+   * client's answer differs — one is an error, the other is "upload it again".
+   */
+  IMPORT_FILE_MISSING: 'urn:talon:error:import-file-missing',
+  /** Commit was requested before the mandatory validation preview completed. */
+  IMPORT_DRY_RUN_REQUIRED: 'urn:talon:error:import-dry-run-required',
   INTERNAL: 'urn:talon:error:internal',
 } as const;
 

@@ -223,5 +223,39 @@ export {
   type ReportsOverview,
 } from './people.js';
 
+export {
+  // Async jobs (spec 008 §4)
+  AsyncJobStatusSchema,
+  type AsyncJobStatus,
+  AsyncJobSchema,
+  type AsyncJob,
+
+  // CSV import (spec 008 §6)
+  CreateImportRequestSchema,
+  type CreateImportRequest,
+  CreateImportResponseSchema,
+  type CreateImportResponse,
+  DelimiterSchema,
+  EncodingSchema,
+  ImportAnalysisSchema,
+  type ImportAnalysis,
+  ImportFieldSchema,
+  type ImportField,
+  DuplicateStrategySchema,
+  type DuplicateStrategy,
+  ImportMappingSchema,
+  type ImportMapping,
+  RowIssueSchema,
+  type RowIssue,
+  DuplicateMatchSchema,
+  type DuplicateMatch,
+  DryRunReportSchema,
+  type DryRunReport,
+  ImportParamsSchema,
+  type ImportParams,
+  CommitImportResponseSchema,
+  type CommitImportResponse,
+} from './imports.js';
+
 export { ProblemSchema, type Problem } from './problem.js';
 export { ERROR_TYPES, type ErrorType } from './errors.js';

@@ -132,6 +132,9 @@ export interface Fixtures {
     stageId: string;
     nextStageId: string;
     stageTemplateId: string;
+    /** A talon import row, so the id-addressed import routes have something real for a
+     *  hostile tenant to name and the owner to reach (spec 008). */
+    importId: string;
   };
   acme: { tenantId: string; admin: Person; jobId: string };
 }
@@ -154,6 +157,12 @@ export async function loadFixtures(): Promise<Fixtures> {
     const [talonJob] = await sql<{ id: string; req_code: string }[]>`
       select id, req_code from jobs where req_code = 'ENG-204'`;
     const [acmeJob] = await sql<{ id: string }[]>`select id from jobs where req_code = 'ACM-001'`;
+    // Owner connection, so this bypasses RLS the way the rest of this fixture loader does.
+    const [talonImport] = await sql<{ id: string }[]>`
+      insert into jobs_async (id, tenant_id, kind, status, params, created_by)
+      values (gen_random_uuid(), ${talonTenant?.id ?? null}, 'import', 'pending', '{}'::jsonb,
+              ${find('maya@taloninc.com').id})
+      returning id`;
     const [talonApplication] = await sql<{ id: string; current_stage_id: string }[]>`
       select a.id, a.current_stage_id from applications a
       join job_stages js on js.id = a.current_stage_id
@@ -186,6 +195,7 @@ export async function loadFixtures(): Promise<Fixtures> {
         applicationId: talonApplication.id,
         stageId: talonApplication.current_stage_id,
         nextStageId: talonNextStage.id,
+        importId: talonImport?.id as string,
         stageTemplateId: talonTemplate.id,
       },
       acme: { tenantId: acmeTenant.id, admin: find('beth@acme.test'), jobId: acmeJob.id },
