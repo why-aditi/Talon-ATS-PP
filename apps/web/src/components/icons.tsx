@@ -118,3 +118,24 @@ export const ChevronDownIcon = (p: IconProps) => (
     <path d="m4.5 6.5 3.5 3.5 3.5-3.5" />
   </Icon>
 );
+
+/**
+ * The 2×3 dot grip at the bottom-right of a kanban card. Filled rather than stroked —
+ * at 1.1px radius a stroked circle is mostly outline and reads as grey mush.
+ */
+export const GripIcon = ({ className }: IconProps) => (
+  <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true" focusable="false" className={className}>
+    {[5.5, 8, 10.5].map((cy) => (
+      <g key={cy}>
+        <circle cx="6" cy={cy} r="1.1" />
+        <circle cx="10" cy={cy} r="1.1" />
+      </g>
+    ))}
+  </svg>
+);
+
+export const PlusIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M8 3.5v9M3.5 8h9" />
+  </Icon>
+);

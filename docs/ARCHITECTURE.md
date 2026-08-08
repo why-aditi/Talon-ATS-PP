@@ -538,14 +538,26 @@ infra/terraform/
     compute/        ECR, ECS cluster, task definitions, services, autoscaling
     edge/           CloudFront, WAF, ACM, Route 53
     observability/  log groups, dashboards, alarms, SNS
-  envs/
-    dev/            main.tf, backend.tf, terraform.tfvars
-    staging/
-    prod/
+  stacks/
+    iam/            GitHub OIDC provider, CI plan + deploy roles, ECS and
+                    Lambda roles, the project permissions boundary.
+                    Applied by a human, never by CI — see below.
+    persistent/     Cognito, S3, ECR, KMS — apply once (§9.6)
+    ephemeral/      VPC, NAT, RDS, Redis, ECS, ALB — destroy between sessions
   global/
     state/          S3 state bucket + DynamoDB lock table (bootstrapped once)
-    oidc/           GitHub OIDC provider + per-account deploy roles
 ```
+
+**`stacks/` supersedes the earlier `envs/{dev,staging,prod}/` + `global/oidc/`
+layout**, and the reason is §9.6 rather than taste: splitting by *lifetime* is
+what makes routine teardown cheap and safe, and a per-environment root module
+cuts across that split — `envs/dev/` would have to hold both the Cognito pool
+that must survive teardown and the NAT gateway that must not. Environments
+remain separated by name prefix and tag inside one account, so a second
+environment is `-var env=staging` against the same stacks with its own state
+key, which is what `envs/` was for. `global/oidc/` is folded into `stacks/iam`:
+there is exactly one OIDC provider per account and it is the trust anchor for
+the roles in that stack, so separating them only meant two places to read.
 
 **State:** S3 backend with versioning and a DynamoDB lock table, one key per environment. The state bucket is bootstrapped separately in `global/state` and never destroyed — chicken-and-egg, so it gets created once by hand and then left alone.
 
