@@ -15,6 +15,7 @@ it('up → down → up (run in global setup) left a fully migrated, seeded datab
       '0004_users_external_id',
       '0005_audit_authentication',
       '0006_outbox',
+      '0007_definer_rls_exemption',
     ]);
     // 0002 dropped users.avatar_color — the UI hashes the id over the avatar.1–8
     // token palette, so a stored hex has no reader (CLAUDE.md §4.8).
@@ -45,6 +46,18 @@ it('up → down → up (run in global setup) left a fully migrated, seeded datab
       // it execute someone else's `users` — or write someone else's audit_log.
       expect(definer.proconfig, definer.proname).toContain('search_path=pg_catalog, public');
     }
+    // 0006's two exception policies, pinned by SHAPE rather than by existence.
+    // The one on audit_log must stay INSERT-only: a `using` clause on it would
+    // hand the owner a way to READ every tenant's audit rows, which is a
+    // different and much larger change than letting the sign-in writer write.
+    const exceptions = await sql<{ tablename: string; cmd: string; qual: string | null }[]>`
+      select tablename, cmd, qual from pg_policies
+      where schemaname = 'public' and policyname in ('auth_bootstrap_read', 'audit_sign_in_write')
+      order by policyname`;
+    expect(exceptions).toHaveLength(2);
+    expect(exceptions[0]).toMatchObject({ tablename: 'audit_log', cmd: 'INSERT', qual: null });
+    expect(exceptions[1]?.tablename).toBe('users');
+    expect(exceptions[1]?.cmd).toBe('SELECT');
     // 0004 retyped auth_user_by_sub's parameter uuid → text. Pinned here because
     // the signature is what the repository's cast has to agree with: while it was
     // uuid, a non-UUID subject raised 22P02 before the lookup ran.

@@ -139,6 +139,8 @@ Sign-in runs **before** tenant context exists. There is no `openTenantTransactio
 
 **Narrow means narrow.** The function can only ever produce one of two rows: `auth.sign_in.succeeded` or `auth.sign_in.failed`, `entity_type` fixed to `authentication`, no caller-chosen action, no caller-chosen entity, no `before` state, and every column the caller has no legitimate say in decided inside the function. An outcome that is neither value raises; a `succeeded` without a tenant and an actor raises, because it would be written with a null tenant and vanish from the trail its own tenant would read.
 
+As shipped in 0005 that last clause over-claimed: `tenant_id` and `actor_id` on the success path were taken from the caller and only checked for null, so `talon_app` could name any tenant and any actor. Closed in `0007_definer_rls_exemption` — the function now reads the actor's tenant from `users` and writes **that**, raising if it disagrees with the tenant it was passed. See §12.6.
+
 ### 12.3 What is recorded, and what deliberately is not
 
 | Field | Value |
@@ -164,3 +166,22 @@ The trade is deliberate and worth naming: `audit_sign_in` is now a hard dependen
 ### 12.5 Not covered
 
 `POST /v1/auth/refresh` writes no audit row. It is an authentication event and should have one, but its "attempted identity" is a token that must not be logged, and the failure case carries nothing but an IP — a different design question, deliberately not answered in the same change. **Owner: api.** Sign-out does not exist server-side yet (spec 001 §7b: the web BFF clears its cookie), so there is nothing to record.
+
+### 12.6 `security definer` is not an exemption from `force row level security` (fixed 2026-08-08, migration `0007_definer_rls_exemption`)
+
+§12.2 chose a `security definer` writer, and §11b had already chosen two `security definer` readers, on an assumption nobody wrote down: that a definer function is exempt from the policies on the tables it touches. It is not. `FORCE` subjects the table's **owner** to the policy, and a definer runs **as the owner** — so the exemption comes from the owner holding `BYPASSRLS` or being a superuser, not from `security definer` at all.
+
+Locally the migration role is `talon`, which is both, so every test passed. The RDS/Aurora master user is neither, which is the shape this spec exists to deploy onto. On that shape, before 0006:
+
+* `audit_sign_in` raised `42501` on **both** paths — the null-tenant failure row because the `WITH CHECK` is `NULL`, and the success row because sign-in runs before `app.tenant_id` is set, so the check compares against `NULL` there too. The write is fail-closed by §12.4, so that is not a degraded audit trail: it is **HTTP 500 on every sign-in**;
+* `auth_user_by_sub` returned zero rows, so every authenticated request would 401 as an unknown subject even if a token could be minted.
+
+0003's header had already named the choice — "the Aurora role in spec 002 must carry `BYPASSRLS` or own an exception policy" — and neither branch was ever taken. `0007` takes the second: two policies, `auth_bootstrap_read` (SELECT on `users`) and `audit_sign_in_write` (INSERT on `audit_log`, restricted to the two authentication row shapes). Each admits the conjunction of *`current_user` is the table's owner* — which `talon_app` can never be, and which carries the security weight — and *a marker GUC the definer functions set `LOCAL`*, which is forgeable by anyone and is there only to keep FORCE's backstop against an owner-connected session that has not deliberately opted in.
+
+**The marker is confined by the explicit resets, not by the `SET search_path` clause.** A `SET` clause on a function restores only the variable it names; it does not confine a different GUC set with `SET LOCAL` in the body. Every success path clears the marker explicitly and (sub)transaction rollback covers the error paths — so removing a reset silently keeps an owner session's widened read alive for the rest of its transaction. The migration header says the same thing at the line where someone would delete it, and the test asserts it.
+
+`BYPASSRLS` on the migration role was refused as the alternative: it is not grantable on a managed instance without a superuser session to start the chain, and it would let the role that runs migrations read and write past every policy in the schema, permanently, to buy an exemption three functions need. A dedicated `BYPASSRLS` function owner from provisioning was refused for the same reason plus CLAUDE.md §4.11 (migrations never create roles).
+
+**The blindness was the defect.** Every suite in the repo migrates as `talon`, so no test could see this class at all. `packages/db/test/non-superuser-owner.test.ts` now builds the hostile shape on purpose — a `nosuperuser nobypassrls` role owning its own database, the real migrations applied by it, the real calls made as `talon_app` — and asserts both audit rows are written, the bootstrap read resolves, and the marker is useless to `talon_app`.
+
+**Still true after 0006:** a null-tenant `audit_log` row is readable by nobody through RLS. Under a superuser owner the owner connection sees it anyway; on Aurora nothing will, until §12.3's deferred "reader on the owner side" exists. `pnpm db:seed` and `seed:identities` also write `users` as the owner and are subject to the same rule — they fail loudly rather than silently, and neither runs on the request path, so 0006 deliberately does not widen anything for them.
