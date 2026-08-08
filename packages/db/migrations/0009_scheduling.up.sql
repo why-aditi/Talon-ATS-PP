@@ -209,6 +209,21 @@ create table interviews (
   constraint interviews_schedule_order_ck check (
     scheduled_end is null or scheduled_end > scheduled_start
   ),
+  -- The row states its duration twice — `duration_min` and the span — and until this check
+  -- nothing reconciled them: duration_min = 45 with a 10:00–11:00 span satisfied every
+  -- other constraint on the table. That is precisely the "slot that quietly rounds" the
+  -- duration_min comment above claims to prevent, arriving by a different door.
+  --
+  -- `scheduled_end is null` first, so this says nothing about null-ness: the pair check
+  -- already forbids half a span and the committed check already forbids no span on a
+  -- committed row. An unscheduled or cancelled round passes here trivially.
+  --
+  -- make_interval(mins => ...) yields a pure time interval with no day or month field, so
+  -- the addition is an exact number of seconds on the UTC instant and does not shift at a
+  -- DST boundary — an interval '1 day' here would.
+  constraint interviews_schedule_span_ck check (
+    scheduled_end is null or scheduled_end = scheduled_start + make_interval(mins => duration_min)
+  ),
   -- A confirmed interview with no time is the state that lets a candidate be told to
   -- show up at nothing.
   constraint interviews_scheduled_when_committed_ck check (

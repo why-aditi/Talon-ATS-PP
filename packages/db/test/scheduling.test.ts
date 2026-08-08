@@ -221,6 +221,29 @@ describe('the solver grid is a schema constraint, not a convention', () => {
     });
   });
 
+  it('a span that disagrees with duration_min is rejected', async () => {
+    // The row states its duration twice. Before interviews_schedule_span_ck, a 45-minute
+    // interview with a 60-minute span satisfied every check on the table — an on-grid
+    // duration column sitting above an off-grid span, which is the same silent rounding
+    // the grid check exists to stop, arriving by a different door.
+    const insert = (tx: postgres.TransactionSql, durationMin: number, spanMin: number) => tx`
+      insert into interviews (id, tenant_id, application_id, loop_id, round_id, kind,
+                              duration_min, scheduled_start, scheduled_end, status)
+      values (${randomUUID()}, ${ids.talon}, ${ids.anaApplication}, ${ids.anaLoop},
+              ${ids.anaUnscheduledRound}, 'values', ${durationMin}, now(),
+              now() + make_interval(mins => ${spanMin}), 'confirmed')
+      returning id`;
+
+    await rejectsWith('23514', (tx) => insert(tx, 45, 60));
+
+    // The positive control: the same insert differing only in the mismatch. Every check on
+    // this table raises 23514, so without this the assertion above would still pass if the
+    // row were being refused for an unrelated reason and the span check never existed.
+    await inRolledBackTx(async (tx) => {
+      expect(await insert(tx, 45, 45)).toHaveLength(1);
+    });
+  });
+
   it('two rounds cannot occupy the same position in a loop', async () => {
     await rejectsWith('23505', (tx) => tx`
       insert into interview_rounds (id, tenant_id, loop_id, kind, duration_min, position)
