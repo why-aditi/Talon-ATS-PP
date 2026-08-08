@@ -95,6 +95,7 @@ import {
   type AuthResult,
   type CreateUserInput,
   type IdentityProvider,
+  type UnprovisionedSubject,
   type VerifiedIdentity,
 } from './provider.js';
 import type { IdentityRepository, UserRecord } from './repository.js';
@@ -361,13 +362,11 @@ export class CognitoIdentityProvider implements IdentityProvider {
     }
 
     const claims = await this.#verifyIdToken(result.idToken);
-    const sub = claims['sub'];
-    if (typeof sub !== 'string' || sub === '') {
-      throw new IdentityFailure('invalid_token', 'The id token is missing its subject.');
-    }
+    const subject = subjectOf(claims);
+    const sub = subject.sub;
     // Claims are re-read from `users`, never carried over from the old session:
     // a role or tenant change takes effect at the next refresh.
-    const user = await this.#requireUser(sub);
+    const user = await this.#requireUser(subject);
     // `auth_time` is when the *session* began, which is the right thing to
     // compare against `tokens_valid_after`; `iat` is when this refresh happened
     // and would defeat the switch entirely, because it is always "now".
@@ -537,11 +536,9 @@ export class CognitoIdentityProvider implements IdentityProvider {
    */
   async exchangeIdToken(idToken: string, refreshToken: string): Promise<AuthResult> {
     const claims = await this.#verifyIdToken(idToken);
-    const sub = claims['sub'];
-    if (typeof sub !== 'string' || sub === '') {
-      throw new IdentityFailure('invalid_token', 'The id token is missing its subject.');
-    }
-    const user = await this.#requireUser(sub);
+    const subject = subjectOf(claims);
+    const sub = subject.sub;
+    const user = await this.#requireUser(subject);
     // `auth_time` is when the SESSION began, which is what `tokens_valid_after`
     // compares against; `iat` is when this token was minted and would defeat the
     // switch entirely. Same choice `refreshSession` makes, for the same reason.
@@ -567,13 +564,10 @@ export class CognitoIdentityProvider implements IdentityProvider {
 
   async #userForIdToken(idToken: string): Promise<{ sub: string; user: UserRecord }> {
     const claims = await this.#verifyIdToken(idToken);
-    const sub = claims['sub'];
-    if (typeof sub !== 'string' || sub === '') {
-      throw new IdentityFailure('invalid_token', 'The id token is missing its subject.');
-    }
+    const sub = subjectOf(claims);
     // The sub travels with the user because it, not `users.id`, is what the
     // access token has to name — see `session.ts`.
-    return { sub, user: await this.#requireUser(sub) };
+    return { sub: sub.sub, user: await this.#requireUser(sub) };
   }
 
   /**
@@ -581,14 +575,25 @@ export class CognitoIdentityProvider implements IdentityProvider {
    * row, and everything the token then says about tenancy and role comes from
    * that row. `auth_user_by_sub` (migration 0004) matches `users.external_id`.
    */
-  async #requireUser(sub: string): Promise<UserRecord> {
-    const user = await this.#repository.findUserBySub(sub);
+  async #requireUser(subject: UnprovisionedSubject): Promise<UserRecord> {
+    const user = await this.#repository.findUserBySub(subject.sub);
     if (!user) {
       // Cognito authenticated them; this deployment has nobody for them to be.
       // §9 edge case 1 — an operator problem, and no amount of retyping a
       // password fixes it. Under Cognito this is also the symptom of a users
       // row whose `external_id` was never pointed at the allocated sub.
-      throw new IdentityFailure('user_not_provisioned', 'No user record exists for this identity.');
+      //
+      // The verified identity rides along on the failure so `service.ts` can
+      // consult the just-in-time allow-list and, if it says so, create the row
+      // and have this run again. The adapter does not know that feature exists —
+      // it still reports the same code with the same detail, and with the
+      // allow-list empty (the default) nothing downstream behaves differently.
+      throw new IdentityFailure(
+        'user_not_provisioned',
+        'No user record exists for this identity.',
+        undefined,
+        subject,
+      );
     }
     return user;
   }
@@ -624,4 +629,52 @@ function subOf(
   const sub = attributes?.find((attribute) => attribute.Name === 'sub')?.Value;
   if (!sub) throw new Error('Cognito returned a user with no sub attribute');
   return sub;
+}
+
+const claimString = (claims: Record<string, unknown>, name: string): string | undefined => {
+  const value = claims[name];
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
+};
+
+/**
+ * The verified identity, reduced to the three things a `users` row needs.
+ *
+ * Extracted from the three places that each did the `sub` check by hand, because
+ * this is now also the input to just-in-time provisioning and the checks have to
+ * be the same in all three — a path that skipped one would create a row from a
+ * claim nobody validated.
+ *
+ * `email` is NOT required here: an id token with no email claim is still a
+ * perfectly valid sign-in for an already-provisioned user (the join is on `sub`),
+ * and refusing it would break existing sessions to serve a feature that is off by
+ * default. It is the *provisioning* side that requires one — a `users` row with
+ * no email is unrepresentable, and `service.ts` refuses rather than inventing one.
+ *
+ * `email_verified` is deliberately not consulted, and that is a considered
+ * decision rather than an oversight. The pool's Google IdP does not map it
+ * (infra/terraform/stacks/persistent/cognito_google_idp.tf maps `email`, `name`
+ * and `username` only), so it is `false` for exactly the federated population
+ * just-in-time provisioning exists to serve. What actually establishes control of
+ * the address is the pool's own configuration — `auto_verified_attributes =
+ * ["email"]` means a self-signed-up native user cannot authenticate until they
+ * confirm a code sent to that address, and a federated user's address was
+ * verified by the upstream IdP. The trust decision is the operator's allow-list,
+ * which is why it is off by default and why the boot log names every entry.
+ */
+function subjectOf(claims: Record<string, unknown>): UnprovisionedSubject {
+  const sub = claimString(claims, 'sub');
+  if (sub === undefined) {
+    throw new IdentityFailure('invalid_token', 'The id token is missing its subject.');
+  }
+  const given = claimString(claims, 'given_name');
+  const family = claimString(claims, 'family_name');
+  return {
+    sub,
+    email: claimString(claims, 'email') ?? '',
+    // Cognito's Google mapping fills `name`; a native user created by
+    // `seed:identities` carries none, and neither does a SAML NameID-only
+    // subject. `service.ts` falls back to the email's local part rather than
+    // writing an empty `users.name`.
+    name: claimString(claims, 'name') ?? (given && family ? `${given} ${family}` : given ?? family),
+  };
 }

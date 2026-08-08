@@ -70,6 +70,24 @@ export type IdentityFailureCode =
   | 'not_implemented';
 
 /**
+ * Who the provider just authenticated, when this deployment has nobody for them
+ * to be. Attached to a `user_not_provisioned` failure so the service can decide
+ * whether the allow-list says to create them (just-in-time provisioning).
+ *
+ * NEVER leaves the module: `asProblem` in service.ts builds a fresh `HttpProblem`
+ * and copies nothing from here. A 401 that named the address it had just verified
+ * would be an account-enumeration oracle wearing a helpful error message.
+ */
+export interface UnprovisionedSubject {
+  /** The IdP's subject — what `users.external_id` would point at. */
+  sub: string;
+  /** The verified email claim, exactly as the token carried it. */
+  email: string;
+  /** Best available display name from the token, or undefined if it carried none. */
+  name: string | undefined;
+}
+
+/**
  * Provider-agnostic failure. Adapters translate their own errors into these;
  * `service.ts` translates these into problem+json. A Cognito SDK exception must
  * never reach a route handler.
@@ -85,6 +103,14 @@ export class IdentityFailure extends Error {
      * invent "immediately" are what turns a throttle into an outage.
      */
     readonly retryAfterSeconds?: number,
+    /**
+     * Meaningful only for `user_not_provisioned`, and only when the adapter got
+     * far enough to have a verified identity in hand. Its presence is what makes
+     * just-in-time provisioning possible without the provider knowing anything
+     * about tenants, allow-lists or transactions — all of which belong to
+     * `service.ts` (CLAUDE.md §3: transactions begin there and nowhere else).
+     */
+    readonly subject?: UnprovisionedSubject,
   ) {
     super(detail ?? code);
     this.name = 'IdentityFailure';
