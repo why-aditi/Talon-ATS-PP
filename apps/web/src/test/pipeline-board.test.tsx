@@ -206,14 +206,15 @@ describe('states', () => {
 });
 
 describe('the pictured-but-unbuilt controls', () => {
-  it('disables the ones with no endpoint, and enables the one that has one', async () => {
+  it('enables the controls whose endpoints exist, and disables the rest', async () => {
     renderBoard();
     await screen.findByText('Tess Bianchi');
 
-    // PATCH /v1/jobs/:id exists now, so this opens a real editor. The rest still
-    // have nothing behind them and stay out of the tab order.
+    // Both have endpoints now — PATCH /v1/jobs/:id and POST /v1/applications —
+    // so both open real forms. What stays disabled is what still has nothing
+    // behind it, and those remain out of the tab order rather than dead stops.
     expect(screen.getByRole('button', { name: 'Edit job' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: '+ Add candidate' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '+ Add candidate' })).toBeEnabled();
     expect(screen.getByRole('button', { name: 'Job details' })).toBeDisabled();
     for (const button of screen.getAllByRole('button', { name: /^Add a candidate to/ })) {
       expect(button).toBeDisabled();

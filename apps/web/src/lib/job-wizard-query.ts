@@ -1,5 +1,12 @@
 import { ListStageTemplatesResponseSchema, ListUsersResponseSchema } from '@talon/contracts';
-import { JobSchema, type Job, type StageTemplate, type UserSummary } from '@talon/contracts';
+import {
+  CreateApplicationResponseSchema,
+  JobSchema,
+  type CreateApplicationResponse,
+  type Job,
+  type StageTemplate,
+  type UserSummary,
+} from '@talon/contracts';
 import { useQuery } from '@tanstack/react-query';
 import { useSession } from './session';
 
@@ -183,4 +190,38 @@ export async function updateJob(
     );
   }
   return JobSchema.parse(body);
+}
+
+/**
+ * POST /v1/applications — spec 005 §4.5.
+ *
+ * Returns the created card and the stage it landed on; the board refetches
+ * rather than inserting it, because counts, medians and the distribution are all
+ * derived and would go stale if only the card were spliced in.
+ */
+export async function createApplication(
+  payload: unknown,
+  accessToken: string | undefined,
+): Promise<CreateApplicationResponse> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/v1/applications`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json',
+        ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    throw new JobWriteError('urn:talon:client:network', 0);
+  }
+
+  const body: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const problem = (body ?? {}) as { type?: string; detail?: string };
+    throw new JobWriteError(problem.type ?? 'urn:talon:error:internal', response.status, problem.detail);
+  }
+  return CreateApplicationResponseSchema.parse(body);
 }
