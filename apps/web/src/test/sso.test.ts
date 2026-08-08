@@ -171,7 +171,7 @@ describe('GET /api/auth/sso/callback', () => {
     jar.current.set(VERIFIER_COOKIE, 'verifier');
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input);
-      if (url.includes('/oauth2/token')) return Response.json({ id_token: 'an-id-token' });
+      if (url.includes('/oauth2/token')) return Response.json({ id_token: 'an-id-token', refresh_token: 'a-refresh-token' });
       return Response.json({ type: ERROR_TYPES.USER_NOT_PROVISIONED, status: 403 }, { status: 403 });
     });
 
@@ -196,12 +196,23 @@ describe('GET /api/auth/sso/callback', () => {
         timezone: 'America/Los_Angeles',
       },
     };
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) =>
-      String(input).includes('/oauth2/token') ? Response.json({ id_token: 'an-id-token' }) : Response.json(session),
-    );
+    let sent: unknown;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      if (String(input).includes('/oauth2/token')) {
+        return Response.json({ id_token: 'an-id-token', refresh_token: 'a-refresh-token' });
+      }
+      sent = JSON.parse(String(init?.body));
+      return Response.json(session);
+    });
 
     const { GET } = await import('../app/api/auth/sso/callback/route');
     const response = await GET(callback('code=c&state=state'));
+
+    // BOTH tokens go to the api. The refresh token stays Cognito's — the api hands it
+    // straight back as the session's long-lived half, which is what makes a global
+    // sign-out actually end a federated session. Forwarding only the id token leaves
+    // the api unable to answer `SignInResponseSchema` at all.
+    expect(sent).toEqual({ idToken: 'an-id-token', refreshToken: 'a-refresh-token' });
 
     expect(response.headers.get('location')).toBe('https://app.talon.test/jobs');
     // Same treatment as the password path: httpOnly, so the browser holds the

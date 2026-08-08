@@ -58,6 +58,9 @@ export function testConfig(overrides: { poolMax?: number } = {}): ApiConfig {
 export interface TestApp {
   app: FastifyInstance;
   container: AwilixContainer<Cradle>;
+  /** The fake Cognito this app is pointed at. Exposed so a test can mint an id token
+   *  for the federated sign-in path, which has no other way to obtain one. */
+  stub: CognitoStub;
   close(): Promise<void>;
 }
 
@@ -71,7 +74,7 @@ export interface StartAppOptions {
 }
 
 export async function startApp(overrides: StartAppOptions = {}): Promise<TestApp> {
-  await acquireStub();
+  const cognito = await acquireStub();
   const config = testConfig(overrides);
   const container = buildContainer(config);
   const { onQuery } = overrides;
@@ -93,6 +96,7 @@ export async function startApp(overrides: StartAppOptions = {}): Promise<TestApp
   return {
     app,
     container,
+    stub: cognito,
     async close() {
       await app.close();
       await container.cradle.sql.end();

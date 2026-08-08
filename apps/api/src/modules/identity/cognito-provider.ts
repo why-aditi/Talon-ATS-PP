@@ -523,6 +523,48 @@ export class CognitoIdentityProvider implements IdentityProvider {
     }
   }
 
+  /**
+   * Federated sign-in — composition, not a new authentication mechanism.
+   *
+   * The browser already proved the identity to Google and Cognito already minted
+   * tokens for it, so `AdminInitiateAuth` — the only part of the password path that
+   * calls Cognito's API — simply does not apply. What remains is the verification and
+   * session-issuing path the password flow already runs.
+   *
+   * `#verifyIdToken` runs `JwksVerifier` with `tokenUse: 'id'` and the app-client
+   * `audience`, so an ACCESS token presented here is refused rather than accepted as
+   * a stronger credential than it is.
+   */
+  async exchangeIdToken(idToken: string, refreshToken: string): Promise<AuthResult> {
+    const claims = await this.#verifyIdToken(idToken);
+    const sub = claims['sub'];
+    if (typeof sub !== 'string' || sub === '') {
+      throw new IdentityFailure('invalid_token', 'The id token is missing its subject.');
+    }
+    const user = await this.#requireUser(sub);
+    // `auth_time` is when the SESSION began, which is what `tokens_valid_after`
+    // compares against; `iat` is when this token was minted and would defeat the
+    // switch entirely. Same choice `refreshSession` makes, for the same reason.
+    this.#assertNotInvalidated(user, claims['auth_time'] ?? claims['iat']);
+
+    return {
+      status: 'authenticated',
+      tokens: {
+        // The same call the password path makes. One claim-shape source (§6.2) is
+        // what keeps a federated session indistinguishable from a password one
+        // everywhere downstream — nothing after this point can tell them apart.
+        accessToken: issueAccessToken(user, this.#config, nowSeconds(), sub),
+        // Cognito's, not ours: leaving the long-lived half under Cognito's control is
+        // what makes `AdminUserGlobalSignOut` or disabling a user actually end the
+        // session, rather than waiting out a token we issued.
+        refreshToken,
+        tokenType: 'Bearer',
+        expiresIn: this.#config.accessTtlSeconds,
+      },
+      user: toSessionUser(user),
+    };
+  }
+
   async #userForIdToken(idToken: string): Promise<{ sub: string; user: UserRecord }> {
     const claims = await this.#verifyIdToken(idToken);
     const sub = claims['sub'];

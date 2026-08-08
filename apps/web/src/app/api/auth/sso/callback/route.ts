@@ -45,6 +45,7 @@ export async function GET(request: Request): Promise<Response> {
   }
 
   let idToken: string;
+  let refreshToken: string;
   try {
     const token = await fetch(`${config.domain}/oauth2/token`, {
       method: 'POST',
@@ -59,9 +60,14 @@ export async function GET(request: Request): Promise<Response> {
       cache: 'no-store',
     });
     if (!token.ok) return back('failed', origin);
-    const body = (await token.json()) as { id_token?: string };
-    if (!body.id_token) return back('failed', origin);
+    // Both tokens, from the same exchange. The refresh token is Cognito's and stays
+    // Cognito's — the api hands it straight back as the session's long-lived half, so
+    // disabling a user or a global sign-out actually ends a federated session instead
+    // of waiting out a token we minted.
+    const body = (await token.json()) as { id_token?: string; refresh_token?: string };
+    if (!body.id_token || !body.refresh_token) return back('failed', origin);
     idToken = body.id_token;
+    refreshToken = body.refresh_token;
   } catch {
     return back('failed', origin);
   }
@@ -73,7 +79,7 @@ export async function GET(request: Request): Promise<Response> {
     session = await fetch(`${API_URL}/v1/auth/sso`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', accept: 'application/json' },
-      body: JSON.stringify({ idToken }),
+      body: JSON.stringify({ idToken, refreshToken }),
       cache: 'no-store',
     });
   } catch {

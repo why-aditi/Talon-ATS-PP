@@ -112,6 +112,25 @@ export type SignInRequest = z.infer<typeof SignInRequestSchema>;
 /** Policy for setting a password (provisioning). 12 chars, no composition rules. */
 export const NewPasswordSchema = z.string().min(12).max(256);
 
+/**
+ * A completed Cognito hosted-UI flow (spec 004 §11.2).
+ *
+ * Both tokens come from the same `/oauth2/token` exchange and are sent server to
+ * server by the web app's callback route — neither reaches the browser, which is why
+ * there is no CSRF concern on this endpoint and no cookie in the exchange.
+ *
+ * DEVIATION from §11.2, which specified `{ idToken }` alone. That cannot work:
+ * `SsoResponseSchema` is `SignInResponseSchema`, whose `refreshToken` is required,
+ * and an id token carries no refresh token. Cognito issues one in the same response;
+ * the callback simply was not forwarding it. Taking it here keeps the refresh token
+ * Cognito's — the same property the password path relies on, and what makes
+ * `AdminUserGlobalSignOut` actually end a federated session.
+ */
+export const SsoRequestSchema = z
+  .object({ idToken: z.string().min(1), refreshToken: z.string().min(1).max(4096) })
+  .strict();
+export type SsoRequest = z.infer<typeof SsoRequestSchema>;
+
 export const RefreshRequestSchema = z
   .object({ refreshToken: z.string().min(1).max(4096) })
   .strict();
@@ -186,3 +205,13 @@ export const ListUsersResponseSchema = z.object({
   data: z.array(UserSummarySchema),
 });
 export type ListUsersResponse = z.infer<typeof ListUsersResponseSchema>;
+
+/**
+ * Identical to sign-in: same tokens, same user, same session semantics.
+ *
+ * Reused rather than declared in parallel — the web callback already parses with it,
+ * and a session that differs by how it was obtained is a session two code paths have
+ * to handle forever (spec 004 §11.2).
+ */
+export const SsoResponseSchema = SignInResponseSchema;
+export type SsoResponse = z.infer<typeof SsoResponseSchema>;

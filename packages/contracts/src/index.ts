@@ -54,6 +54,10 @@ export {
   NewPasswordSchema,
   RefreshRequestSchema,
   type RefreshRequest,
+  SsoRequestSchema,
+  type SsoRequest,
+  SsoResponseSchema,
+  type SsoResponse,
 
   // Responses
   SessionUserSchema,
