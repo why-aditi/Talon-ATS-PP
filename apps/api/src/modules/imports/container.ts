@@ -18,7 +18,7 @@ export function registerImports(container: AwilixContainer): void {
       // a misconfigured environment produces an obscure 403 instead of an obvious gap.
       if (!bucket) return new InMemoryFileStore();
       const region = process.env['AWS_REGION'] ?? 'us-east-1';
-      const endpoint = process.env['AWS_ENDPOINT_URL'];
+      const endpoint = process.env['AWS_ENDPOINT_URL_S3'] ?? process.env['AWS_ENDPOINT_URL'];
       return new S3FileStore(
         new S3Client({ region, ...(endpoint ? { endpoint, forcePathStyle: true } : {}) }),
         bucket,

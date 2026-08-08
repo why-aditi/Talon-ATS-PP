@@ -42,7 +42,9 @@ function serve(role: string, timezone?: string) {
 
 function renderWith(ui: React.ReactElement) {
   return render(
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <QueryClientProvider
+      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+    >
       <SessionProvider>{ui}</SessionProvider>
     </QueryClientProvider>,
   );
@@ -55,7 +57,8 @@ describe('candidates list', () => {
 
     const ana = await screen.findByRole('link', { name: /Ana Petrova/ });
     expect(ana).toHaveAttribute('href', `/candidates/${CANDIDATE_IDS.ana}`);
-    expect(screen.getAllByRole('link')).toHaveLength(9);
+    expect(screen.getAllByRole('link')).toHaveLength(10);
+    expect(screen.getByRole('link', { name: 'Import CSV' })).toHaveAttribute('href', '/imports');
   });
 
   it('names every stage rather than relying on the dot colour', async () => {
@@ -78,7 +81,9 @@ describe('candidate profile', () => {
     expect(await screen.findByRole('heading', { name: 'Ana Petrova' })).toBeInTheDocument();
     expect(screen.getByText('3d in Onsite')).toBeInTheDocument();
     expect(screen.getByText('Onsite loop scheduled')).toBeInTheDocument();
-    expect(screen.getByText('Values round with Maya Reyes is still unconfirmed')).toBeInTheDocument();
+    expect(
+      screen.getByText('Values round with Maya Reyes is still unconfirmed'),
+    ).toBeInTheDocument();
   });
 
   it('leaves every action inert', async () => {
@@ -164,9 +169,13 @@ describe('candidate profile', () => {
   });
 
   it('offers a retry when the profile fails to load', async () => {
-    route((url) => (url.pathname === '/api/auth/refresh' ? json(sessionFor('recruiter')) : json({}, 500)));
+    route((url) =>
+      url.pathname === '/api/auth/refresh' ? json(sessionFor('recruiter')) : json({}, 500),
+    );
     renderWith(<CandidateProfileScreen candidateId={CANDIDATE_IDS.ana} />);
 
-    await waitFor(() => expect(screen.getByText('This candidate could not be loaded.')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText('This candidate could not be loaded.')).toBeInTheDocument(),
+    );
   });
 });

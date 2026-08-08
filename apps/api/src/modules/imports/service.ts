@@ -22,7 +22,13 @@ import type {
   RowIssue,
   Source,
 } from '@talon/contracts';
-import { UnsupportedEncodingError, decodeCsv, normaliseHeader, sniffDelimiter, writeCsv } from '@talon/domain';
+import {
+  UnsupportedEncodingError,
+  decodeCsv,
+  normaliseHeader,
+  sniffDelimiter,
+  writeCsv,
+} from '@talon/domain';
 import { parse } from 'csv-parse/sync';
 import { ERROR_TYPES } from '@talon/contracts';
 import { HttpProblem, badRequest, notFound } from '../../errors.js';
@@ -30,9 +36,6 @@ import type { AuthenticatedUser, TenantTransaction } from '../../request-context
 import { DOWNLOAD_TTL_SECONDS, type FileStore, errorCsvKey, uploadKey } from './file-store.js';
 import { naturalKey, readRow, resolveColumns, rowHash, validateRow } from './mapper.js';
 import type { ImportsRepository } from './repository.js';
-
-/** Above this, commit is handed to the worker rather than run in the request (§5.4). */
-export const SYNC_ROW_LIMIT = 50;
 
 const SAMPLE_ROWS = 100;
 
@@ -146,7 +149,11 @@ export class ImportsService {
    * original rows plus an `_error` column, so the fix-and-reupload loop works on the
    * same file shape the user already has.
    */
-  async dryRun(tx: TenantTransaction, importId: string, mapping: ImportMapping): Promise<DryRunReport> {
+  async dryRun(
+    tx: TenantTransaction,
+    importId: string,
+    mapping: ImportMapping,
+  ): Promise<DryRunReport> {
     await this.#requireJob(tx, importId);
     const { rows, headers } = await this.#read(tx, importId);
     const columns = resolveColumns(headers, mapping);
@@ -196,9 +203,9 @@ export class ImportsService {
   /**
    * Commits the file.
    *
-   * Small files run inline; larger ones are left `pending` for the worker to pick up
-   * (§5.4). The row loop is identical either way — the worker calls this same method —
-   * so a 49-row import and a 51-row import cannot behave differently.
+   * The current deployment has no durable worker entrypoint, so every size follows
+   * this one resumable path. Leaving larger files pending without a consumer is not
+   * asynchronous processing; it is data loss wearing a progress state.
    */
   async commit(
     tx: TenantTransaction,
@@ -221,11 +228,6 @@ export class ImportsService {
     }
 
     const { rows, headers } = await this.#read(tx, importId);
-
-    if (rows.length > SYNC_ROW_LIMIT) {
-      await this.#repository.patch(tx, importId, { status: 'pending', total: rows.length });
-      return { processed: 0, failed: 0, deferred: true };
-    }
 
     const columns = resolveColumns(headers, mapping);
     // Resume, rather than restart. A commit that died at row 4,000 must not re-create
@@ -355,11 +357,20 @@ export class ImportsService {
     if (fields.email) {
       const exact = await this.#repository.findByEmail(tx, fields.email);
       if (exact) {
-        return { existingCandidateId: exact.id, existingName: exact.name, matchedOn: 'email', score: 1 };
+        return {
+          existingCandidateId: exact.id,
+          existingName: exact.name,
+          matchedOn: 'email',
+          score: 1,
+        };
       }
     }
     if (!fields.name) return null;
-    const similar = await this.#repository.findSimilar(tx, fields.name, fields.current_company ?? '');
+    const similar = await this.#repository.findSimilar(
+      tx,
+      fields.name,
+      fields.current_company ?? '',
+    );
     return similar
       ? {
           existingCandidateId: similar.id,
@@ -415,7 +426,11 @@ export class ImportsService {
     try {
       // `relax_column_count` because a ragged row is a row-level problem, not a reason
       // to reject the file — the validator reports it per row and the rest still import.
-      records = parse(decoded.text, { delimiter, relax_column_count: true, bom: false }) as string[][];
+      records = parse(decoded.text, {
+        delimiter,
+        relax_column_count: true,
+        bom: false,
+      }) as string[][];
     } catch (error) {
       // Structural failure rejects the whole file before anything is written (§6.2).
       throw badRequest(
@@ -446,7 +461,10 @@ export class ImportsService {
   }
 
   /** Re-presigns the error report, which expires faster than a user reads a page. */
-  async errorCsvUrl(tx: TenantTransaction, importId: string): Promise<{ url: string; expiresIn: number }> {
+  async errorCsvUrl(
+    tx: TenantTransaction,
+    importId: string,
+  ): Promise<{ url: string; expiresIn: number }> {
     const failed = await this.#repository.failedRows(tx, importId);
     if (failed.length === 0) throw notFound('This import produced no errors.');
     return this.#files.presignDownload(errorCsvKey(tx.tenantId, importId), 'import-errors.csv');
