@@ -72,7 +72,9 @@ const INT8_MAX = 9223372036854775807n;
 // failed regex, so a separate BigInt() step would throw on "190.00" instead of
 // reporting it. The && short-circuits before BigInt ever sees a non-digit.
 const isCents = (v: string) => /^(0|[1-9]\d{0,18})$/.test(v) && BigInt(v) <= INT8_MAX;
-const centsSchema = z.string().refine(isCents, 'canonical integer cents within bigint range');
+/** Exported so `people.ts` shares this exact predicate. §4.9 is a non-negotiable, and a
+ *  second copy of the cents rule is precisely how one of them drifts. */
+export const centsSchema = z.string().refine(isCents, 'canonical integer cents within bigint range');
 
 export const CompBandSchema = z
   .object({

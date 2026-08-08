@@ -161,5 +161,67 @@ export {
   type InterviewLoop,
 } from './scheduling.js';
 
+export {
+  // Review inbox (spec 007 §4.1)
+  StackMatchSchema,
+  type StackMatch,
+  LocationFitSchema,
+  type LocationFit,
+  ReviewSignalSchema,
+  type ReviewSignal,
+  ReviewQueueItemSchema,
+  type ReviewQueueItem,
+  ReviewQueueResponseSchema,
+  type ReviewQueueResponse,
+
+  // Candidates (spec 007 §4.2, §4.3)
+  CandidateSummarySchema,
+  type CandidateSummary,
+  ListCandidatesResponseSchema,
+  type ListCandidatesResponse,
+  ActivityKindSchema,
+  type ActivityKind,
+  ActivityEntrySchema,
+  type ActivityEntry,
+  CandidateDetailsSchema,
+  type CandidateDetails,
+  CandidateProfileSchema,
+  type CandidateProfile,
+
+  // Offers (spec 007 §4.4)
+  OfferStatusSchema,
+  type OfferStatus,
+  ApprovalStateSchema,
+  type ApprovalState,
+  ApprovalStepSchema,
+  type ApprovalStep,
+  OfferCompSchema,
+  type OfferComp,
+  OfferSummarySchema,
+  type OfferSummary,
+  ListOffersResponseSchema,
+  type ListOffersResponse,
+  OfferSchema,
+  type Offer,
+
+  // Reports (spec 007 §4.5)
+  TileKeySchema,
+  type TileKey,
+  TrendDirectionSchema,
+  type TrendDirection,
+  ReportTileSchema,
+  type ReportTile,
+  ConversionRowSchema,
+  type ConversionRow,
+  SourceKeySchema,
+  type SourceKey,
+  SourceRowSchema,
+  type SourceRow,
+  WeekPointSchema,
+  type WeekPoint,
+  ReportsOverviewSchema,
+  type ReportsOverview,
+} from './people.js';
+
 export { ProblemSchema, type Problem } from './problem.js';
 export { ERROR_TYPES, type ErrorType } from './errors.js';

@@ -67,31 +67,55 @@ const SECTIONS: { label: string; items: NavItem[] }[] = [
   { label: 'Insights', items: [{ href: '/reports', label: 'Reports', icon: ChartIcon }] },
 ];
 
+/**
+ * Nav targets that have a page behind them. `/pipeline` is deliberately absent: it is
+ * the highlight key for `/jobs/:id/pipeline` (see JOB_PIPELINE below), not a URL you
+ * can navigate to. Rendering it as a link 404s the sidebar's own menu item.
+ *
+ * ponytail: a literal set, not a filesystem scan. Grows by one line per screen shipped;
+ * if it ever drifts, the route-existence E2E is the place to catch it.
+ */
+const BUILT = new Set(['/jobs', '/review-inbox', '/candidates', '/offers', '/reports']);
+
 function NavRow({ item, active, count }: { item: NavItem; active: boolean; count?: number | undefined }) {
   const Icon = item.icon;
+  const built = BUILT.has(item.href);
+  const className = cx(
+    'relative flex h-8 items-center gap-3 rounded-md pl-3 pr-2 text-body',
+    'transition-colors duration-[var(--duration-instant)] ease-standard',
+    active ? 'bg-bg-selected text-text-link' : 'text-text-secondary hover:bg-action-ghost-bg-hover',
+    built ? '' : 'cursor-default text-text-tertiary hover:bg-transparent',
+  );
+  const content = (
+    <>
+      {/* 2px indigo left marker on the active row (DESIGN_SYSTEM §4). */}
+      {active ? (
+        <span className="absolute left-0 inset-y-1 w-[var(--layout-nav-marker-width)] rounded-full bg-action-primary-bg" aria-hidden="true" />
+      ) : null}
+      <Icon className={active ? 'text-text-link' : 'text-text-tertiary'} />
+      <span className="flex-1">{item.label}</span>
+      {count === undefined ? null : (
+        <span className={cx('rounded-full px-2 text-caption tabular-nums', active ? 'bg-bg-selected text-text-link' : 'text-text-tertiary')}>
+          {count}
+        </span>
+      )}
+    </>
+  );
+
+  // Unbuilt rows stay visible — the reference screens show the whole menu — but are not
+  // links: not focusable, not clickable, and announced as disabled rather than as a
+  // destination that answers 404.
   return (
     <li>
-      <Link
-        href={item.href}
-        aria-current={active ? 'page' : undefined}
-        className={cx(
-          'relative flex h-8 items-center gap-3 rounded-md pl-3 pr-2 text-body',
-          'transition-colors duration-[var(--duration-instant)] ease-standard',
-          active ? 'bg-bg-selected text-text-link' : 'text-text-secondary hover:bg-action-ghost-bg-hover',
-        )}
-      >
-        {/* 2px indigo left marker on the active row (DESIGN_SYSTEM §4). */}
-        {active ? (
-          <span className="absolute left-0 inset-y-1 w-[var(--layout-nav-marker-width)] rounded-full bg-action-primary-bg" aria-hidden="true" />
-        ) : null}
-        <Icon className={active ? 'text-text-link' : 'text-text-tertiary'} />
-        <span className="flex-1">{item.label}</span>
-        {count === undefined ? null : (
-          <span className={cx('rounded-full px-2 text-caption tabular-nums', active ? 'bg-bg-selected text-text-link' : 'text-text-tertiary')}>
-            {count}
-          </span>
-        )}
-      </Link>
+      {built ? (
+        <Link href={item.href} aria-current={active ? 'page' : undefined} className={className}>
+          {content}
+        </Link>
+      ) : (
+        <span aria-disabled="true" aria-current={active ? 'page' : undefined} className={className}>
+          {content}
+        </span>
+      )}
     </li>
   );
 }
