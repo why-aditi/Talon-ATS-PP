@@ -7,6 +7,8 @@
  * and asserted the board went back. That is the whole requirement.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { HttpResponse, http } from 'msw';
+import { server } from '../mocks/node';
 import { renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -98,12 +100,25 @@ describe('a failed reorder rolls back too', () => {
     const order = () => read(client).columns[0]!.cards.map((c) => c.name);
     const original = order();
 
+    // A REAL card whose write fails at the network. An unknown id was the first
+    // attempt and proved nothing: `moveCardTo` cannot find it, so no optimistic
+    // change happened and the test passed with the rollback deleted.
+    server.use(
+      http.patch('*/v1/applications/:id/rank', () => HttpResponse.error()),
+    );
+
     const { result } = renderHook(() => useReorder(ENG204_JOB_ID, undefined), { wrapper: wrapper(client) });
 
-    // An id the server has never seen: the mock 404s, which is the generic failure
-    // path spec 003 §8 edge 5 promises rolls back like the others.
+    // Sequence-captured, not polled: the refetch after onSettled restores the order on
+    // its own, so a waitFor on the end state passes even with the rollback removed.
+    const seen: string[][] = [];
+    const stop = client.getQueryCache().subscribe(() => {
+      const next = order();
+      if (JSON.stringify(seen.at(-1)) !== JSON.stringify(next)) seen.push(next);
+    });
+
     result.current.mutate({
-      card: { ...locate(board.columns, tess)!.card, id: '0198f3a5-9999-7000-8000-000000000001' },
+      card: locate(board.columns, tess)!.card,
       fromStageId: STAGE_IDS.applied,
       toStageId: STAGE_IDS.applied,
       beforeId: priya,
@@ -111,6 +126,10 @@ describe('a failed reorder rolls back too', () => {
     });
 
     await waitFor(() => expect(result.current.isError).toBe(true));
-    await waitFor(() => expect(order()).toEqual(original));
+    stop();
+
+    // Reordered optimistically, then put back — the rollback, not the refetch.
+    expect(seen[0]).not.toEqual(original);
+    expect(seen.at(-1)).toEqual(original);
   });
 });
