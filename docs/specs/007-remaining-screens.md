@@ -388,11 +388,13 @@ Loading: tile and panel skeletons at final height, so the page does not reflow.
 | Role | `/review-inbox` | `/candidates` | profile comp | `/offers` | offer comp | `/reports` |
 |---|---|---|---|---|---|---|
 | `admin` | read | read | visible | read | visible | read |
-| `recruiting_lead` | read | read | visible | read | visible | read |
 | `recruiter` | read | read | visible | read | visible | read |
 | `hiring_manager` | read | read | visible | read | visible | read |
-| `coordinator` | read | read | **hidden** | read | **hidden** | read |
-| `interviewer` | read | read | **hidden** | read | **hidden** | read |
+| `member` | read | read | **hidden** | read | **hidden** | read |
+
+**Corrected.** An earlier draft of this table listed `recruiting_lead`, `coordinator` and `interviewer`. None of them exist: `ROLES` in `@talon/domain` is `admin | recruiter | hiring_manager | member`, and the `users.role` check constraint matches it. The table above is now the real four.
+
+The visibility column is not restated here either — it is `hasScope(role, 'comp:read')` against `ROLE_SCOPES` in `@talon/domain`, which is the same table `contracts` derives `RoleSchema` from and every service checks. A second copy of it in the mock is what produced the phantom roles in the first place.
 
 Enforced in `route.ts` before serialisation, per field, not in the component (§4.2).
 
