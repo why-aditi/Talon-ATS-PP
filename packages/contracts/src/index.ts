@@ -36,6 +36,10 @@ export {
   type StageOverride,
   CreateJobRequestSchema,
   type CreateJobRequest,
+  UpdateJobRequestSchema,
+  type UpdateJobRequest,
+  JobConflictSchema,
+  type JobConflict,
 } from './jobs.js';
 
 export {

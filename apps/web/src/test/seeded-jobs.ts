@@ -44,6 +44,7 @@ const NO_APPLICATIONS: StageDistribution = {
 export const SEEDED_JOBS: Job[] = [
   {
     id: '0198f3a2-0001-7000-8000-000000000001',
+    version: 1,
     reqCode: 'ENG-204',
     title: 'Senior Product Engineer',
     department: 'Engineering',
@@ -58,6 +59,7 @@ export const SEEDED_JOBS: Job[] = [
   },
   {
     id: '0198f3a2-0002-7000-8000-000000000001',
+    version: 1,
     reqCode: 'ENG-209',
     title: 'Staff Design Engineer',
     department: 'Engineering',
@@ -70,6 +72,7 @@ export const SEEDED_JOBS: Job[] = [
   },
   {
     id: '0198f3a2-0003-7000-8000-000000000001',
+    version: 1,
     reqCode: 'ENG-198',
     title: 'Engineering Manager, Infra',
     department: 'Engineering',
@@ -82,6 +85,7 @@ export const SEEDED_JOBS: Job[] = [
   },
   {
     id: '0198f3a2-0004-7000-8000-000000000001',
+    version: 1,
     reqCode: 'DES-114',
     title: 'Product Designer, Growth',
     department: 'Design',
@@ -94,6 +98,7 @@ export const SEEDED_JOBS: Job[] = [
   },
   {
     id: '0198f3a2-0005-7000-8000-000000000001',
+    version: 1,
     reqCode: 'PPL-031',
     title: 'Recruiting Coordinator',
     department: 'People',
@@ -106,6 +111,7 @@ export const SEEDED_JOBS: Job[] = [
   },
   {
     id: '0198f3a2-0006-7000-8000-000000000001',
+    version: 1,
     reqCode: 'SAL-076',
     title: 'Head of Sales, EMEA',
     department: 'Sales',

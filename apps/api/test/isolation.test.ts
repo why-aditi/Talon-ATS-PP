@@ -126,6 +126,24 @@ const HOSTILE_REQUESTS: Record<string, HostileCase> = {
     }),
     victimStatus: 201,
   },
+  /*
+    Tenant A's job id, with a body that VALIDATES — a schema rejection would 400
+    before the tenancy check and prove nothing.
+
+    `version: 9_999` is deliberately stale so the OWNER gets 409 rather than
+    actually editing a seeded job: `jobs-list.test.ts` asserts ENG-204's title
+    and department, and a real edit here would move it. The attacker still gets
+    404, because the row is invisible to them before any version is compared —
+    which is exactly what this gate measures. Same trick the stage case uses.
+  */
+  'PATCH /v1/jobs/:id': {
+    request: (f) => ({
+      method: 'PATCH',
+      url: `/v1/jobs/${f.talon.jobId}`,
+      payload: { title: 'Renamed by an attacker', version: 9_999 },
+    }),
+    victimStatus: 409,
+  },
   'PATCH /v1/applications/:id/rank': {
     request: (f) => ({
       method: 'PATCH',

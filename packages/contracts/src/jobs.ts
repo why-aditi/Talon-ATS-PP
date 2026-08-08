@@ -148,6 +148,14 @@ export const JobSchema = z.object({
    * schema is not comp-gated, whatever the service returns.
    */
   band: CompBandSchema.optional(),
+
+  /**
+   * Optimistic concurrency (spec 005 §3.1). Every write returns the new value
+   * (CLAUDE.md §9), and `PATCH` requires the one the client last read — which is
+   * the whole mechanism, so it is required rather than optional. A client that
+   * cannot see a version cannot edit safely.
+   */
+  version: z.number().int().positive(),
 });
 export type Job = z.infer<typeof JobSchema>;
 
@@ -254,3 +262,81 @@ export const CreateJobRequestSchema = z
     { message: 'Band maximum must be at least the minimum', path: ['bandMaxCents'] },
   );
 export type CreateJobRequest = z.infer<typeof CreateJobRequestSchema>;
+
+// ---------------------------------------------------------------------------
+// PATCH /v1/jobs/:id — spec 005 §4.3
+// ---------------------------------------------------------------------------
+
+/**
+ * Absent and null are DIFFERENT, and the difference is security-relevant.
+ *
+ *   key absent       -> leave the column alone
+ *   key present null -> clear the column
+ *
+ * Band is scope-gated (#2), so a caller without `comp:read` never receives it
+ * and their client cannot send a band it never saw. If absent meant "clear",
+ * saving a job title would destroy a salary band the editor was never allowed to
+ * look at. Absent-means-untouched is what makes that impossible; the API
+ * enforces the other half by refusing a band from a caller without the scope,
+ * even a null one — read-gating a field while leaving it writable is not access
+ * control.
+ *
+ * `reqCode` is not here and never will be: it is on offer letters and in
+ * people's inboxes. Stages are not here either — changing a pipeline moves live
+ * applications between stages and is its own spec.
+ */
+export const UpdateJobRequestSchema = z
+  .object({
+    title: z.string().trim().min(1).max(200).optional(),
+    department: z.string().trim().min(1).max(100).optional(),
+    location: z.string().trim().min(1).max(100).optional(),
+    employmentType: z.string().trim().max(50).nullable().optional(),
+
+    bandMinCents: CentsSchema.nullable().optional(),
+    bandMaxCents: CentsSchema.nullable().optional(),
+    currency: z.string().regex(/^[A-Z]{3}$/).nullable().optional(),
+
+    recruiterId: z.string().uuid().nullable().optional(),
+    hiringManagerId: z.string().uuid().nullable().optional(),
+    openings: z.number().int().min(1).max(999).optional(),
+    status: JobStatusSchema.optional(),
+
+    /** The version the client last read. Required — this is the mechanism. */
+    version: z.number().int().positive(),
+  })
+  .strict()
+  .refine(
+    // Cleared together or set together. Half a band is not a band, and a
+    // currency left behind on a job with no amounts is a lie about the row.
+    (v) =>
+      !('bandMinCents' in v) ||
+      !('bandMaxCents' in v) ||
+      (v.bandMinCents === null) === (v.bandMaxCents === null),
+    { message: 'Band minimum and maximum must be set together, or cleared together', path: ['bandMaxCents'] },
+  )
+  .refine(
+    (v) =>
+      v.bandMinCents == null ||
+      v.bandMaxCents == null ||
+      BigInt(v.bandMaxCents) >= BigInt(v.bandMinCents),
+    { message: 'Band maximum must be at least the minimum', path: ['bandMaxCents'] },
+  );
+export type UpdateJobRequest = z.infer<typeof UpdateJobRequestSchema>;
+
+/**
+ * The 409 body, shaped like the board's (`StageConflictSchema`) on purpose —
+ * one conflict idiom, not two.
+ *
+ * `current` is what makes the conflict actionable: "somebody else changed this"
+ * with no indication of WHAT changed forces the user to discard their edit
+ * blind. With the current resource in hand the client can show the difference
+ * and offer reload-or-overwrite.
+ */
+export const JobConflictSchema = z.object({
+  type: z.string(),
+  title: z.string(),
+  status: z.literal(409),
+  detail: z.string(),
+  current: JobSchema,
+});
+export type JobConflict = z.infer<typeof JobConflictSchema>;

@@ -9,9 +9,11 @@ import type {
   ListJobsQuery,
   ListJobsResponse,
   ListStageTemplatesResponse,
+  UpdateJobRequest,
 } from '@talon/contracts';
+import { ERROR_TYPES } from '@talon/contracts';
 import { hasScope } from '@talon/domain';
-import { badRequest, forbidden, notFound } from '../../errors.js';
+import { HttpProblem, badRequest, forbidden, notFound } from '../../errors.js';
 import type { AuthenticatedUser, TenantTransaction } from '../../request-context.js';
 import type { JobCursor, JobRecord, JobsRepository } from './repository.js';
 
@@ -70,6 +72,8 @@ function toJob(record: JobRecord, canReadComp: boolean): Job {
     stageDistribution: record.stageDistribution,
     inProcessCount: record.inProcessCount,
     activeCount: record.activeCount,
+    // Not comp-gated: everyone who can read the job needs it to edit safely.
+    version: record.version,
   };
   // Spec 001 §6.4 acceptance 4: no `band` key at all — not null, not an empty
   // object. A caller without comp:read and a job with no band set are
@@ -227,5 +231,99 @@ export class JobsService {
     // Three losses in a row against the same prefix is not contention worth
     // waiting out. 500, loudly, rather than a fourth attempt.
     throw new Error(`could not allocate a req code for ${prefix} after 3 attempts`);
+  }
+
+  /**
+   * Edit a job. Spec 005 §4.3.
+   *
+   * The patch is merged over the CURRENT record here, not in SQL, so
+   * absent-means-untouched lives in exactly one place. `'key' in input` is the
+   * test — not `!== undefined` — because `{ currency: null }` and `{}` must
+   * behave differently and `undefined` cannot tell them apart.
+   */
+  async updateJob(
+    tx: TenantTransaction,
+    user: AuthenticatedUser,
+    id: string,
+    input: UpdateJobRequest,
+  ): Promise<Job> {
+    const canReadComp = hasScope(user.role, 'comp:read');
+
+    // Checked before anything is read, and it covers null too. A caller who may
+    // not SEE a band may not clear one either — read-gating a field while
+    // leaving it writable is not access control (#2).
+    if (('bandMinCents' in input || 'bandMaxCents' in input || 'currency' in input) && !canReadComp) {
+      throw forbidden('You do not have permission to change a compensation band.');
+    }
+
+    const current = await this.#repository.findById(tx, id);
+    // 404, never 403 — another tenant's job and an id never issued answer the
+    // same way (§6.4).
+    if (!current) throw notFound('No job with that id exists in this tenant.');
+
+    const pick = <K extends keyof UpdateJobRequest>(key: K, fallback: NonNullable<unknown> | null) =>
+      key in input ? (input[key] as unknown) : fallback;
+
+    const bandMinCents = pick('bandMinCents', current.bandMinCents) as string | null;
+    const bandMaxCents = pick('bandMaxCents', current.bandMaxCents) as string | null;
+    const currency = pick('currency', current.currency) as string | null;
+
+    /*
+      Checked on the MERGED result, not on the patch.
+
+      The contract can only see what was sent, so `{ bandMinCents: null }` alone
+      passes it — and the row then keeps a maximum with no minimum, which is half
+      a band and not a thing. Only here is the outcome known, so only here can it
+      be refused.
+    */
+    if ((bandMinCents === null) !== (bandMaxCents === null)) {
+      throw badRequest('A band needs both a minimum and a maximum, or neither.');
+    }
+    if (bandMinCents !== null && BigInt(bandMaxCents ?? '0') < BigInt(bandMinCents)) {
+      throw badRequest('Band maximum must be at least the minimum.');
+    }
+
+    // The currency goes with them. A currency left on a job with no amounts is a
+    // row that lies about itself, and the column is NOT NULL so there is nowhere
+    // to put "none" but the empty string.
+    const clearing = bandMinCents === null;
+    if (!clearing && currency === null) {
+      throw badRequest('A currency is required when a band is set.');
+    }
+
+    const updated = await this.#repository.updateJob(tx, id, input.version, {
+      title: (pick('title', current.title) as string).trim(),
+      department: (pick('department', current.department) as string).trim(),
+      location: (pick('location', current.location) as string).trim(),
+      employmentType: pick('employmentType', null) as string | null,
+      bandMinCents,
+      bandMaxCents,
+      currency: clearing ? '' : (currency ?? ''),
+      status: pick('status', current.status) as string,
+      recruiterId: pick('recruiterId', current.recruiter?.id ?? null) as string | null,
+      hiringManagerId: pick('hiringManagerId', null) as string | null,
+      openings: pick('openings', 1) as number,
+    });
+
+    // Zero rows updated: the row exists (we just read it) but its version moved,
+    // so somebody else wrote in between. Re-read so the client is told WHAT it
+    // is conflicting with rather than only that it lost.
+    if (!updated) {
+      const now = await this.#repository.findById(tx, id);
+      if (!now) throw notFound('No job with that id exists in this tenant.');
+      throw new HttpProblem(
+        409,
+        ERROR_TYPES.JOB_VERSION_CONFLICT,
+        `${now.title} has changed`,
+        'Someone else edited this job while you were working on it.',
+        // An RFC 9457 extension member, not a header — the client reads it from
+        // the body to show what it is conflicting with.
+        { current: toJob(now, canReadComp) },
+      );
+    }
+
+    const after = await this.#repository.findById(tx, id);
+    if (!after) throw new Error('updated job could not be read back');
+    return toJob(after, canReadComp);
   }
 }

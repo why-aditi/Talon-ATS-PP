@@ -1,35 +1,37 @@
+import { ListStageTemplatesResponseSchema, ListUsersResponseSchema } from '@talon/contracts';
+import type { StageTemplate, UserSummary } from '@talon/contracts';
 import { useQuery } from '@tanstack/react-query';
 import { useSession } from './session';
 
 /**
  * The two reads wizard steps 2 and 3 need. Spec 005 §6.3, §6.4.
  *
- * **Neither endpoint exists yet** (§12 step 4, and §15 OQ7 for the users one).
- * They are written against the contract anyway, so the steps populate the moment
- * the api ships them rather than needing a second pass — and so the shape the web
- * side expects is on record for whoever builds them.
+ * Both endpoints now EXIST — GET /v1/stage-templates and GET /v1/users. This file
+ * used to say neither did, and cast the body `as T[]` on that basis. Both return
+ * the project's standard `{ data: [...] }` envelope, so once they shipped the cast
+ * silently handed the wizard an object: `templates.find is not a function` at
+ * job-wizard.tsx:307, with a type signature still claiming an array.
  *
- * A 404 is treated as "not built yet" and resolves to an empty list, which is the
- * same state as a tenant with no templates. That is deliberate: the step already
- * has an honest empty state, and the alternative — an error banner on a wizard
- * step nobody has broken — would be a screen shouting about a roadmap.
+ * Hence the schema parameter below rather than a cast. The response is validated
+ * against the same contract the api answers with, so a shape change is a loud
+ * failure here instead of a TypeError three components away.
  *
- * Any OTHER failure still throws. "Not built" and "broken" are different, and
- * collapsing them would hide a real outage behind a friendly message.
+ * A 404 is still treated as "not built yet" and resolves to an empty list, which
+ * is the same state as a tenant with no templates. That is deliberate: the step
+ * already has an honest empty state. Any OTHER failure still throws — "not built"
+ * and "broken" are different, and collapsing them would hide a real outage.
  */
 
 const API_BASE = process.env['NEXT_PUBLIC_API_URL'] ?? '';
 
-export interface StageTemplate {
-  id: string;
-  name: string;
-  stages: { name: string; slaDays: number | null }[];
-}
-
-export interface UserOption {
-  id: string;
-  name: string;
-}
+/*
+  Re-exported so components keep importing these from one place. They used to be
+  hand-written interfaces here — { id, name } for a user, { name, slaDays } for a
+  stage — which is how the fixtures and the components agreed on a shape the api
+  never returned. Aliased from the contract now, so there is one definition.
+*/
+export type { StageTemplate };
+export type UserOption = UserSummary;
 
 /** Distinguishes "the endpoint answered with nothing" from "there is no endpoint". */
 export interface Unbuilt<T> {
@@ -39,7 +41,16 @@ export interface Unbuilt<T> {
   isPending: boolean;
 }
 
-async function readOrEmpty<T>(url: string, accessToken: string | undefined): Promise<T[] | null> {
+/**
+ * `schema` is typed structurally rather than as a `z.ZodType` so this file needs no
+ * zod import of its own — the contract package already owns the schemas, and this
+ * only needs the one method.
+ */
+async function readOrEmpty<T>(
+  url: string,
+  accessToken: string | undefined,
+  schema: { parse: (input: unknown) => { data: T[] } },
+): Promise<T[] | null> {
   const response = await fetch(url, {
     headers: { accept: 'application/json', ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}) },
   });
@@ -47,14 +58,17 @@ async function readOrEmpty<T>(url: string, accessToken: string | undefined): Pro
   // has none, which is a different thing to tell the person on step 2.
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`GET ${url} failed with ${response.status}`);
-  return (await response.json()) as T[];
+  // Unwraps the envelope AND validates it. Returning the parsed `data` is what
+  // makes the declared `T[]` true rather than asserted.
+  return schema.parse(await response.json()).data;
 }
 
 export function useStageTemplates(): Unbuilt<StageTemplate> {
   const { session, ready } = useSession();
   const query = useQuery({
     queryKey: ['stage-templates', session?.user.id ?? null],
-    queryFn: () => readOrEmpty<StageTemplate>(`${API_BASE}/v1/stage-templates`, session?.accessToken),
+    queryFn: () =>
+      readOrEmpty<StageTemplate>(`${API_BASE}/v1/stage-templates`, session?.accessToken, ListStageTemplatesResponseSchema),
     enabled: ready && session !== null,
     // A missing route will not start existing on retry, and the wizard should not
     // sit on a spinner for three round trips before showing its empty state.
@@ -68,11 +82,11 @@ export function useStageTemplates(): Unbuilt<StageTemplate> {
  * separate queries because recruiters and hiring managers are different lists and
  * caching them together would refetch both when one changes.
  */
-export function useAssignableUsers(role: 'recruiter' | 'hiring_manager'): Unbuilt<UserOption> {
+export function useAssignableUsers(role: 'recruiter' | 'hiring_manager'): Unbuilt<UserSummary> {
   const { session, ready } = useSession();
   const query = useQuery({
     queryKey: ['users', role, session?.user.id ?? null],
-    queryFn: () => readOrEmpty<UserOption>(`${API_BASE}/v1/users?role=${role}`, session?.accessToken),
+    queryFn: () => readOrEmpty<UserSummary>(`${API_BASE}/v1/users?role=${role}`, session?.accessToken, ListUsersResponseSchema),
     enabled: ready && session !== null,
     retry: false,
   });

@@ -27,6 +27,7 @@ export interface JobRecord {
   stageDistribution: Record<CanonicalStage, number>;
   inProcessCount: number;
   activeCount: number;
+  version: number;
 }
 
 /**
@@ -57,6 +58,7 @@ export interface FindJobsArgs {
 
 interface JobRow {
   id: string;
+  version: number;
   req_code: string;
   title: string;
   department: string;
@@ -93,6 +95,7 @@ function toRecord(row: JobRow): JobRecord {
   }
   return {
     id: row.id,
+    version: row.version,
     reqCode: row.req_code,
     title: row.title,
     department: row.department,
@@ -233,7 +236,7 @@ export class JobsRepository {
         from per_stage
         group by job_id
       )
-      select p.id, p.req_code, p.title, p.department, p.location, p.status,
+      select p.id, p.version, p.req_code, p.title, p.department, p.location, p.status,
              p.band_min_cents, p.band_max_cents, p.currency, p.dept_key,
              u.id as recruiter_id, u.name as recruiter_name,
              -- left join + coalesce, never an inner join: a job with no
@@ -349,5 +352,61 @@ export class JobsRepository {
     await tx.sql`insert into job_stages ${tx.sql(rows)}`;
 
     return job.id;
+  }
+
+  /**
+   * The compare-and-set. Spec 005 §4.3.
+   *
+   * `version = $expected` in the WHERE is the whole mechanism: the read and the
+   * write are one statement, so nothing can slip between them. Zero rows means
+   * either the row moved on or it does not exist, and the caller distinguishes
+   * those with a follow-up read rather than this method guessing.
+   *
+   * `is not distinct from` is not used anywhere here on purpose — every column
+   * below is set unconditionally, because the SERVICE has already merged the
+   * patch over the current record. Deciding absent-vs-null in SQL would put that
+   * rule in two places.
+   */
+  async updateJob(
+    tx: TenantTransaction,
+    id: string,
+    expectedVersion: number,
+    next: {
+      title: string;
+      department: string;
+      location: string;
+      employmentType: string | null;
+      bandMinCents: string | null;
+      bandMaxCents: string | null;
+      currency: string;
+      status: string;
+      recruiterId: string | null;
+      hiringManagerId: string | null;
+      openings: number;
+    },
+  ): Promise<boolean> {
+    const rows = await tx.sql<{ id: string }[]>`
+      update jobs set
+        title = ${next.title},
+        department = ${next.department},
+        location = ${next.location},
+        employment_type = ${next.employmentType},
+        band_min_cents = ${next.bandMinCents}::bigint,
+        band_max_cents = ${next.bandMaxCents}::bigint,
+        currency = ${next.currency},
+        status = ${next.status},
+        recruiter_id = ${next.recruiterId}::uuid,
+        hiring_manager_id = ${next.hiringManagerId}::uuid,
+        openings = ${next.openings},
+        -- Always, even when nothing changed. Comparing before and after to skip
+        -- the bump would let two concurrent identical edits both succeed, which
+        -- is the lost update this column exists to prevent, reached by a longer
+        -- route.
+        version = version + 1
+      where tenant_id = ${tx.tenantId}::uuid
+        and id = ${id}::uuid
+        and version = ${expectedVersion}
+      returning id`;
+    return rows.length === 1;
   }
 }
