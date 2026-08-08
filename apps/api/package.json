@@ -9,7 +9,7 @@
     "test": "vitest run",
     "test:routes": "vitest run test/route-manifest.test.ts",
     "test:isolation": "vitest run test/isolation.test.ts test/rls-independence.test.ts",
-    "seed:identities": "tsx src/scripts/seed-identities.ts",
+    "seed:identities": "tsx --env-file-if-exists=../../.env src/scripts/seed-identities.ts",
     "link:federated": "tsx --env-file-if-exists=../../.env src/scripts/link-federated.ts"
   },
   "dependencies": {

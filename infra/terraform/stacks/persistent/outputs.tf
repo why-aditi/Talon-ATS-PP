@@ -34,3 +34,48 @@ output "cognito_env" {
     length(aws_cognito_user_pool_domain.main) > 0 ? "COGNITO_AUTH_DOMAIN=https://${aws_cognito_user_pool_domain.main[0].domain}.auth.${var.aws_region}.amazoncognito.com" : "",
   ]))
 }
+
+output "kms_key_id" {
+  value       = aws_kms_key.application.key_id
+  description = "Application KMS key id."
+}
+
+output "kms_key_arn" {
+  value       = aws_kms_key.application.arn
+  description = "Feed back into stacks/iam as app_kms_key_arns so the task role can perform direct envelope encryption."
+}
+
+output "kms_alias_name" {
+  value       = aws_kms_alias.application.name
+  description = "Stable alias for the application KMS key."
+}
+
+output "data_bucket_names" {
+  value       = { for name, bucket in aws_s3_bucket.data : name => bucket.id }
+  description = "Application data bucket names keyed by uploads, exports, inbound-mail, and quarantine."
+}
+
+output "data_bucket_arns" {
+  value       = { for name, bucket in aws_s3_bucket.data : name => bucket.arn }
+  description = "Application data bucket ARNs keyed by purpose."
+}
+
+output "imports_env" {
+  value       = "TALON_UPLOADS_BUCKET=${aws_s3_bucket.data["quarantine"].id}"
+  description = "Runtime configuration for direct candidate CSV uploads."
+}
+
+output "ecr_repository_name" {
+  value       = aws_ecr_repository.application.name
+  description = "Repository name used by the image build and push stage."
+}
+
+output "ecr_repository_arn" {
+  value       = aws_ecr_repository.application.arn
+  description = "Application ECR repository ARN."
+}
+
+output "ecr_repository_url" {
+  value       = aws_ecr_repository.application.repository_url
+  description = "Repository URL consumed by stages 4 and 5."
+}

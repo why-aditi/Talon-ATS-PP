@@ -1,6 +1,6 @@
 # Spec 002 — Infrastructure (M0b)
 
-**Status:** in progress — the IAM stack is built (§4), the persistent stack holds Cognito (§4a), the CI workflow is wired and its two dead gates are fixed (§4b, §4b.1); `ephemeral`, `global/state` and the provisioning scripts are not started
+**Status:** in progress — IAM, Cognito, CI, and the remote-state bootstrap slice are built (§4–§4c); `ephemeral` and provisioning stages 2–9 are not started
 **Milestone:** M0b (AWS). Spec 001 is M0a and runs entirely locally.
 **Depends on:** spec 001
 **Blocks:** any deploy
@@ -13,7 +13,7 @@ Spec 001 produces a system that runs on a laptop. This spec makes it reachable a
 
 The requirement is not "Terraform exists" — it is ARCHITECTURE §9.5a's target: **hand someone a script, they run it once, and a working Talon is reachable at a URL they can sign into.** Everything here is judged against that.
 
-This document currently covers **only the IAM stack**, because that is what has been built. The `persistent` and `ephemeral` stacks, `scripts/up.sh` and `down.sh`, and the CI plan/apply workflow are specified in ARCHITECTURE §9.5–§9.6 and will be written up here as they land. A section that describes unbuilt code is a section that will be wrong.
+This document covers the infrastructure that has landed: IAM, the Cognito portion of `persistent`, CI, and remote-state bootstrap. The remaining `persistent` resources, `ephemeral`, and provisioning stages are specified in ARCHITECTURE §9.5–§9.6 and will be added here as they land. A section that describes unbuilt code is a section that will be wrong.
 
 ## 2. Scope
 
@@ -23,9 +23,10 @@ This document currently covers **only the IAM stack**, because that is what has 
 - `infra/terraform/stacks/persistent` — the Cognito user pool, its app client, and the hosted auth domain (§4a). Named `persistent` because ARCHITECTURE §9.6 splits stacks by **lifetime**, not by service: this half survives the teardown that destroys the NAT gateway.
 - `.github/workflows/terraform.yml` — `fmt`, `tflint`, `checkov`, `validate`, plan-on-PR as a comment, apply on merge, and the **protected-resource plan check** (§4b).
 - `infra/terraform/scripts/check-plan.py` — the check itself.
+- `infra/terraform/global/state` and the bootstrap-only path through `scripts/up.sh` / `scripts/up.ps1` (§4c).
 - Plus `README.md` and `backend.tf.example` per stack, and `.gitignore` rules for Terraform artifacts including `backend.tf`.
 
-**In (later, not yet built):** ECR, S3 and KMS inside `stacks/persistent`; `stacks/ephemeral` (VPC, Aurora, Redis, ECS, ALB); `global/state` bootstrap; `scripts/up.sh` / `down.sh`.
+**In (later, not yet built):** ECR, S3 and KMS inside `stacks/persistent`; `stacks/ephemeral` (VPC, Aurora, Redis, ECS, ALB); provisioning stages 2–9 in `scripts/up.sh`; `scripts/down.sh`.
 
 **Out:** anything in spec 001. Multi-account or AWS Organizations — ARCHITECTURE §9.5 settles on **one account** with environments separated by name prefix and tag. A custom domain.
 
@@ -576,6 +577,165 @@ quietly local. Names are overridable with `vars.TF_STATE_BUCKET` /
 **`stacks/iam` is not in the apply matrix and cannot be** — the deploy role is
 explicitly denied writing `role/talon-<env>-github-*`, so a CI apply of it fails
 on its first IAM write. That is §4.8's deliberate consequence, not an oversight.
+
+## 4c Remote-state bootstrap — the first single-click slice
+
+### 4c.1 Contract and boundary
+
+`infra/terraform/global/state` is a root module with deliberately local state.
+It creates the backend that every other root module consumes, so placing its own
+state in that backend would restore the chicken-and-egg problem. Its resources
+are outside both routine teardown and `down.sh --all`:
+
+- one S3 bucket named `talon-tfstate-<account-id>` by default;
+- versioning, AES-256 server-side encryption, all four public-access blocks, and
+  a bucket policy denying non-TLS access;
+- one pay-per-request DynamoDB table named `talon-tfstate-lock`, keyed by the
+  string attribute `LockID`, with encryption and point-in-time recovery enabled.
+
+Both resources carry literal `prevent_destroy`. This is the one intentional
+exception to §9.5a's application-stack rule: deleting the backend is not a
+supported teardown operation and would remove the recovery history for every
+stack. `global/state` has no environment suffix because it is account-global;
+its required tags use `Env=global` and `Stack=state`.
+
+### 4c.2 Clean account, existing account, and lost local state
+
+The bootstrap must be idempotent across machines, not merely while one laptop's
+ignored `terraform.tfstate` survives. Before applying, the script resolves the
+AWS account id, derives the two deterministic names, and probes them with
+`HeadBucket` and `DescribeTable`. An existing object enables an explicit
+configuration-driven import block for the bucket. The separately managed S3
+settings are convergent `Put*` operations and therefore need no imports (notably,
+trying to import a bucket policy that does not exist would make adoption fail).
+An absent object is created normally. Bucket and table adoption are independent
+so an interrupted first run can resume when only one was created.
+
+An inaccessible bucket is indistinguishable from an absent bucket to
+`HeadBucket`; the subsequent Terraform plan/apply therefore fails loudly instead
+of treating an unverified bucket as safe to adopt. It must never guess that a
+globally named bucket owned by another account is this project's state bucket.
+
+### 4c.3 Script behavior
+
+`scripts/up.sh --bootstrap-only` is the supported slice on Linux and CI.
+`scripts/up.ps1 -BootstrapOnly` provides equivalent Windows ergonomics but does
+not replace the Bash acceptance artifact in ARCHITECTURE §9.5a. Both scripts:
+
+1. require AWS CLI, Terraform >= 1.9, Python 3, and a running Docker daemon;
+2. call STS before making changes and print account, region, and Terraform version;
+3. apply `global/state`, selecting create or adoption from the probes;
+4. preserve an existing ignored `backend.tf`, otherwise copy the checked-in
+   partial S3 backend block;
+5. initialize `iam` and `persistent` with different keys, migration enabled,
+   DynamoDB locking, and encryption; and
+6. run `check-backend.py` after each init so local fallback cannot look green.
+
+Running `scripts/up.sh` without `--bootstrap-only` currently performs the safe,
+resumable bootstrap and then exits non-zero with an explicit statement that
+deploy stages 2–9 do not exist. It does not print an application URL or claim
+success. That behavior is removed when all stages land; until then it prevents a
+partial implementation from masquerading as the PRD's one-click deliverable.
+
+Overrides are `AWS_REGION`, `TALON_NAME_PREFIX`, `TF_STATE_BUCKET`, and
+`TF_STATE_LOCK_TABLE`. Command-path overrides beginning `TALON_*_BIN` exist only
+to make orchestration contract tests hermetic; they do not alter resource names
+or skip checks.
+
+### 4c.4 Verification
+
+`infra/terraform/scripts/test_up_bootstrap.py` replaces AWS, Docker, and
+Terraform with recording fakes. It proves the clean-account create flags, the
+fresh-clone adoption flags, distinct state keys, and the default command's
+honest non-zero exit. Terraform formatting and validation cover the root module.
+An AWS apply is still a human gate under CLAUDE.md §4.
+
+## 4d Stages 2–9 — corrected dev deployment contract
+
+The implementation review found four stale assumptions in ARCHITECTURE §9.5a:
+the seed accepts no Cognito subject, workers are placeholders, readiness does not
+check dependencies, and the spec-profile Aurora cluster cannot be destroyed by
+the current permissions boundary. The approved resolution is a complete `dev`
+profile first. `profile=spec` fails validation until its deletion guardrail is
+redesigned; this is safer than creating an expensive cluster `down.sh` cannot
+remove.
+
+### 4d.1 Stage 2 — IAM
+
+Without `TALON_ROLE_ARNS`, the operator applies `stacks/iam` and reads all role
+ARNs from outputs. The stack also owns the `talon-<env>-ec2-nat` role and instance
+profile because no role may be created elsewhere. Required AWS service-linked
+roles are created here when the account does not already contain them. With
+`TALON_ROLE_ARNS`, the script requires the execution, task, Lambda, and NAT
+profile values to be present and valid ARNs/names and performs no IAM writes.
+
+### 4d.2 Stage 3 — persistent resources
+
+`stacks/persistent` adds one rotating customer-managed KMS key, four private
+KMS-encrypted/versioned buckets (`uploads`, `exports`, `inbound-mail`, and
+`quarantine`), and one scan-on-push, immutable-tag ECR repository. Exports expire
+after seven days; uploads transition to Standard-IA after ninety days. Stateful
+resources have no `force_destroy`. Outputs contain identifiers, never secret
+values. After apply, IAM is reconciled with the concrete KMS and Cognito ARNs.
+
+### 4d.3 Stage 4 — image
+
+The repository builds one Node 22 image containing compiled API, web, database
+migration/seed code, SQL migrations, and production workspace dependencies. Web
+runs on port 3000; API runs on 3001; one-off tasks override the command with
+compiled JavaScript entrypoints. The tag is the full Git commit SHA and a dirty
+tree is refused because otherwise the tag would not identify the deployed
+content. An existing ECR tag is reused; absent tags are built and pushed after a
+non-echoing ECR login.
+
+### 4d.4 Stage 5 — ephemeral dev infrastructure
+
+The dev stack creates a three-AZ VPC, public/private/isolated subnets, an
+ARM `t4g.nano` NAT instance, security groups, PostgreSQL 16 `db.t4g.micro`, Redis
+`cache.t4g.micro`, Secrets Manager credentials, ECS/Fargate web and API services,
+CloudWatch logs, and an internet-facing ALB. Default traffic targets web; `/v1/*`
+targets API directly, avoiding a build-time API URL cycle. Workers are not
+services until their processes contain consumers. All database/cache traffic is
+private and security-group referenced. RDS uses encrypted storage, backups, and
+a unique final-snapshot identifier. Outputs expose the ALB URL and the exact ECS
+cluster, task definition, subnets, and security group used by one-off tasks.
+
+The pre-token Lambda remains deferred while the API exchanges Cognito password
+authentication for Talon's own JWT and resolves tenant claims from PostgreSQL.
+There is no handler implementation in the repository, and deploying an empty
+trigger would break every sign-in. When native Cognito bearer tokens replace
+that exchange, the function belongs here because it needs ephemeral VPC/database
+access; its invoke permission and the persistent Cognito reconciliation land in
+that same change.
+
+### 4d.5 Stages 6–8 — migrate and demo data
+
+Migration runs `node packages/db/dist/migrate.js up` as an ECS one-off task with
+owner `DATABASE_URL` and `TALON_APP_PASSWORD` injected from Secrets Manager. The
+script waits for `STOPPED` and requires container exit code exactly zero; missing
+codes, stop reasons, timeouts, and non-zero codes fail the run.
+
+Demo data is dev-only. Normal `up` queries for an existing tenant and skips seed
+when data exists, making a second run non-destructive. `--reset-demo` is the only
+path allowed to run the truncating reference seed against a populated database.
+The database seed runs before identity seed. Identity seed provisions all six
+reference Cognito users and writes their subjects using tenant-scoped database
+transactions; `SEED_PASSWORD` is a Secrets Manager value and is never passed as
+a command argument or printed. An interruption is resumable by rerunning `up`.
+
+### 4d.6 Stage 9 and teardown
+
+Readiness is `GET <app-url>/v1/readyz` and must prove a database round trip before
+returning `{ "ok": true }`. Provisioning polls with bounded backoff and prints
+the URL and demo email only after success. The password is printed only when the
+operator explicitly supplied it interactively or requested demo creation; logs
+must not expose secret values.
+
+`down.sh` destroys only `ephemeral` by default. `--all` first destroys ephemeral,
+then requires the exact phrase `destroy talon-<env> persistent` before disabling
+Cognito deletion protection and destroying persistent. IAM and `global/state`
+are never automatic teardown targets. Any ephemeral failure stops the sequence.
+Repeated default teardown is successful when no ephemeral resources remain.
 
 ## 5. Test plan
 

@@ -130,29 +130,28 @@ resource "aws_iam_role" "ecs_task" {
 }
 
 data "aws_iam_policy_document" "ecs_task" {
-  # RESIDUAL, stated rather than left to be discovered (spec 002 §4.10, open
-  # question 2). local.data_bucket_object_arns includes the QUARANTINE bucket, so
-  # the presign path and the scanner path hold identical S3 rights: this one role
-  # can hand out a presigned GET for an object the scanner has not cleared.
-  # CLAUDE.md §4's "scanned before they leave quarantine" is therefore enforced by
-  # application code alone — IAM does not back it up while there is one task role.
-  #
-  # Not fixable by the permissions boundary: the boundary binds this role too, so
-  # denying quarantine reads there would deny them to the scanner as well. The fix
-  # is the per-service task-role split §9.9 asks for — a scanner role with
-  # GetObject on quarantine and an api role without it — which is open question 2
-  # and needs the worker entrypoints to exist first.
+  # Quarantine is write-only to the application task role. A future scanner gets
+  # its own role with read access and moves clean objects to uploads; until that
+  # worker exists, unscanned objects cannot be fetched through task credentials.
   statement {
-    sid    = "CandidateFileObjects"
+    sid    = "WriteCandidateFileObjects"
     effect = "Allow"
     actions = [
-      "s3:GetObject",
-      "s3:GetObjectVersion",
       "s3:PutObject",
       "s3:DeleteObject",
       "s3:AbortMultipartUpload",
     ]
     resources = local.data_bucket_object_arns
+  }
+
+  statement {
+    sid    = "ReadScannedCandidateFileObjects"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:GetObjectVersion",
+    ]
+    resources = local.readable_data_bucket_object_arns
   }
 
   statement {
