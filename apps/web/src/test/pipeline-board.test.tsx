@@ -96,7 +96,7 @@ describe('the stalled treatment', () => {
     renderBoard();
     const stalled = await screen.findByText('Stalled 8d in stage');
     const footer = stalled.parentElement;
-    expect(footer).toHaveTextContent('Stalled 8d in stage · Call Tue');
+    expect(footer).toHaveTextContent('Stalled 8d in stage · Call');
     expect(footer).toHaveClass('text-text-tertiary');
   });
 
@@ -105,7 +105,7 @@ describe('the stalled treatment', () => {
   it('does not stall Marcus Webb at exactly the SLA', async () => {
     renderBoard();
     const dwell = await screen.findByText('5d in stage');
-    expect(dwell.parentElement).toHaveTextContent('5d in stage · Call Mon');
+    expect(dwell.parentElement).toHaveTextContent('5d in stage · Call');
     expect(dwell).not.toHaveClass('text-text-danger');
     expect(screen.queryByText(/Stalled 5d/)).not.toBeInTheDocument();
   });
@@ -138,11 +138,20 @@ describe('card content', () => {
     expect(screen.queryByText('LinkedIn')).not.toBeInTheDocument();
   });
 
-  it('shows a score chip only where a score exists', async () => {
+  /**
+   * Both left with the move to the real endpoint: nothing stores candidate skills
+   * (spec 003 OQ-2) and there is no scorecards table, so the fixture was the only
+   * thing that ever produced "Go" or "4.2". Asserted as absent rather than deleted,
+   * so the day either table lands this test fails and someone re-reads the spec
+   * instead of the tag quietly reappearing unstyled.
+   */
+  it('renders no skill tag and no score chip — neither has a source yet', async () => {
     renderBoard();
-    expect(await screen.findByText('4.2')).toBeInTheDocument();
-    expect(screen.getByText('4.6')).toBeInTheDocument();
-    expect(screen.queryAllByText(/^\d\.\d$/)).toHaveLength(2);
+    await screen.findByText('Ana Petrova');
+    for (const skill of ['Go', 'React', 'TypeScript', 'Platform']) {
+      expect(screen.queryByText(skill)).not.toBeInTheDocument();
+    }
+    expect(screen.queryAllByText(/^\d\.\d$/)).toHaveLength(0);
   });
 });
 
@@ -169,13 +178,13 @@ describe('states', () => {
     expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
   });
 
-  it('drops the score chip out of scorecard scope rather than masking it', async () => {
+  it('still renders the board when the caller is out of scorecard scope', async () => {
+    // The `forbidden` scenario is degenerate today — `scoreAvg` left the contract, so
+    // the payload is identical to the default one. Kept because scorecard blindness
+    // (#3) returns with the scorecards table and this is where its test will go;
+    // asserting the absent chip would have been a test that cannot fail.
     renderBoard('forbidden');
-    await screen.findByText('Ana Petrova');
-    // Indistinguishable from an unscored card: the board never says "there is a score
-    // you may not see" (non-negotiable #3).
-    expect(screen.queryByText('4.2')).not.toBeInTheDocument();
-    expect(screen.queryByText(/hidden|restricted|—/i)).not.toBeInTheDocument();
+    expect(await screen.findByText('Ana Petrova')).toBeInTheDocument();
   });
 
   it('offers to clear the filter, not to create a record, when a filter matches nothing', async () => {

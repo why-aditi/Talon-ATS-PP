@@ -1,11 +1,11 @@
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import {
   BoardSchema,
-  ConflictProblemSchema,
-  PIPELINE_ERROR_TYPES,
+  StageConflictSchema,
+  ERROR_TYPES,
   type Board,
   type ApplicationCard,
-} from './pipeline-contract';
+} from '@talon/contracts';
 import { moveCardTo } from './board-state';
 import { useSession } from './session';
 
@@ -131,9 +131,9 @@ export function useMoveStage(jobId: string, scenario: string | undefined) {
       );
       if (response.ok) return (await response.json()) as ApplicationCard;
 
-      const problem = ConflictProblemSchema.safeParse(await response.json().catch(() => null));
+      const problem = StageConflictSchema.safeParse(await response.json().catch(() => null));
       if (response.status === 409 && problem.success) {
-        const kind = problem.data.type === PIPELINE_ERROR_TYPES.STAGE_MOVED ? 'moved' : 'version';
+        const kind = problem.data.type === ERROR_TYPES.STAGE_MOVED ? 'moved' : 'version';
         // `detail` already names the stage the card actually sits in; the client shows
         // its own sentence rather than the server's, so copy stays under our control.
         throw new MoveFailure(kind, input.card.name, problem.data.current, problem.data.currentStageName);

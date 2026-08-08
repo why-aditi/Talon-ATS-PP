@@ -4,10 +4,9 @@ import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { prefersReducedMotion } from '../lib/board-state';
 import {
-  SOURCE_LABELS,
-  STATUS_LABELS,
   type ApplicationCard,
-} from '../lib/pipeline-contract';
+} from '@talon/contracts';
+import { SOURCE_LABELS, STATUS_LABELS } from '../lib/labels';
 import { GripIcon } from './icons';
 import { Avatar, cx } from './ui';
 
@@ -22,14 +21,18 @@ export function isStalled(card: ApplicationCard, slaDays: number | null): boolea
 }
 
 /**
- * Source, skills and status all render identically — they are metadata, not status,
- * and keeping them neutral is what lets the stage hues stay meaningful
- * (DESIGN_SYSTEM §3). Order follows the reference: status first where it exists, then
- * skills, then source.
+ * Source and status render identically — they are metadata, not status, and keeping
+ * them neutral is what lets the stage hues stay meaningful (DESIGN_SYSTEM §3). Order
+ * follows the reference: status first where it exists, then source.
+ *
+ * Skills used to sit between them. They came out with the move to the real endpoint:
+ * nothing stores a candidate's skills (spec 003 OQ-2), so the fixture was the only
+ * thing that ever produced "Go", "React", "TypeScript". A tag the server cannot fill
+ * is a tag that would silently vanish the first time this screen saw real data.
  */
 function tagsFor(card: ApplicationCard): string[] {
   const status = card.status === 'active' ? [] : [STATUS_LABELS[card.status]];
-  return [...status, ...card.skills, SOURCE_LABELS[card.source]];
+  return [...status, SOURCE_LABELS[card.source]];
 }
 
 function Tag({ label }: { label: string }) {
@@ -68,17 +71,14 @@ export function CardBody({
             {card.currentTitle} at {card.currentCompany}
           </p>
         </div>
-        {/* Absent, not null, for a caller outside scorecard scope — so an unscored card
-            and an unreadable one look the same and the board leaks nothing (spec 003 §7). */}
-        {card.scoreAvg == null ? null : (
-          <span className="rounded-sm bg-bg-canvas px-2 py-px text-caption tabular-nums text-text-secondary">
-            {card.scoreAvg.toFixed(1)}
-          </span>
-        )}
+        {/* The score chip is gone with the same move: there is no scorecards table, so
+            `scoreAvg` had no source but the fixture. It returns — along with scorecard
+            blindness, which is the reason it was omitted rather than nulled — when
+            scorecards exist. */}
       </div>
 
-      {/* Five of the nine candidates have no skills; the row still renders because the
-          source tag is always present, so no card collapses to a different height. */}
+      {/* The source tag is always present, so the row never collapses and no card
+          renders at a different height from its neighbours. */}
       <div className="mt-2 flex flex-wrap gap-1">
         {tagsFor(card).map((label) => (
           <Tag key={label} label={label} />

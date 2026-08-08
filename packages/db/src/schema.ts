@@ -190,6 +190,32 @@ export const activities = pgTable('activities', {
   updatedAt: updatedAt(),
 });
 
+/**
+ * Transactional outbox (ARCHITECTURE §6.1). Written in the same transaction as the
+ * state change it describes; the relay publishes and stamps `published_at`.
+ *
+ * APPEND ONLY for the app role — `talon_app` is granted select and insert, nothing
+ * else. `id` is a bigserial rather than a uuid on purpose: delivery is at-least-once
+ * and consumers are idempotent keyed on it (non-negotiable #19), so it has to order as
+ * well as identify.
+ */
+export const outbox = pgTable('outbox', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  tenantId: tenantId(),
+  aggregate: text('aggregate').notNull(),
+  aggregateId: uuid('aggregate_id').notNull(),
+  eventType: text('event_type').notNull(),
+  /** Ids and versions only — never entity state, so a stale broadcast cannot write bad
+   *  data into a client cache. */
+  payload: jsonb('payload').notNull(),
+  occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
+  publishedAt: timestamp('published_at', { withTimezone: true }),
+  attempts: integer('attempts').notNull().default(0),
+  lastError: text('last_error'),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
 // APPEND ONLY — tenant_id nullable (system-level events, owner-only under RLS).
 export const auditLog = pgTable('audit_log', {
   id: bigserial('id', { mode: 'number' }).primaryKey(),

@@ -1,6 +1,6 @@
 import type { KeyboardCoordinateGetter } from '@dnd-kit/core';
 import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
-import type { ApplicationCard, BoardColumn } from './pipeline-contract';
+import type { ApplicationCard, BoardColumn } from '@talon/contracts';
 
 export type Located = { columnIndex: number; cardIndex: number; card: ApplicationCard; column: BoardColumn };
 

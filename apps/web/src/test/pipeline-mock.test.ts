@@ -4,7 +4,7 @@
  * wrong, and they are invisible from the UI, so they are tested directly.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
-import { BoardSchema, PIPELINE_ERROR_TYPES, type ApplicationCard, type Board } from '../lib/pipeline-contract';
+import { BoardSchema, ERROR_TYPES, type ApplicationCard, type Board } from '@talon/contracts';
 import { ENG204_JOB_ID, STAGE_IDS } from './pipeline-fixtures';
 import { resetPipelineState } from './pipeline-handlers';
 import { MoveFailure } from '../lib/board-query';
@@ -76,12 +76,12 @@ describe('the board fixture', () => {
     expect(stats['hired']).toEqual({ passRatePct: 11, medianDaysInStage: null });
   });
 
-  it('omits scoreAvg entirely out of scorecard scope, rather than nulling it', async () => {
-    const board = await getBoard('forbidden');
-    for (const card of board.columns.flatMap((c) => c.cards)) {
-      expect(card).not.toHaveProperty('scoreAvg');
-    }
-  });
+  /**
+   * Deleted rather than kept: `scoreAvg` is no longer in the contract, so this asserted
+   * a property's absence on a payload that could never carry it — true for every card
+   * in every scenario, including the ones with no scope gating at all. Scorecard
+   * blindness (#3) returns with the scorecards table, and its test belongs with it.
+   */
 
   it('keeps every stage present on an empty board', async () => {
     const board = await getBoard('empty');
@@ -196,7 +196,7 @@ describe('the two 409s are different failures', () => {
 
     expect(response.status).toBe(409);
     const problem = await response.json();
-    expect(problem.type).toBe(PIPELINE_ERROR_TYPES.STAGE_VERSION_CONFLICT);
+    expect(problem.type).toBe(ERROR_TYPES.STAGE_VERSION_CONFLICT);
     // The current state rides along, so the client reconciles without a second trip.
     expect(problem.current.name).toBe('Elena Ruiz');
   });
@@ -211,7 +211,7 @@ describe('the two 409s are different failures', () => {
     });
 
     expect(response.status).toBe(409);
-    expect((await response.json()).type).toBe(PIPELINE_ERROR_TYPES.STAGE_MOVED);
+    expect((await response.json()).type).toBe(ERROR_TYPES.STAGE_MOVED);
   });
 
   it('does not move the card on either conflict', async () => {

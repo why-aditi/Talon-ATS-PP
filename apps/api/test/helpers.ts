@@ -109,7 +109,18 @@ export interface Person {
 }
 
 export interface Fixtures {
-  talon: { tenantId: string; recruiter: Person; member: Person; jobId: string; jobReqCode: string };
+  talon: {
+    tenantId: string;
+    recruiter: Person;
+    member: Person;
+    jobId: string;
+    jobReqCode: string;
+    /** A real ENG-204 application and one of its stages, so the board routes can be
+     *  addressed by a hostile tenant with a body that passes validation. */
+    applicationId: string;
+    stageId: string;
+    nextStageId: string;
+  };
   acme: { tenantId: string; admin: Person; jobId: string };
 }
 
@@ -131,7 +142,16 @@ export async function loadFixtures(): Promise<Fixtures> {
     const [talonJob] = await sql<{ id: string; req_code: string }[]>`
       select id, req_code from jobs where req_code = 'ENG-204'`;
     const [acmeJob] = await sql<{ id: string }[]>`select id from jobs where req_code = 'ACM-001'`;
-    if (!talonTenant || !acmeTenant || !talonJob || !acmeJob) throw new Error('seed is incomplete');
+    const [talonApplication] = await sql<{ id: string; current_stage_id: string }[]>`
+      select a.id, a.current_stage_id from applications a
+      join job_stages js on js.id = a.current_stage_id
+      where a.job_id = ${talonJob?.id ?? null} and js.canonical = 'applied'
+      order by a.board_rank collate "C" limit 1`;
+    const [talonNextStage] = await sql<{ id: string }[]>`
+      select id from job_stages where job_id = ${talonJob?.id ?? null} and canonical = 'screen'`;
+    if (!talonTenant || !acmeTenant || !talonJob || !acmeJob || !talonApplication || !talonNextStage) {
+      throw new Error('seed is incomplete');
+    }
     return {
       talon: {
         tenantId: talonTenant.id,
@@ -139,6 +159,9 @@ export async function loadFixtures(): Promise<Fixtures> {
         member: find('lin@taloninc.com'),
         jobId: talonJob.id,
         jobReqCode: talonJob.req_code,
+        applicationId: talonApplication.id,
+        stageId: talonApplication.current_stage_id,
+        nextStageId: talonNextStage.id,
       },
       acme: { tenantId: acmeTenant.id, admin: find('beth@acme.test'), jobId: acmeJob.id },
     };

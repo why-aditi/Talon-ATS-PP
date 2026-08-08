@@ -179,9 +179,10 @@ describe('0004 down → up', () => {
   }
 
   it('down restores 0003’s uuid-typed function exactly, then up restores the text one', async () => {
-    // `down` steps back exactly one migration, so 0005 has to come off first.
-    // Asserted rather than looped: a down that quietly took two would be worth
-    // knowing about here, in the file that tests reversibility.
+    // `down` steps back exactly one migration, so everything stacked above 0004 has
+    // to come off first. Asserted rather than looped: a down that quietly took two
+    // would be worth knowing about here, in the file that tests reversibility.
+    expect(await migrate('down', OWNER_URL)).toEqual(['0006_outbox']);
     expect(await migrate('down', OWNER_URL)).toEqual(['0005_audit_authentication']);
     expect(await migrate('down', OWNER_URL)).toEqual(['0004_users_external_id']);
 
@@ -204,6 +205,7 @@ describe('0004 down → up', () => {
     expect(await migrate('up', OWNER_URL)).toEqual([
       '0004_users_external_id',
       '0005_audit_authentication',
+      '0006_outbox',
     ]);
 
     const [reapplied] = await subFn();
