@@ -54,5 +54,37 @@ export {
   type RefreshResponse,
 } from './auth.js';
 
+export {
+  // Params
+  GetBoardParamsSchema,
+  type GetBoardParams,
+  ApplicationParamsSchema,
+  type ApplicationParams,
+
+  // Board response
+  SourceSchema,
+  type Source,
+  ApplicationStatusSchema,
+  type ApplicationStatus,
+  ApplicationCardSchema,
+  type ApplicationCard,
+  ColumnStatsSchema,
+  type ColumnStats,
+  BoardColumnSchema,
+  type BoardColumn,
+  BoardJobSchema,
+  type BoardJob,
+  BoardSchema,
+  type Board,
+
+  // Mutations
+  MoveStageBodySchema,
+  type MoveStageBody,
+  ReorderBodySchema,
+  type ReorderBody,
+  StageConflictSchema,
+  type StageConflict,
+} from './pipeline.js';
+
 export { ProblemSchema, type Problem } from './problem.js';
 export { ERROR_TYPES, type ErrorType } from './errors.js';

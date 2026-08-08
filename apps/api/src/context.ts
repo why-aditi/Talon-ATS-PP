@@ -15,6 +15,7 @@ import type {
   IdentityService,
   VerifiedIdentity,
 } from './modules/identity/index.public.js';
+import type { ApplicationsService } from './modules/applications/index.public.js';
 import type { JobsService } from './modules/jobs/index.public.js';
 
 export interface Cradle {
@@ -25,6 +26,7 @@ export interface Cradle {
   identityProvider: IdentityProvider;
   identityService: IdentityService;
   jobsService: JobsService;
+  applicationsService: ApplicationsService;
   /**
    * Module-internal registrations. Typed `unknown` on purpose: awilix injects
    * them by name inside a module, and nothing outside one should be resolving a
@@ -32,6 +34,7 @@ export interface Cradle {
    */
   identityRepository: unknown;
   jobsRepository: unknown;
+  applicationsRepository: unknown;
   /**
    * Registered only when `auth.provider === 'cognito'`, and typed `unknown` for
    * the same reason as the repositories: it is `modules/identity`'s business.

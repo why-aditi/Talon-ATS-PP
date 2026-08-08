@@ -99,6 +99,18 @@ async function main(): Promise<void> {
       // The second half of provisioning, and the half only the owner may do:
       // without it Cognito authenticates the person and `auth_user_by_sub`
       // resolves nobody, so they sign in and 401 on the very next request.
+      //
+      // Same `force row level security` exposure as the select above, and
+      // QUIETER: an owner without BYPASSRLS matches zero rows here, and an
+      // UPDATE that matches nothing is a success that changed nothing — the
+      // line below would then print a sub that was never stored. The select is
+      // the guard for both (it throws on zero users), which is why this stays a
+      // note and not a second check. Migration 0006 exempts the sign-in
+      // definers from that rule and deliberately not this script: a policy wide
+      // enough for an operator script to write `users` past the tenant policy
+      // is wider than anything the request path needs. Making this run on
+      // Aurora means setting `app.tenant_id` per row here, which is a change to
+      // this file when someone runs it there — not a change to the schema.
       await sql`update users set external_id = ${sub} where id = ${user.id}::uuid`;
       console.log(`  ${user.email.padEnd(22)} ${user.role.padEnd(15)} sub=${sub}`);
     }
